@@ -546,6 +546,11 @@ exit_status = (
     else "REJECT_EXIT_MIN_NOTIONAL" if risk_decision.reason_code == "REJECT_EXIT_MIN_NOTIONAL"
     else "—"
 )
+exit_color = (
+    "#22c55e" if risk_decision.approved
+    else "#ef4444" if risk_decision.reason_code == "REJECT_EXIT_MIN_NOTIONAL"
+    else "#94a3b8"
+)
 
 
 # ---------------- PAGE 1: MONITOR (决策监控台) ----------------
@@ -711,7 +716,7 @@ if st.session_state.nav_tab == "monitor":
             <div>Jev Output: <span style="color:#e2e8f0">{ai_sig.action} ({confidence_text})</span></div>
             <div>Latency: <span style="color:#38bdf8">{lat}</span></div>
             <div>{t['risk_status']}: <span style="color:{'#22c55e' if risk_decision.approved else '#f59e0b'}">{risk_decision.reason_code}</span></div>
-            <div>{t['exit_feasibility']}: <span style="color:#22c55e">{exit_status}</span></div>
+            <div>{t['exit_feasibility']}: <span style="color:{exit_color}">{exit_status}</span></div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -759,7 +764,7 @@ elif st.session_state.nav_tab == "ledger":
             })
         st.dataframe(pd.DataFrame(trade_rows), use_container_width=True)
     else:
-        st.info("当前暂无已成交交易记录。当触发 APPROVED 的买入或卖出时，明细将实时记录于此。")
+        st.info("当前暂无已成交交易记录。当前演示页面不会自动执行买卖，因此没有成交记录；后续接入模拟执行流程后才会显示交易明细。")
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     st.markdown("#### 退出可行性预检公式 (Exit Feasibility Math)")
