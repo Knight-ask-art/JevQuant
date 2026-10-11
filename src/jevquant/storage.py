@@ -251,7 +251,7 @@ class Storage:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM orders
-                WHERE status IN ('ENTRY_SUBMITTING', 'EXIT_SUBMITTING', 'PARTIALLY_FILLED', 'UNKNOWN', 'OPEN')
+                WHERE status IN ('ENTRY_SUBMITTING', 'EXIT_SUBMITTING', 'PARTIALLY_FILLED', 'UNKNOWN', 'OPEN', 'EXPIRED')
             """)
             rows = cursor.fetchall()
             return [
