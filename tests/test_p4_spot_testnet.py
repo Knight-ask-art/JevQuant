@@ -51,7 +51,7 @@ def test_testnet_adapter_create_and_fetch_order():
     assert report.client_order_id == "ord_test_001"
     assert report.exchange_order_id == "1001"
     assert report.filled_qty == Decimal("0.0001")
-    assert report.status == "CLOSED"
+    assert report.status == "FILLED"
     assert report.fee_amount == Decimal("0.006")
 
 
@@ -163,3 +163,30 @@ def test_startup_reconciliation_recovers_state(tmp_path: Path):
     assert sm.state == "LONG"
     updated_ord = store.get_order("ord_unconfirmed_01")
     assert updated_ord["status"] == "FILLED"
+
+
+def test_ccxt_closed_status_advances_executor_to_long(tmp_path: Path):
+    store = Storage(tmp_path / "ccxt_closed.db")
+    mock_ex = MagicMock()
+    mock_ex.create_order.return_value = {
+        "id": "101", "status": "closed", "filled": 0.0001, "average": 60000.0
+    }
+    adapter = BinanceTestnetAdapter(api_key="test", api_secret="test", exchange=mock_ex)
+    executor = OrderExecutor(adapter=adapter, storage=store, mode="testnet")
+    report = executor.execute_market_order("BTC/USDT", "BUY", Decimal("0.0001"), "sig_closed")
+    assert report.status == "FILLED"
+    assert executor.sm.state == "LONG"
+    assert store.get_order(report.client_order_id)["status"] == "FILLED"
+
+
+def test_canceled_partial_fill_must_require_reconciliation(tmp_path: Path):
+    store = Storage(tmp_path / "partial_cancel.db")
+    mock_ex = MagicMock()
+    mock_ex.create_order.return_value = {
+        "id": "102", "status": "canceled", "filled": 0.00005, "average": 60000.0
+    }
+    adapter = BinanceTestnetAdapter(api_key="test", api_secret="test", exchange=mock_ex)
+    executor = OrderExecutor(adapter=adapter, storage=store, mode="testnet")
+    report = executor.execute_market_order("BTC/USDT", "BUY", Decimal("0.0001"), "sig_partial")
+    assert report.status == "PARTIALLY_FILLED"
+    assert executor.sm.state == "RECONCILIATION_REQUIRED"
