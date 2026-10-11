@@ -23,6 +23,23 @@ class ExecutionReport(pydantic.BaseModel):
     timestamp_utc: str
 
 
+def normalize_order_status(status: Any, filled_qty: Decimal = Decimal("0")) -> str:
+    """Map CCXT unified statuses to internal states, preserving partial fills."""
+    normalized = str(status or "").strip().lower()
+    if normalized in ("closed", "filled"):
+        return "FILLED"
+    if normalized in ("canceled", "cancelled", "expired", "rejected"):
+        if filled_qty > 0:
+            return "PARTIALLY_FILLED"
+        return {"canceled": "CANCELED", "cancelled": "CANCELED",
+                "expired": "EXPIRED", "rejected": "REJECTED"}[normalized]
+    if normalized in ("partially_filled", "partially-filled", "partial"):
+        return "PARTIALLY_FILLED"
+    if normalized in ("open", "new", "pending"):
+        return "PARTIALLY_FILLED" if filled_qty > 0 else "OPEN"
+    return "UNKNOWN"
+
+
 class AccountBalance(pydantic.BaseModel):
     free_usdt: Decimal
     locked_usdt: Decimal
@@ -373,7 +390,7 @@ class BinanceTestnetAdapter(ExchangeAdapter):
 
         filled_qty = Decimal(str(res.get("filled", 0) or 0))
         avg_price = Decimal(str(res.get("average", 0) or 0)) if res.get("average") else None
-        status = str(res.get("status", "UNKNOWN")).upper()
+        status = normalize_order_status(res.get("status"), filled_qty)
 
         # Fee parsing
         fee_info = res.get("fee") or {}
@@ -405,7 +422,7 @@ class BinanceTestnetAdapter(ExchangeAdapter):
 
         filled_qty = Decimal(str(res.get("filled", 0) or 0))
         avg_price = Decimal(str(res.get("average", 0) or 0)) if res.get("average") else None
-        status = str(res.get("status", "UNKNOWN")).upper()
+        status = normalize_order_status(res.get("status"), filled_qty)
         target_qty = Decimal(str(res.get("amount", 0) or 0))
         fee_info = res.get("fee") or {}
         fee_cost = Decimal(str(fee_info.get("cost", 0) or 0))
@@ -430,7 +447,7 @@ class BinanceTestnetAdapter(ExchangeAdapter):
 
     def cancel_order(self, client_order_id: str, symbol: str = "BTC/USDT") -> ExecutionReport:
         res = self.exchange.cancel_order(client_order_id, symbol=symbol, params={"clientOrderId": client_order_id})
-        status = str(res.get("status", "CANCELED")).upper()
+        status = normalize_order_status(res.get("status", "canceled"), Decimal(str(res.get("filled", 0) or 0)))
         now_utc = datetime.now(timezone.utc).isoformat()
         return ExecutionReport(
             client_order_id=client_order_id,
