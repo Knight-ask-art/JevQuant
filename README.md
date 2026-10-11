@@ -4,6 +4,53 @@
 
 本金规划上限为 50 元人民币等值 USDT，不使用杠杆、不自动充值、不提现。第一目标是架构正确、可测试、可审计。
 
+## 新手快速开始：不需要 API Key，不需要交易所账户
+
+**先体验演示，再考虑策略和交易。** 以下步骤只启动合成行情演示界面；它不会调用币安下单接口，不需要资金，也不代表实时交易表现。
+
+首次安装请在项目根目录操作（Windows PowerShell）：
+
+```powershell
+git clone https://github.com/Knight-ask-art/JevQuant.git
+cd JevQuant
+py -3.13 -m venv .venv
+.\\.venv\\Scripts\\Activate.ps1
+python -m pip install -e ".[ui]"
+python -m jevquant doctor
+python -m jevquant demo
+```
+
+macOS / Linux（需先安装 Python 3.10–3.13）：
+
+```bash
+git clone https://github.com/Knight-ask-art/JevQuant.git
+cd JevQuant
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[ui]"
+python -m jevquant doctor
+python -m jevquant demo
+```
+
+浏览器访问 **http://127.0.0.1:8501** 即可查看演示。终端按 **Ctrl+C** 结束。首次演示**不需要创建 `.env`**。如果 8501 端口被占用，可改用 `python -m jevquant demo --port 8502`。
+
+| 命令 | 用途 | 是否发起真实交易 |
+|---|---|---|
+| `python -m jevquant doctor` | 检查 Python 版本、界面依赖和本地配置，提供修复提示；不连接网络 | 否 |
+| `python -m jevquant demo` | 强制安全演示配置，仅在本机启动合成行情仪表盘 | 否 |
+| `python -m jevquant --help` | 查看新手命令 | 否 |
+
+**注意**：无论本地 `.env` 是否配置 `TRADING_MODE=live` 或密钥，`demo` 都会覆盖交易模式为 `paper` 并清空传给演示子进程的项目 API 凭据。此命令**不会停止或影响其他已经运行的实盘进程**。
+
+### 常见问题
+
+- `py -3.13` 不存在：安装 Python 3.10–3.13，或将该命令替换为实际可用的 Python 解释器。
+- `ModuleNotFoundError: No module named 'jevquant'`：确认在仓库根目录激活虚拟环境后执行 `python -m pip install -e ".[ui]"`。
+- `Streamlit 未安装`：重新执行 `python -m pip install -e ".[ui]"`。
+- 端口被占用：用 `--port 8502` 指定其他空闲端口。
+- `doctor` 提示配置有误：检查 `.env` 中交易模式、数值等设置；**不用在聊天、Issue 或截图中公开 API Key**。
+- 想运行自动实盘：此快速开始**不包含自动交易主循环**，请先阅读安全说明并完成测试网端到端验证，不能将 Demo 当成实盘。
+
 ## 架构原则与安全红线
 
 1. **AI 与交易权限彻底分离**：TypeSafe Jev 仅提供方向建议（BUY / SELL / HOLD），无权决定下单金额、撤销风控或触碰 API 私钥。
