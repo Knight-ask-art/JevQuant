@@ -253,6 +253,41 @@ I18N = {
     }
 }
 
+PRACTICE_REASON_TEXT = {
+    "zh": {
+        "PAPER_BUY_FILLED": "模拟买入成功，已扣除滑点和手续费",
+        "PAPER_SELL_FILLED": "模拟卖出成功，虚拟 USDT 已到账",
+        "SYNTHETIC_CANDLE_ADVANCED": "已切换到下一根合成 K 线",
+        "SCENARIO_COMPLETE": "练习数据已经结束，请重置后再练习",
+        "NO_PAPER_POSITION": "当前没有 BTC 持仓，不能卖出",
+        "DEMO_EXIT_BELOW_MIN_NOTIONAL": "虚拟卖出金额低于示例最低成交额；此时不能卖出",
+        "REJECT_USDT_BELOW_MIN_NOTIONAL": "虚拟余额不足以满足示例最低成交额",
+        "REJECT_ROUNDED_NOTIONAL_BELOW_MIN": "数量取整后，买入金额低于示例最低成交额",
+        "REJECT_EXIT_MIN_NOTIONAL": "风控拒绝：假设价格下跌后，持仓可能无法满足最低卖出金额",
+        "REJECT_MAX_DAILY_ENTRIES_EXCEEDED": "已达到本练习的模拟开仓次数限制",
+        "REJECT_POSITION_ALREADY_OPEN": "已经持有 BTC，不能重复买入",
+        "REJECT_DAILY_LOSS_LIMIT_REACHED": "模拟亏损达到风控熔断阈值",
+        "REJECT_QTY_BELOW_MIN_QTY": "虚拟买入数量低于最低数量",
+        "PAPER_EXECUTION_REJECTED": "虚拟账户模拟成交失败；请检查可用余额",
+    },
+    "en": {
+        "PAPER_BUY_FILLED": "Paper buy filled, including simulated slippage and fees",
+        "PAPER_SELL_FILLED": "Paper sell filled, virtual USDT credited",
+        "SYNTHETIC_CANDLE_ADVANCED": "Advanced to the next fictional candle",
+        "SCENARIO_COMPLETE": "End of exercise; reset to try again",
+        "NO_PAPER_POSITION": "No BTC holding available to sell",
+        "DEMO_EXIT_BELOW_MIN_NOTIONAL": "Virtual sell value is below the example minimum notional",
+        "REJECT_USDT_BELOW_MIN_NOTIONAL": "Virtual cash is below the example minimum notional",
+        "REJECT_ROUNDED_NOTIONAL_BELOW_MIN": "Rounded buy value is below the example minimum notional",
+        "REJECT_EXIT_MIN_NOTIONAL": "Risk gate: position may be too small to sell after a simulated drop",
+        "REJECT_MAX_DAILY_ENTRIES_EXCEEDED": "Practice entry limit reached",
+        "REJECT_POSITION_ALREADY_OPEN": "You already hold BTC; another buy is blocked",
+        "REJECT_DAILY_LOSS_LIMIT_REACHED": "Practice daily loss circuit breaker triggered",
+        "REJECT_QTY_BELOW_MIN_QTY": "Virtual buy size is below the example minimum",
+        "PAPER_EXECUTION_REJECTED": "Paper fill failed; check available virtual balance",
+    },
+}
+
 t = I18N[st.session_state.lang]
 
 # Styling CSS (Dark Industrial Terminal without emoji)
@@ -798,7 +833,7 @@ elif st.session_state.nav_tab == "practice":
 
         if event is not None:
             status_label = t["practice_success"] if event.approved else t["practice_rejected"]
-            status_message = f"{status_label}: {event.reason}"
+            status_message = f"{status_label}: {PRACTICE_REASON_TEXT[st.session_state.lang].get(event.reason, event.reason)} ({event.reason})"
             if event.approved:
                 st.success(status_message)
             else:
@@ -822,7 +857,7 @@ elif st.session_state.nav_tab == "practice":
                     t["practice_step"]: e.candle_number,
                     t["practice_action_label"]: e.action,
                     t["practice_status_label"]: t["practice_success"] if e.approved else t["practice_rejected"],
-                    t["practice_reason_label"]: e.reason,
+                    t["practice_reason_label"]: PRACTICE_REASON_TEXT[st.session_state.lang].get(e.reason, e.reason),
                     t["practice_price"]: str(e.price),
                     t["practice_quantity_label"]: str(e.quantity),
                 }
