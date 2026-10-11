@@ -190,3 +190,66 @@ def test_canceled_partial_fill_must_require_reconciliation(tmp_path: Path):
     report = executor.execute_market_order("BTC/USDT", "BUY", Decimal("0.0001"), "sig_partial")
     assert report.status == "PARTIALLY_FILLED"
     assert executor.sm.state == "RECONCILIATION_REQUIRED"
+
+
+@pytest.mark.parametrize(("initial_state", "side"), [
+    ("LONG", "BUY"),
+    ("FLAT", "SELL"),
+    ("ENTRY_SUBMITTING", "BUY"),
+    ("EXIT_SUBMITTING", "SELL"),
+    ("HALTED", "BUY"),
+    ("RECONCILIATION_REQUIRED", "SELL"),
+])
+def test_executor_rejects_orders_in_invalid_states(tmp_path: Path, initial_state: str, side: str):
+    store = Storage(tmp_path / "invalid_state.db")
+    adapter = MagicMock()
+    sm = OrderStateMachine(initial_state=initial_state)
+    executor = OrderExecutor(adapter=adapter, storage=store, state_machine=sm)
+
+    with pytest.raises(RuntimeError, match="Order execution blocked"):
+        executor.execute_market_order("BTC/USDT", side, Decimal("0.0001"), "sig_bad")
+
+    assert sm.state == initial_state
+    adapter.create_order.assert_not_called()
+    assert store.get_unreconciled_orders() == []
+
+
+@pytest.mark.parametrize(("side", "quantity"), [
+    ("HOLD", Decimal("0.0001")),
+    ("buy", Decimal("0.0001")),
+    ("BUY", Decimal("0")),
+    ("BUY", Decimal("-0.001")),
+    ("BUY", Decimal("NaN")),
+    ("BUY", Decimal("Infinity")),
+])
+def test_executor_rejects_invalid_intent_before_submission(
+    tmp_path: Path, side: str, quantity: Decimal
+):
+    store = Storage(tmp_path / "invalid_intent.db")
+    adapter = MagicMock()
+    executor = OrderExecutor(adapter=adapter, storage=store)
+    with pytest.raises(ValueError):
+        executor.execute_market_order("BTC/USDT", side, quantity, "sig_invalid")
+    assert executor.sm.state == "FLAT"
+    adapter.create_order.assert_not_called()
+    assert store.get_unreconciled_orders() == []
+
+
+def test_executor_allows_sell_from_long_position(tmp_path: Path):
+    store = Storage(tmp_path / "valid_exit.db")
+    adapter = MagicMock()
+    adapter.create_order.return_value = ExecutionReport(
+        client_order_id="placeholder", exchange_order_id="100",
+        symbol="BTC/USDT", side="SELL", order_type="MARKET",
+        status="FILLED", target_qty=Decimal("0.0001"),
+        filled_qty=Decimal("0.0001"),
+        timestamp_utc="2026-10-11T00:00:00Z",
+    )
+    sm = OrderStateMachine(initial_state="LONG")
+    executor = OrderExecutor(adapter=adapter, storage=store, state_machine=sm)
+    report = executor.execute_market_order(
+        "BTC/USDT", "SELL", Decimal("0.0001"), "sig_exit"
+    )
+    assert report.status == "FILLED"
+    assert sm.state == "FLAT"
+    adapter.create_order.assert_called_once()
