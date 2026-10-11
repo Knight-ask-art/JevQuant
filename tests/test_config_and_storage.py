@@ -71,3 +71,26 @@ def test_storage_candles_roundtrip(tmp_path: Path):
     assert len(candles) == 1
     assert candles[0]["close"] == Decimal("65300.00")
     assert isinstance(candles[0]["volume"], Decimal)
+
+
+def test_get_candles_returns_latest_window_in_chronological_order(tmp_path: Path):
+    store = Storage(tmp_path / "latest_window.db")
+    for hour in range(1, 7):
+        store.save_candle({
+            "symbol": "BTC/USDT", "timeframe": "1h",
+            "candle_close_utc": f"2026-10-11T{hour:02d}:00:00+00:00",
+            "open": Decimal(str(hour)), "high": Decimal(str(hour)),
+            "low": Decimal(str(hour)), "close": Decimal(str(hour)),
+            "volume": Decimal("1"),
+        })
+
+    latest = store.get_candles("BTC/USDT", "1h", limit=3)
+    assert [c["close"] for c in latest] == [
+        Decimal("4"), Decimal("5"), Decimal("6")
+    ]
+    assert [c["candle_close_utc"] for c in latest] == [
+        "2026-10-11T04:00:00+00:00",
+        "2026-10-11T05:00:00+00:00",
+        "2026-10-11T06:00:00+00:00",
+    ]
+    assert store.get_candles("ETH/USDT", "1h", limit=3) == []

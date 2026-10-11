@@ -177,10 +177,12 @@ class Storage:
             cursor.execute("""
                 SELECT * FROM candles
                 WHERE symbol = ? AND timeframe = ?
-                ORDER BY candle_close_utc ASC
+                ORDER BY candle_close_utc DESC
                 LIMIT ?
             """, (symbol, timeframe, limit))
-            rows = cursor.fetchall()
+            # Fetch the newest window, then return it in chronological order
+            # so technical indicators can safely consume oldest -> newest.
+            rows = list(reversed(cursor.fetchall()))
             return [
                 {
                     "symbol": r["symbol"],
