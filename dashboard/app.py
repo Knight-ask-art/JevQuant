@@ -548,44 +548,45 @@ latest_candle = candles[-1]
 current_price = latest_candle["close"]
 
 # Engine & Strategy Evaluation
-jev_engine = JevEngine(api_key=cfg.typesafe_api_key)
-ai_strategy = JevAIStrategy(jev_engine=jev_engine)
-sma_strategy = SmaBaselineStrategy()
+if st.session_state.nav_tab == "monitor":
+    jev_engine = JevEngine(api_key=cfg.typesafe_api_key)
+    ai_strategy = JevAIStrategy(jev_engine=jev_engine)
+    sma_strategy = SmaBaselineStrategy()
 
-ai_sig = ai_strategy.evaluate(
-    symbol=cfg.symbol,
-    candle_close_utc=latest_candle["candle_close_utc"],
-    indicators=indicators,
-    current_close=current_price,
-    has_position=paper.has_position,
-)
+    ai_sig = ai_strategy.evaluate(
+        symbol=cfg.symbol,
+        candle_close_utc=latest_candle["candle_close_utc"],
+        indicators=indicators,
+        current_close=current_price,
+        has_position=paper.has_position,
+    )
 
-sma_sig = sma_strategy.evaluate(
-    symbol=cfg.symbol,
-    candle_close_utc=latest_candle["candle_close_utc"],
-    indicators=indicators,
-    has_position=paper.has_position,
-)
+    sma_sig = sma_strategy.evaluate(
+        symbol=cfg.symbol,
+        candle_close_utc=latest_candle["candle_close_utc"],
+        indicators=indicators,
+        has_position=paper.has_position,
+    )
 
-market_rules = {
-    "symbol": "BTC/USDT",
-    "status": "TRADING",
-    "min_notional": Decimal("5.00000000"),
-    "step_size": Decimal("0.00001"),
-    "min_qty": Decimal("0.00001"),
-    "min_price": Decimal("0.01"),
-    "max_price": Decimal("1000000.00"),
-    "tick_size": Decimal("0.01"),
-}
+    market_rules = {
+        "symbol": "BTC/USDT",
+        "status": "TRADING",
+        "min_notional": Decimal("5.00000000"),
+        "step_size": Decimal("0.00001"),
+        "min_qty": Decimal("0.00001"),
+        "min_price": Decimal("0.01"),
+        "max_price": Decimal("1000000.00"),
+        "tick_size": Decimal("0.01"),
+    }
 
-risk_decision = risk.evaluate_entry(
-    signal_action=ai_sig.action,
-    current_price=current_price,
-    market_rules=market_rules,
-    available_usdt=paper.usdt_balance,
-    has_position=paper.has_position,
-    today_realized_loss_usdt=paper.today_realized_loss_usdt,
-)
+    risk_decision = risk.evaluate_entry(
+        signal_action=ai_sig.action,
+        current_price=current_price,
+        market_rules=market_rules,
+        available_usdt=paper.usdt_balance,
+        has_position=paper.has_position,
+        today_realized_loss_usdt=paper.today_realized_loss_usdt,
+    )
 
 
 # ---------------- PAGE 1: MONITOR (决策监控台) ----------------
