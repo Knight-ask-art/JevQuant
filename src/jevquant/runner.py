@@ -13,6 +13,7 @@ from jevquant.exchange import (
     BinanceTestnetAdapter,
     ExchangeAdapter,
     ExecutionReport,
+    normalize_order_status,
 )
 from jevquant.orders import OrderExecutor, OrderStateMachine
 from jevquant.risk import RiskManager
@@ -194,7 +195,7 @@ class BinanceLiveAdapter(ExchangeAdapter):
 
         filled_qty = Decimal(str(res.get("filled", 0) or 0))
         avg_price = Decimal(str(res.get("average", 0) or 0)) if res.get("average") else None
-        status = str(res.get("status", "UNKNOWN")).upper()
+        status = normalize_order_status(res.get("status"), filled_qty)
         fee_info = res.get("fee") or {}
         fee_cost = Decimal(str(fee_info.get("cost", 0) or 0))
         fee_curr = fee_info.get("currency")
@@ -225,7 +226,7 @@ class BinanceLiveAdapter(ExchangeAdapter):
 
         filled_qty = Decimal(str(res.get("filled", 0) or 0))
         avg_price = Decimal(str(res.get("average", 0) or 0)) if res.get("average") else None
-        status = str(res.get("status", "UNKNOWN")).upper()
+        status = normalize_order_status(res.get("status"), filled_qty)
         target_qty = Decimal(str(res.get("amount", 0) or 0))
         fee_info = res.get("fee") or {}
         fee_cost = Decimal(str(fee_info.get("cost", 0) or 0))
@@ -250,7 +251,7 @@ class BinanceLiveAdapter(ExchangeAdapter):
 
     def cancel_order(self, client_order_id: str, symbol: str = "BTC/USDT") -> ExecutionReport:
         res = self.exchange.cancel_order(client_order_id, symbol=symbol, params={"clientOrderId": client_order_id})
-        status = str(res.get("status", "CANCELED")).upper()
+        status = normalize_order_status(res.get("status", "canceled"), Decimal(str(res.get("filled", 0) or 0)))
         now_utc = datetime.now(timezone.utc).isoformat()
         return ExecutionReport(
             client_order_id=client_order_id,
