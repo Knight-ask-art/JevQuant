@@ -29,6 +29,30 @@
 - 页面中的暂停/恢复按钮只控制这个会话内的风险管理实例，**不能暂停其他进程、测试网或真实交易**。
 - 请勿根据演示行情、延迟数字或页面上的控制按钮判断实盘交易状态。真实交易运行前必须单独完成端到端执行、对账与安全测试。
 
+## 离线决策事件录制与回放（实验性）
+
+借鉴 [jev-market-reflex](https://github.com/zzsong1023/jev-market-reflex) 的「录制 → 离线回放」分离设计，增加了 **只读 JSONL 决策事件模块**。目前是独立的开发者 API，尚未接入自动交易主循环或 Streamlit；不会自动记录订单、连接交易所或执行交易。严格限制保存字段，不写入模型原始输出、用户账户或 API 密钥。
+
+```python
+from pathlib import Path
+from jevquant.recording import make_decision_frame, write_recording, read_recording
+
+frame = make_decision_frame(
+    captured_at_utc="2026-10-11T15:00:00Z",
+    candle_close_utc="2026-10-11T14:00:00Z",
+    symbol="BTC/USDT",
+    signal_id="example-001",
+    action="HOLD",
+    reason_code="REPLAY_EXAMPLE",
+    confidence=None,
+    source_mode="demo",
+)
+write_recording(Path("data/demo-recording.jsonl"), [frame])
+print(list(read_recording(Path("data/demo-recording.jsonl"))))
+```
+
+录制文件使用排他创建，不覆盖已有文件。回放只解析并校验数据，不进行模型推理和真实/模拟下单。生产环境引入历史回放时必须保留来源标识、隔离交易执行器，并对文件权限、文件大小和保留周期做额外限制。
+
 ## 常用命令
 
 ```powershell
