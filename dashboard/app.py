@@ -320,6 +320,8 @@ paper = st.session_state.paper_account
 risk = st.session_state.risk_manager
 order_sm = st.session_state.order_sm
 
+st.warning("演示模式 / DEMO ONLY：本页面 BTC 行情为合成 K 线，ETH/SOL 报价、活动日志及部分 KPI 为示例数据。这里的暂停按钮仅影响当前页面会话，不能停止测试网或实盘进程。请勿据此进行真实交易。")
+
 st.markdown("""
 <div class="reflex-header">
     <div>
@@ -327,13 +329,15 @@ st.markdown("""
         <div class="reflex-subtitle">CONTINUOUS TYPED DECISION ENGINE · ZERO LOOKAHEAD GUARANTEE</div>
     </div>
     <div style="display: flex; gap: 10px;">
-        <span class="mode-badge-live"><span class="live-dot"></span>RECORDED LIVE RUN</span>
-        <span class="mode-badge-paper">PAPER TRADING</span>
-        <span class="mode-badge-paper">JEV REPLAY</span>
+        <span class="mode-badge-live"><span class="live-dot"></span>DEMO DATA · NOT LIVE</span>
+        <span class="mode-badge-paper">PAPER SIMULATION</span>
+        <span class="mode-badge-paper">SYNTHETIC CANDLES</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
+# Dashboard preview only: never present synthetic candles as exchange quotes.
+# This page does not execute real exchange orders.
 def get_or_create_market_data():
     now_ts = int(time.time() // 3600 * 3600)
     data = []
@@ -401,7 +405,7 @@ kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 with kpi1:
     st.markdown("""
     <div class="kpi-block">
-        <div class="kpi-num">4,752</div>
+        <div class="kpi-num">DEMO</div>
         <div class="kpi-label">JEV DECISIONS</div>
     </div>
     """, unsafe_allow_html=True)
@@ -415,14 +419,14 @@ with kpi2:
 with kpi3:
     st.markdown("""
     <div class="kpi-block">
-        <div class="kpi-num">268<span style="font-size:1.1rem;color:#64748b"> ms</span></div>
+        <div class="kpi-num">DEMO<span style="font-size:1.1rem;color:#64748b"> ms</span></div>
         <div class="kpi-label">P95 LATENCY</div>
     </div>
     """, unsafe_allow_html=True)
 with kpi4:
     st.markdown("""
     <div class="kpi-block">
-        <div class="kpi-num">21<span style="font-size:1.1rem;color:#64748b"> / min</span></div>
+        <div class="kpi-num">DEMO<span style="font-size:1.1rem;color:#64748b"> / min</span></div>
         <div class="kpi-label">SAMPLING RATE</div>
     </div>
     """, unsafe_allow_html=True)
@@ -497,7 +501,7 @@ with col_mid:
     <div class="radar-container">
         <div class="radar-pulse-ring"></div>
         <div class="radar-circle">
-            <div class="radar-title">REAL-TIME</div>
+            <div class="radar-title">DEMO REPLAY</div>
             <div class="radar-name">JEV</div>
             <div style="font-size:0.62rem; color:#94a3b8; letter-spacing:0.12em;">DECISION ENGINE</div>
             <div class="radar-ms">{ai_sig.metadata.get('latency_ms', 234) or 234} ms</div>
@@ -545,7 +549,7 @@ with col_right:
 st.markdown("""
 <div class="heartbeat-bar">
     <div style="font-size: 0.72rem; letter-spacing: 0.12em; color: #64748b; text-transform: uppercase;">
-        DECISION HEARTBEAT <span style="color: #94a3b8; margin-left: 6px;">3 COMPLETED · 234 MS</span>
+        DEMO HEARTBEAT <span style="color: #94a3b8; margin-left: 6px;">3 COMPLETED · 234 MS</span>
     </div>
     <div class="heartbeat-timeline">
         <div class="timeline-node"></div>
@@ -575,7 +579,7 @@ with b_col1:
     """, unsafe_allow_html=True)
 
 with b_col2:
-    st.markdown("<div style='font-size:0.72rem; letter-spacing:0.14em; color:#64748b; margin-bottom:8px;'>REAL-TIME ACTION LOG</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size:0.72rem; letter-spacing:0.14em; color:#64748b; margin-bottom:8px;'>SAMPLE ACTION LOG · DEMO</div>", unsafe_allow_html=True)
     st.markdown("""
     <div class="log-panel">
         <div>● 08:03:59.030 &nbsp; SOL &nbsp; HOLD &nbsp; 29% &nbsp; 234 ms</div>
@@ -594,10 +598,10 @@ ctrl_col1, ctrl_col2 = st.columns([2, 1])
 with ctrl_col1:
     st.markdown("""
     <div style="font-size: 0.72rem; letter-spacing: 0.12em; color: #64748b; text-transform: uppercase;">
-        LIVE CIRCUIT BREAKER & SAFETY OVERRIDE (PHASE 5)
+        LOCAL DEMO PAUSE (NOT LIVE TRADING)
     </div>
     <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 4px;">
-        Emergency kill switch immediately halts all new entry orders across Paper, Testnet, and Live.
+        This local demo control only pauses entries in this Streamlit session. It does NOT halt Testnet or Live processes.
     </div>
     """, unsafe_allow_html=True)
 
