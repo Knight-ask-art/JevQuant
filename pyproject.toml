@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jevquant"
+version = "0.1.0"
+description = "Jev + Binance Spot Lightweight AI Quantitative Trading System"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "ccxt>=4.4.0",
+    "pandas>=2.2.0",
+    "typesafe-sdk>=0.7.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.7.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.14.0",
+    "streamlit>=1.35.0"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+python_files = ["test_*.py"]

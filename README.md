@@ -1,0 +1,37 @@
+# JevQuant
+
+基于 **TypeSafe Jev + 币安现货 BTC/USDT** 的轻量级自动交易研究项目。用真实公开行情计算技术指标，由 Jev 生成结构化交易建议，经独立风控审批后由统一订单接口支持模拟盘（Paper）、测试网（Testnet）与受限小额实盘。
+
+本金规划上限为 50 元人民币等值 USDT，不使用杠杆、不自动充值、不提现。第一目标是架构正确、可测试、可审计。
+
+## 架构原则与安全红线
+
+1. **AI 与交易权限彻底分离**：TypeSafe Jev 仅提供方向建议（BUY / SELL / HOLD），无权决定下单金额、撤销风控或触碰 API 私钥。
+2. **退出可行性预检（Exit Feasibility）**：开仓前计算若遇逆向行情（如 -3% 跌幅），剩余持仓是否仍满足交易所最小成交额要求（`MIN_NOTIONAL`）。如不能合法卖出则坚决禁止买入。
+3. **资金与精度安全**：涉及资金与数量计算全部强制使用 `decimal.Decimal`，拒绝二进制浮点数误差。
+4. **实盘三重门禁**：`TRADING_MODE=live` + `ENABLE_LIVE_TRADING=true` + CLI 显式 `--confirm-live`，并在运行前执行全面的 preflight 规则检查。
+5. **可审计性**：每根 K 线、每个决策信号（带唯一 `signal_id`）、每笔订单（唯一 `client_order_id`）与规则快照完整记录在 SQLite 中。
+
+## 开发阶段实施完成情况
+
+- [x] **P1 行情与项目骨架**：src-layout 架构、CCXT 行情接入、已收盘 1h K 线过滤、动态 exchangeInfo 规则解析与快照、SQLite 基础表。
+- [x] **P2 策略与 Jev**：SMA/RSI/ATR 指标引擎、TypeSafe SDK 封装、BUY/SELL/HOLD、SMA 对照策略、无未来函数保证。
+- [x] **P3 模拟交易**：Paper 账户撮合、滑点与手续费模拟、退出可行性计算、每日亏损熔断。
+- [x] **P4 Spot Testnet**：测试网独立密钥、断网重连、重启对账与幂等保障。
+- [x] **P5 受限实盘**：实盘三重门禁、Preflight 准入前置检查、资金 50 元上限拦截、UI/CLI 应急暂停开关。
+
+## 常用命令
+
+```powershell
+# 1. 激活虚拟环境 (Python 3.13)
+.\.venv\Scripts\activate
+
+# 2. 运行全量测试套件 (31 个自动化测试)
+pytest -v
+
+# 3. 运行公共行情与规则探测 (零 API Key 需求)
+python -m jevquant.exchange
+
+# 4. 启动 Jev Market Reflex 监控仪表盘 (端口 8501)
+streamlit run dashboard/app.py
+```
