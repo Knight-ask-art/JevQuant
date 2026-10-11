@@ -95,6 +95,7 @@ I18N = {
         "practice_status_label": "结果",
         "practice_reason_label": "原因",
         "practice_quantity_label": "数量 BTC",
+        "practice_fee_label": "模拟手续费 USDT",
         "demo_banner": "[演示模式] 当前页面采用 1h 历史回放/合成行情进行模拟演练。页面内的暂停仅对当前网页生效，不直接控制后台独立进程。",
         "kpi_decisions": "累计决策次数",
         "kpi_avg_latency": "平均响应延迟",
@@ -189,6 +190,7 @@ I18N = {
         "practice_status_label": "Result",
         "practice_reason_label": "Reason",
         "practice_quantity_label": "BTC Quantity",
+        "practice_fee_label": "Paper Fee USDT",
         "demo_banner": "[DEMO MODE] This page displays simulated/historical 1h replay data. The pause control affects this browser session only.",
         "kpi_decisions": "Total Jev Decisions",
         "kpi_avg_latency": "Avg Latency",
@@ -860,6 +862,7 @@ elif st.session_state.nav_tab == "practice":
                     t["practice_reason_label"]: PRACTICE_REASON_TEXT[st.session_state.lang].get(e.reason, e.reason),
                     t["practice_price"]: str(e.price),
                     t["practice_quantity_label"]: str(e.quantity),
+                    t["practice_fee_label"]: str(e.fee_usdt),
                 }
                 for e in reversed(practice.events)
             ]), use_container_width=True, hide_index=True)
