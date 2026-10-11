@@ -210,8 +210,8 @@ class OrderExecutor:
                             self.sm.transition_to("LONG")
                         else:
                             self.sm.transition_to("FLAT")
-                    elif report.status in ("CANCELED", "REJECTED"):
-                        self.sm.transition_to("FLAT")
+                    elif report.status in ("CANCELED", "REJECTED", "EXPIRED"):
+                        self.sm.transition_to("RECONCILIATION_REQUIRED" if report.filled_qty > 0 else "FLAT")
                     elif report.status == "PARTIALLY_FILLED":
                         self.sm.transition_to("RECONCILIATION_REQUIRED")
                 else:
@@ -304,8 +304,8 @@ class OrderExecutor:
             self.sm.transition_to("LONG" if side == "BUY" else "FLAT")
         elif report.status == "PARTIALLY_FILLED":
             self.sm.transition_to("RECONCILIATION_REQUIRED")
-        elif report.status in ("CANCELED", "REJECTED"):
-            self.sm.transition_to("FLAT")
+        elif report.status in ("CANCELED", "REJECTED", "EXPIRED"):
+            self.sm.transition_to("RECONCILIATION_REQUIRED" if report.filled_qty > 0 else "FLAT")
         else:
             self.sm.transition_to("RECONCILIATION_REQUIRED")
 
