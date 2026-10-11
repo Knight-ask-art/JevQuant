@@ -132,3 +132,40 @@ def test_jev_engine_fallback_on_network_or_api_exception():
         # Fails closed
         assert decision.action == "HOLD"
         assert "JEV_ERROR_FALLBACK_HOLD" in decision.reason_code
+
+
+@pytest.mark.parametrize(("confidence", "expected_action", "expected_reason"), [
+    (0.55, "BUY", "JEV_DECISION_SUCCESS"),
+    (0.54, "HOLD", "JEV_LOW_CONFIDENCE_HOLD"),
+    (None, "HOLD", "JEV_INVALID_CONFIDENCE_HOLD"),
+    (float("nan"), "HOLD", "JEV_INVALID_CONFIDENCE_HOLD"),
+    (float("inf"), "HOLD", "JEV_INVALID_CONFIDENCE_HOLD"),
+    (-0.1, "HOLD", "JEV_INVALID_CONFIDENCE_HOLD"),
+    (1.1, "HOLD", "JEV_INVALID_CONFIDENCE_HOLD"),
+])
+def test_jev_strategy_confidence_gate(confidence, expected_action, expected_reason):
+    engine = MagicMock(spec=JevEngine)
+    engine.decide.return_value = JevDecision(
+        action="BUY", confidence=confidence, latency_ms=12, model_name="jev-latest",
+        reason_code="JEV_DECISION_SUCCESS", timestamp_utc="2026-10-11T12:00:00Z",
+    )
+    strategy = JevAIStrategy(jev_engine=engine)
+    result = strategy.evaluate(
+        symbol="BTC/USDT", candle_close_utc="2026-10-11T12:00:00Z",
+        indicators={
+            "sma20": Decimal("62000"), "sma60": Decimal("61000"),
+            "rsi14": Decimal("60"), "atr14": Decimal("400"),
+        },
+        current_close=Decimal("62000"),
+    )
+    assert result.action == expected_action
+    assert result.reason_code == expected_reason
+    assert result.metadata["raw_action"] == "BUY"
+
+
+def test_jev_confidence_gate_preserves_hold_and_validates_configuration():
+    strategy = JevAIStrategy(min_confidence=Decimal("0.8"))
+    assert strategy.min_confidence == Decimal("0.8")
+    for invalid in (Decimal("-0.01"), Decimal("1.01"), Decimal("NaN")):
+        with pytest.raises(ValueError, match="min_confidence"):
+            JevAIStrategy(min_confidence=invalid)
