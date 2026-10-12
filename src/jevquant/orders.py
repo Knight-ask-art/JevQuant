@@ -226,10 +226,18 @@ class OrderExecutor:
         quantity: Decimal,
         signal_id: str,
     ) -> ExecutionReport:
-        if self.sm.state == "HALTED":
-            raise RuntimeError("Order execution blocked: State machine is HALTED.")
-        if self.sm.state == "RECONCILIATION_REQUIRED":
-            raise RuntimeError("Order execution blocked: Reconciliation required before trading.")
+        # Validate intent before changing state or writing an order audit row.
+        # The executor is the final gate before the exchange adapter.
+        if side not in ("BUY", "SELL"):
+            raise ValueError("Order side must be BUY or SELL.")
+        if not quantity.is_finite() or quantity <= Decimal("0"):
+            raise ValueError("Order quantity must be finite and positive.")
+        required_state = "FLAT" if side == "BUY" else "LONG"
+        if self.sm.state != required_state:
+            raise RuntimeError(
+                f"Order execution blocked: {side} requires {required_state} "
+                f"state (current: {self.sm.state})."
+            )
 
         cid = self.sm.generate_client_order_id(signal_id, side)
         now_utc = datetime.now(timezone.utc).isoformat()
