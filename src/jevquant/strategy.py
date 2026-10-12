@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import hashlib
 from typing import Any, Dict, Optional
 import pydantic
@@ -85,10 +85,14 @@ class JevAIStrategy:
         jev_engine: Optional[JevEngine] = None,
         name: str = "jev_system_one",
         version: str = "v1.0",
+        min_confidence: Decimal = Decimal("0.55"),
     ):
         self.engine = jev_engine or JevEngine()
         self.name = name
         self.version = version
+        self.min_confidence = Decimal(str(min_confidence))
+        if not self.min_confidence.is_finite() or not Decimal("0") <= self.min_confidence <= Decimal("1"):
+            raise ValueError("min_confidence must be finite and in [0, 1]")
 
     def evaluate(
         self,
@@ -116,15 +120,36 @@ class JevAIStrategy:
 
         decision: JevDecision = self.engine.decide(market_state)
 
+        # An AI recommendation is advisory; no BUY/SELL is actionable without
+        # a finite, in-range confidence meeting the configured threshold.
+        action = decision.action
+        reason = decision.reason_code
+        if action not in ("BUY", "SELL", "HOLD"):
+            action = "HOLD"
+            reason = "JEV_INVALID_ACTION_HOLD"
+        elif action in ("BUY", "SELL"):
+            try:
+                confidence = Decimal(str(decision.confidence))
+            except (InvalidOperation, ValueError):
+                confidence = Decimal("NaN")
+            if not confidence.is_finite() or not Decimal("0") <= confidence <= Decimal("1"):
+                action = "HOLD"
+                reason = "JEV_INVALID_CONFIDENCE_HOLD"
+            elif confidence < self.min_confidence:
+                action = "HOLD"
+                reason = "JEV_LOW_CONFIDENCE_HOLD"
+
         return SignalOutput(
             signal_id=sig_id,
             symbol=symbol,
             candle_close_utc=candle_close_utc,
             strategy_name=self.name,
             strategy_version=self.version,
-            action=decision.action,
-            reason_code=decision.reason_code,
+            action=action,
+            reason_code=reason,
             metadata={
+                "raw_action": decision.action,
+                "confidence_gate": str(self.min_confidence),
                 "confidence": decision.confidence,
                 "latency_ms": decision.latency_ms,
                 "model_name": decision.model_name,
