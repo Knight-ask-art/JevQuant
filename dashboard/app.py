@@ -14,6 +14,7 @@ from jevquant.exchange import BinancePublicAdapter
 from jevquant.indicators import compute_indicators
 from jevquant.jev_engine import JevEngine
 from jevquant.orders import OrderStateMachine, PaperAccount
+from jevquant.presentation import format_confidence, format_latency_ms
 from jevquant.risk import RiskManager
 from jevquant.strategy import JevAIStrategy, SmaBaselineStrategy
 
@@ -66,17 +67,20 @@ I18N = {
         "nav_ledger": "模拟账本与持仓",
         "nav_settings": "系统与风控设置",
         "nav_docs": "架构与安全规则",
-        "demo_banner": "[演示模式] 当前页面采用 1h 历史回放/合成行情进行模拟演练。页面内的暂停仅对当前网页生效，不直接控制后台独立进程。",
+        "demo_banner": "[演示模式] 当前页面显示的是合成行情与示例数据，不代表实时报价或模型绩效。暂停按钮只影响本网页会话，不控制后台交易进程。",
+        "beginner_guide_title": "第一次使用？了解页面上的数字和按钮",
+        "beginner_guide_body": "这是一个无真实订单的示例界面。BUY / SELL / HOLD 分别表示建议买入、建议卖出和观望，不是直接下单指令。置信度显示“—”表示模型没有给出可信的数值，绝不自动补成 65%。Paper 余额是当前网页会话内的模拟数据；这里的按钮无法暂停其他进程。建议先阅读“架构与安全规则”，再考虑测试网。",
+        "mode_preview_notice": "交易模式选项仅用于展示，本页保存操作不会启动测试网、启用实盘或修改 .env 配置。",
         "kpi_decisions": "累计决策次数",
         "kpi_avg_latency": "平均响应延迟",
         "kpi_p95_latency": "P95 峰值延迟",
         "kpi_sample_rate": "指标采样周期",
         "kpi_sample_rate_val": "1小时 / 收盘K线",
-        "sec_snapshots": "市场状态快照 (已收盘 1H K线)",
+        "sec_snapshots": "合成行情快照 (示例 1H K线)",
         "sec_decision_out": "AI 与基线决策输出",
         "sec_causal_chain": "决策因果链 (LATEST CAUSAL CHAIN)",
-        "sec_action_log": "实时动作审计日志",
-        "radar_title": "实时决策核心",
+        "sec_action_log": "示例动作日志（非实时）",
+        "radar_title": "演示决策核心",
         "radar_sub": "结构化 CHOICE 引擎",
         "card_price": "最新价格",
         "card_indicators": "指标快照",
@@ -90,12 +94,12 @@ I18N = {
         "portfolio_btc": "持有 BTC",
         "portfolio_budget": "初始规划预算",
         "heartbeat_title": "决策心跳脉冲",
-        "heartbeat_meta": "最近完成 3 次评估 · 平均 234 ms",
+        "heartbeat_meta": "演示模式：未采集持续执行统计",
         "risk_status": "风控审批状态",
         "exit_feasibility": "逆向退出可行性预检",
-        "emergency_halt": "紧急暂停开仓",
-        "resume_trading": "恢复系统运行",
-        "halt_desc": "触发后立即切断一切新买入开仓许可，保留既有仓位监控与退出权限。",
+        "emergency_halt": "暂停本页演示入场检查",
+        "resume_trading": "恢复本页演示检查",
+        "halt_desc": "仅改变本页会话的风险检查状态，不会暂停或恢复测试网、实盘及其他进程。",
         # Settings
         "settings_title": "系统运行与风控设置",
         "settings_subtitle": "在此配置交易模式、本金上限、风控熔断阈值与网络代理，防止未经授权的资金敞口。",
@@ -121,7 +125,7 @@ I18N = {
         "set_proxy_url": "HTTP / HTTPS 代理地址",
         "set_proxy_btn": "测试币安接口连通性 (检验 451 限制)",
         "set_save_btn": "保存并更新当前设置",
-        "set_save_ok": "设置已成功更新并生效于当前风控引擎。",
+        "set_save_ok": "已更新本网页会话中的演示风控参数；未修改 .env 或后台交易进程。",
         # Docs
         "docs_title": "JevQuant 核心设计哲学与安全规则",
         "doc_p1": "1. 50 元极小本金的特殊限制：币安 BTC/USDT 存在最小下单金额（通常约 5 USDT），50 元人民币本金无法进行网格或分批补仓，每一笔交易必须全额核算。",
@@ -135,17 +139,20 @@ I18N = {
         "nav_ledger": "Paper Ledger",
         "nav_settings": "Settings & Risk",
         "nav_docs": "Architecture & Invariants",
-        "demo_banner": "[DEMO MODE] This page displays simulated/historical 1h replay data. The pause control affects this browser session only.",
+        "demo_banner": "[DEMO MODE] This dashboard uses synthetic candles and sample data, not live prices or measured model performance. Pause affects this browser session only.",
+        "beginner_guide_title": "New here? What the numbers and buttons mean",
+        "beginner_guide_body": "This is a demonstration with no exchange orders. BUY / SELL / HOLD are advisory actions, not actual trades. A dash (—) means no measured confidence was provided; the page never fabricates a value. Paper balances live only in this browser session. These controls cannot pause another process. Read Architecture & Invariants before considering Testnet.",
+        "mode_preview_notice": "Execution mode options are illustrative only: Save does not switch to Testnet/Live or modify .env.",
         "kpi_decisions": "Total Jev Decisions",
         "kpi_avg_latency": "Avg Latency",
         "kpi_p95_latency": "P95 Latency",
         "kpi_sample_rate": "Sampling Period",
         "kpi_sample_rate_val": "1 Hour / Closed Candle",
-        "sec_snapshots": "Market Snapshots (Closed 1H Candle)",
+        "sec_snapshots": "Synthetic Market Snapshots (Sample 1H Candles)",
         "sec_decision_out": "AI & Baseline Decision Output",
         "sec_causal_chain": "Latest Causal Chain",
-        "sec_action_log": "Real-time Action Audit Log",
-        "radar_title": "Real-time Decision Ring",
+        "sec_action_log": "Sample Action Log (Not Live)",
+        "radar_title": "Demo Decision Ring",
         "radar_sub": "Structured Choice Engine",
         "card_price": "Last Price",
         "card_indicators": "Indicators",
@@ -159,12 +166,12 @@ I18N = {
         "portfolio_btc": "BTC Position",
         "portfolio_budget": "Initial Budget Cap",
         "heartbeat_title": "Decision Heartbeat",
-        "heartbeat_meta": "3 Completed Recently · Avg 234 ms",
+        "heartbeat_meta": "Demo mode: no continuous runtime statistics",
         "risk_status": "Risk Decision",
         "exit_feasibility": "Exit Feasibility Pre-check",
-        "emergency_halt": "Emergency Pause New Entries",
-        "resume_trading": "Resume Engine Operations",
-        "halt_desc": "Immediately blocks all new entry orders while preserving active position monitoring and exit rights.",
+        "emergency_halt": "Pause Local Demo Entry Checks",
+        "resume_trading": "Resume Local Demo Checks",
+        "halt_desc": "Only affects this browser session; does not pause or resume other Testnet/Live processes.",
         # Settings
         "settings_title": "System Configuration & Risk Controls",
         "settings_subtitle": "Configure execution modes, capital ceiling, circuit breakers, and network proxy to prevent unauthorized exposure.",
@@ -190,7 +197,7 @@ I18N = {
         "set_proxy_url": "HTTP / HTTPS Proxy URL",
         "set_proxy_btn": "Test Binance API Connectivity (Check 451)",
         "set_save_btn": "Save & Apply Settings",
-        "set_save_ok": "Settings successfully updated in current session.",
+        "set_save_ok": "Updated demo risk values in this browser session only; .env and background processes are unchanged.",
         # Docs
         "docs_title": "JevQuant Core Philosophy & Non-negotiables",
         "doc_p1": "1. 50 CNY Micro-budget Constraints: Binance BTC/USDT has a dynamic minimum notional (~5 USDT). A 50 CNY budget cannot support grid or martingale layering.",
@@ -465,7 +472,9 @@ for idx, (tab_key, tab_label) in enumerate(nav_items):
 st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
 # Demo Warning Notice
-st.info(t["demo_banner"])
+st.warning(t["demo_banner"])
+with st.expander(t["beginner_guide_title"], expanded=False):
+    st.write(t["beginner_guide_body"])
 
 # Helper: Market Data Generator
 def get_or_create_market_data():
@@ -531,6 +540,17 @@ risk_decision = risk.evaluate_entry(
     has_position=paper.has_position,
     today_realized_loss_usdt=paper.today_realized_loss_usdt,
 )
+confidence_text = format_confidence(ai_sig.metadata.get("confidence"))
+exit_status = (
+    "DEMO PASS" if risk_decision.approved
+    else "REJECT_EXIT_MIN_NOTIONAL" if risk_decision.reason_code == "REJECT_EXIT_MIN_NOTIONAL"
+    else "—"
+)
+exit_color = (
+    "#22c55e" if risk_decision.approved
+    else "#ef4444" if risk_decision.reason_code == "REJECT_EXIT_MIN_NOTIONAL"
+    else "#94a3b8"
+)
 
 
 # ---------------- PAGE 1: MONITOR (决策监控台) ----------------
@@ -540,22 +560,22 @@ if st.session_state.nav_tab == "monitor":
     with k1:
         st.markdown(f"""
         <div class="kpi-block">
-            <div class="kpi-num">4,752</div>
+            <div class="kpi-num">—</div>
             <div class="kpi-label">{t['kpi_decisions']}</div>
         </div>
         """, unsafe_allow_html=True)
     with k2:
-        lat = ai_sig.metadata.get('latency_ms', 228) or 228
+        lat = format_latency_ms(ai_sig.metadata.get("latency_ms"))
         st.markdown(f"""
         <div class="kpi-block">
-            <div class="kpi-num">{lat}<span style="font-size:1.1rem;color:#64748b"> ms</span></div>
+            <div class="kpi-num">{lat}</div>
             <div class="kpi-label">{t['kpi_avg_latency']}</div>
         </div>
         """, unsafe_allow_html=True)
     with k3:
         st.markdown(f"""
         <div class="kpi-block">
-            <div class="kpi-num">268<span style="font-size:1.1rem;color:#64748b"> ms</span></div>
+            <div class="kpi-num">—</div>
             <div class="kpi-label">{t['kpi_p95_latency']}</div>
         </div>
         """, unsafe_allow_html=True)
@@ -584,9 +604,9 @@ if st.session_state.nav_tab == "monitor":
             <div class="market-action-row">
                 <div>
                     <span class="action-badge-hold">{ai_sig.action}</span>
-                    <span class="action-percent">{(ai_sig.metadata.get('confidence') or 0.65)*100:.0f}%</span>
+                    <span class="action-percent">{confidence_text}</span>
                 </div>
-                <span class="market-latency">{lat} ms</span>
+                <span class="market-latency">{lat}</span>
             </div>
             <div style="font-size: 0.72rem; color: #64748b; margin-top: 8px;">
                 SMA20: {indicators['sma20']} · SMA60: {indicators['sma60']} · RSI: {indicators['rsi14']}
@@ -642,7 +662,7 @@ if st.session_state.nav_tab == "monitor":
                 <div class="radar-title">{t['radar_title']}</div>
                 <div class="radar-name">JEV</div>
                 <div style="font-size:0.62rem; color:#94a3b8; letter-spacing:0.1em;">{t['radar_sub']}</div>
-                <div class="radar-ms">{lat} ms</div>
+                <div class="radar-ms">{lat}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -659,7 +679,7 @@ if st.session_state.nav_tab == "monitor":
             </div>
             <div class="market-action-row" style="margin-top: 14px;">
                 <span class="action-badge-hold" style="font-size: 1.8rem;">{ai_sig.action}</span>
-                <span class="action-percent" style="font-size: 1.4rem; color: #38bdf8;">{(ai_sig.metadata.get('confidence') or 0.65)*100:.0f}%</span>
+                <span class="action-percent" style="font-size: 1.4rem; color: #38bdf8;">{confidence_text}</span>
             </div>
             <div style="margin-top: 10px; font-size: 0.75rem; color: #94a3b8;">
                 <b>{t['decision_reason']}:</b> {ai_sig.reason_code}<br>
@@ -693,10 +713,10 @@ if st.session_state.nav_tab == "monitor":
         st.markdown(f"""
         <div class="log-panel">
             <div><b>BTC/USDT</b> 1h candle confirmed</div>
-            <div>Jev Output: <span style="color:#e2e8f0">{ai_sig.action} ({(ai_sig.metadata.get('confidence') or 0.65)*100:.0f}%)</span></div>
-            <div>Latency: <span style="color:#38bdf8">{lat} ms</span></div>
+            <div>Jev Output: <span style="color:#e2e8f0">{ai_sig.action} ({confidence_text})</span></div>
+            <div>Latency: <span style="color:#38bdf8">{lat}</span></div>
             <div>{t['risk_status']}: <span style="color:{'#22c55e' if risk_decision.approved else '#f59e0b'}">{risk_decision.reason_code}</span></div>
-            <div>{t['exit_feasibility']}: <span style="color:#22c55e">PASS (MIN_NOTIONAL >= 5 USDT)</span></div>
+            <div>{t['exit_feasibility']}: <span style="color:{exit_color}">{exit_status}</span></div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -704,10 +724,10 @@ if st.session_state.nav_tab == "monitor":
         st.markdown(f"<div style='font-size:0.75rem; letter-spacing:0.12em; color:#64748b; margin-bottom:8px;'>{t['sec_action_log']}</div>", unsafe_allow_html=True)
         st.markdown("""
         <div class="log-panel">
-            <div>[AUDIT] 12:00:00 UTC - BTC 1h closed - Indicators calculated - Jev queried</div>
-            <div>[AUDIT] 12:00:00 UTC - Signal generated - Hash: sig_deterministic_confirmed</div>
-            <div>[AUDIT] 12:00:00 UTC - Risk evaluation - Position: FLAT - Budget: 7.00 USDT - PASS</div>
-            <div>[AUDIT] 11:00:00 UTC - BTC 1h closed - Action: HOLD (Confidence 65%) - No Order</div>
+            <div>[SAMPLE] 12:00:00 UTC - BTC 1h closed - Indicators calculated - Jev queried</div>
+            <div>[SAMPLE] 12:00:00 UTC - Signal generated - Hash: sig_deterministic_confirmed</div>
+            <div>[SAMPLE] 12:00:00 UTC - Risk evaluation - Position: FLAT - Budget: 7.00 USDT - PASS</div>
+            <div>[SAMPLE] 11:00:00 UTC - BTC 1h closed - Action: HOLD (Confidence 65%) - No Order</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -744,7 +764,7 @@ elif st.session_state.nav_tab == "ledger":
             })
         st.dataframe(pd.DataFrame(trade_rows), use_container_width=True)
     else:
-        st.info("当前暂无已成交交易记录。当触发 APPROVED 的买入或卖出时，明细将实时记录于此。")
+        st.info("当前暂无已成交交易记录。当前演示页面不会自动执行买卖，因此没有成交记录；后续接入模拟执行流程后才会显示交易明细。")
 
     st.markdown("<div style='height: 16px;'></div>", unsafe_allow_html=True)
     st.markdown("#### 退出可行性预检公式 (Exit Feasibility Math)")
@@ -773,6 +793,7 @@ elif st.session_state.nav_tab == "settings":
         mode_labels = [t["set_mode_paper"], t["set_mode_testnet"], t["set_mode_live"]]
         current_idx = mode_options.index(cfg.trading_mode) if cfg.trading_mode in mode_options else 0
         selected_mode = st.radio(t["set_mode_label"], mode_options, index=current_idx, format_func=lambda x: mode_labels[mode_options.index(x)])
+        st.caption(t["mode_preview_notice"])
 
         # Gates checklist
         st.markdown(f"**{t['set_gates_header']}**")
