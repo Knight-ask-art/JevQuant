@@ -14,6 +14,7 @@ from jevquant.exchange import BinancePublicAdapter
 from jevquant.indicators import compute_indicators
 from jevquant.jev_engine import JevEngine
 from jevquant.orders import OrderStateMachine, PaperAccount
+from jevquant.practice import PaperPractice
 from jevquant.presentation import format_confidence, format_latency_ms
 from jevquant.risk import RiskManager
 from jevquant.strategy import JevAIStrategy, SmaBaselineStrategy
@@ -49,6 +50,9 @@ if "risk_manager" not in st.session_state:
 if "order_sm" not in st.session_state:
     st.session_state.order_sm = OrderStateMachine()
 
+if "paper_practice" not in st.session_state:
+    st.session_state.paper_practice = None
+
 if "proxy_check_result" not in st.session_state:
     st.session_state.proxy_check_result = None
 
@@ -64,6 +68,7 @@ I18N = {
         "title": "JEV 量化决策引擎",
         "subtitle": "基于 TYPESAFE JEV + 币安现货 · 无未来函数校验 · 独立风控闭环",
         "nav_monitor": "决策监控大屏",
+        "nav_practice": "模拟交易练习",
         "nav_ledger": "模拟账本与持仓",
         "nav_settings": "系统与风控设置",
         "nav_docs": "架构与安全规则",
@@ -71,6 +76,31 @@ I18N = {
         "beginner_guide_title": "第一次使用？了解页面上的数字和按钮",
         "beginner_guide_body": "这是一个无真实订单的示例界面。BUY / SELL / HOLD 分别表示建议买入、建议卖出和观望，不是直接下单指令。置信度显示“—”表示模型没有给出可信的数值，绝不自动补成 65%。Paper 余额是当前网页会话内的模拟数据；这里的按钮无法暂停其他进程。建议先阅读“架构与安全规则”，再考虑测试网。",
         "mode_preview_notice": "交易模式选项仅用于展示，本页保存操作不会启动测试网、启用实盘或修改 .env 配置。",
+        "practice_title": "新手模拟交易练习",
+        "practice_intro": "这是独立的本地练习：仅使用虚构 BTC/USDT 价格与虚拟 7 USDT，不调用 Jev、不读取币安行情，也不会向任何交易所发送订单。",
+        "practice_start": "开始模拟练习",
+        "practice_next": "下一根合成 K 线",
+        "practice_buy": "尝试模拟买入",
+        "practice_sell": "尝试模拟卖出",
+        "practice_reset": "结束并重置练习",
+        "practice_step": "练习进度",
+        "practice_price": "合成 BTC 价格",
+        "practice_cash": "虚拟可用 USDT",
+        "practice_btc": "虚拟 BTC 持仓",
+        "practice_equity": "虚拟资产总值",
+        "practice_pnl": "模拟盈亏（含手续费及滑点）",
+        "practice_log": "操作与风控记录",
+        "practice_result": "最近一次操作",
+        "practice_success": "允许",
+        "practice_rejected": "拒绝",
+        "practice_help": "操作步骤：先尝试买入 → 点击下一根 K 线 → 观察资产变化 → 尝试卖出。每次操作均由独立的模拟风控检查。这里的交易规则是教学示例，非币安实时规则。每日入场次数限制为 3 次（仅本练习）。",
+        "practice_reset_note": "练习已重置，原有虚拟交易记录已清空。",
+        "practice_step_label": "第 {current} / {total} 根",
+        "practice_action_label": "操作",
+        "practice_status_label": "结果",
+        "practice_reason_label": "原因",
+        "practice_quantity_label": "数量 BTC",
+        "practice_fee_label": "模拟手续费 USDT",
         "kpi_decisions": "累计决策次数",
         "kpi_avg_latency": "平均响应延迟",
         "kpi_p95_latency": "P95 峰值延迟",
@@ -136,6 +166,7 @@ I18N = {
         "title": "JEV QUANT DECISION ENGINE",
         "subtitle": "TYPESAFE JEV + BINANCE SPOT · ZERO LOOKAHEAD GUARANTEE · INDEPENDENT RISK LAYER",
         "nav_monitor": "Reflex Monitor",
+        "nav_practice": "Paper Practice",
         "nav_ledger": "Paper Ledger",
         "nav_settings": "Settings & Risk",
         "nav_docs": "Architecture & Invariants",
@@ -143,6 +174,31 @@ I18N = {
         "beginner_guide_title": "New here? What the numbers and buttons mean",
         "beginner_guide_body": "This is a demonstration with no exchange orders. BUY / SELL / HOLD are advisory actions, not actual trades. A dash (—) means no measured confidence was provided; the page never fabricates a value. Paper balances live only in this browser session. These controls cannot pause another process. Read Architecture & Invariants before considering Testnet.",
         "mode_preview_notice": "Execution mode options are illustrative only: Save does not switch to Testnet/Live or modify .env.",
+        "practice_title": "Beginner Paper-Trading Practice",
+        "practice_intro": "A self-contained exercise with fictional BTC/USDT prices and 7 virtual USDT. It never calls Jev, fetches Binance prices, or submits exchange orders.",
+        "practice_start": "Start Paper Practice",
+        "practice_next": "Next Synthetic Candle",
+        "practice_buy": "Try Paper Buy",
+        "practice_sell": "Try Paper Sell",
+        "practice_reset": "End & Reset Exercise",
+        "practice_step": "Exercise Progress",
+        "practice_price": "Synthetic BTC Price",
+        "practice_cash": "Virtual USDT",
+        "practice_btc": "Virtual BTC",
+        "practice_equity": "Virtual Equity",
+        "practice_pnl": "Paper P&L (Including Fees and Slippage)",
+        "practice_log": "Actions and Risk Checks",
+        "practice_result": "Last Action",
+        "practice_success": "Allowed",
+        "practice_rejected": "Rejected",
+        "practice_help": "Try buying, advancing a candle, checking your equity, and then selling. Each action uses the paper risk checker. Market rules are illustrative, not live Binance limits. Up to 3 practice entries per UTC day are allowed.",
+        "practice_reset_note": "Exercise reset; previous virtual trades were cleared.",
+        "practice_step_label": "Candle {current} / {total}",
+        "practice_action_label": "Action",
+        "practice_status_label": "Result",
+        "practice_reason_label": "Reason",
+        "practice_quantity_label": "BTC Quantity",
+        "practice_fee_label": "Paper Fee USDT",
         "kpi_decisions": "Total Jev Decisions",
         "kpi_avg_latency": "Avg Latency",
         "kpi_p95_latency": "P95 Latency",
@@ -204,6 +260,41 @@ I18N = {
         "doc_p2": "2. Why Exit Feasibility Pre-check is Critical: Entering a trade is prohibited if a 3% drop leaves the position under 5 USDT, which would trap the position from legal exit.",
         "doc_p3": "3. Separation of Powers: TypeSafe Jev AI provides advisory direction (BUY/SELL/HOLD) only. It has zero order execution permissions.",
     }
+}
+
+PRACTICE_REASON_TEXT = {
+    "zh": {
+        "PAPER_BUY_FILLED": "模拟买入成功，已扣除滑点和手续费",
+        "PAPER_SELL_FILLED": "模拟卖出成功，虚拟 USDT 已到账",
+        "SYNTHETIC_CANDLE_ADVANCED": "已切换到下一根合成 K 线",
+        "SCENARIO_COMPLETE": "练习数据已经结束，请重置后再练习",
+        "NO_PAPER_POSITION": "当前没有 BTC 持仓，不能卖出",
+        "DEMO_EXIT_BELOW_MIN_NOTIONAL": "虚拟卖出金额低于示例最低成交额；此时不能卖出",
+        "REJECT_USDT_BELOW_MIN_NOTIONAL": "虚拟余额不足以满足示例最低成交额",
+        "REJECT_ROUNDED_NOTIONAL_BELOW_MIN": "数量取整后，买入金额低于示例最低成交额",
+        "REJECT_EXIT_MIN_NOTIONAL": "风控拒绝：假设价格下跌后，持仓可能无法满足最低卖出金额",
+        "REJECT_MAX_DAILY_ENTRIES_EXCEEDED": "已达到本练习的模拟开仓次数限制",
+        "REJECT_POSITION_ALREADY_OPEN": "已经持有 BTC，不能重复买入",
+        "REJECT_DAILY_LOSS_LIMIT_REACHED": "模拟亏损达到风控熔断阈值",
+        "REJECT_QTY_BELOW_MIN_QTY": "虚拟买入数量低于最低数量",
+        "PAPER_EXECUTION_REJECTED": "虚拟账户模拟成交失败；请检查可用余额",
+    },
+    "en": {
+        "PAPER_BUY_FILLED": "Paper buy filled, including simulated slippage and fees",
+        "PAPER_SELL_FILLED": "Paper sell filled, virtual USDT credited",
+        "SYNTHETIC_CANDLE_ADVANCED": "Advanced to the next fictional candle",
+        "SCENARIO_COMPLETE": "End of exercise; reset to try again",
+        "NO_PAPER_POSITION": "No BTC holding available to sell",
+        "DEMO_EXIT_BELOW_MIN_NOTIONAL": "Virtual sell value is below the example minimum notional",
+        "REJECT_USDT_BELOW_MIN_NOTIONAL": "Virtual cash is below the example minimum notional",
+        "REJECT_ROUNDED_NOTIONAL_BELOW_MIN": "Rounded buy value is below the example minimum notional",
+        "REJECT_EXIT_MIN_NOTIONAL": "Risk gate: position may be too small to sell after a simulated drop",
+        "REJECT_MAX_DAILY_ENTRIES_EXCEEDED": "Practice entry limit reached",
+        "REJECT_POSITION_ALREADY_OPEN": "You already hold BTC; another buy is blocked",
+        "REJECT_DAILY_LOSS_LIMIT_REACHED": "Practice daily loss circuit breaker triggered",
+        "REJECT_QTY_BELOW_MIN_QTY": "Virtual buy size is below the example minimum",
+        "PAPER_EXECUTION_REJECTED": "Paper fill failed; check available virtual balance",
+    },
 }
 
 t = I18N[st.session_state.lang]
@@ -455,6 +546,7 @@ st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 # Top Navigation Tabs
 nav_items = [
     ("monitor", t["nav_monitor"]),
+    ("practice", t["nav_practice"]),
     ("ledger", t["nav_ledger"]),
     ("settings", t["nav_settings"]),
     ("docs", t["nav_docs"]),
@@ -502,35 +594,36 @@ latest_candle = candles[-1]
 current_price = latest_candle["close"]
 
 # Engine & Strategy Evaluation
-jev_engine = JevEngine(api_key=cfg.typesafe_api_key)
-ai_strategy = JevAIStrategy(jev_engine=jev_engine)
-sma_strategy = SmaBaselineStrategy()
+if st.session_state.nav_tab == "monitor":
+    jev_engine = JevEngine(api_key=cfg.typesafe_api_key)
+    ai_strategy = JevAIStrategy(jev_engine=jev_engine)
+    sma_strategy = SmaBaselineStrategy()
 
-ai_sig = ai_strategy.evaluate(
-    symbol=cfg.symbol,
-    candle_close_utc=latest_candle["candle_close_utc"],
-    indicators=indicators,
-    current_close=current_price,
-    has_position=paper.has_position,
-)
+    ai_sig = ai_strategy.evaluate(
+        symbol=cfg.symbol,
+        candle_close_utc=latest_candle["candle_close_utc"],
+        indicators=indicators,
+        current_close=current_price,
+        has_position=paper.has_position,
+    )
 
-sma_sig = sma_strategy.evaluate(
-    symbol=cfg.symbol,
-    candle_close_utc=latest_candle["candle_close_utc"],
-    indicators=indicators,
-    has_position=paper.has_position,
-)
+    sma_sig = sma_strategy.evaluate(
+        symbol=cfg.symbol,
+        candle_close_utc=latest_candle["candle_close_utc"],
+        indicators=indicators,
+        has_position=paper.has_position,
+    )
 
-market_rules = {
-    "symbol": "BTC/USDT",
-    "status": "TRADING",
-    "min_notional": Decimal("5.00000000"),
-    "step_size": Decimal("0.00001"),
-    "min_qty": Decimal("0.00001"),
-    "min_price": Decimal("0.01"),
-    "max_price": Decimal("1000000.00"),
-    "tick_size": Decimal("0.01"),
-}
+    market_rules = {
+        "symbol": "BTC/USDT",
+        "status": "TRADING",
+        "min_notional": Decimal("5.00000000"),
+        "step_size": Decimal("0.00001"),
+        "min_qty": Decimal("0.00001"),
+        "min_price": Decimal("0.01"),
+        "max_price": Decimal("1000000.00"),
+        "tick_size": Decimal("0.01"),
+    }
 
 risk_decision = risk.evaluate_entry(
     signal_action=ai_sig.action,
@@ -732,7 +825,72 @@ if st.session_state.nav_tab == "monitor":
         """, unsafe_allow_html=True)
 
 
-# ---------------- PAGE 2: LEDGER (模拟账本与持仓) ----------------
+# ---------------- PAGE 2: PRACTICE (独立模拟交易练习) ----------------
+elif st.session_state.nav_tab == "practice":
+    st.markdown(f"### {t['practice_title']}")
+    st.info(t["practice_intro"])
+    st.caption(t["practice_help"])
+
+    practice = st.session_state.paper_practice
+    if practice is None:
+        if st.button(t["practice_start"], type="primary", use_container_width=True):
+            st.session_state.paper_practice = PaperPractice()
+            st.rerun()
+    else:
+        step_col, buy_col, sell_col, reset_col = st.columns(4)
+        event = None
+        with step_col:
+            if st.button(t["practice_next"], disabled=practice.completed, use_container_width=True):
+                event = practice.next_candle()
+        with buy_col:
+            if st.button(t["practice_buy"], use_container_width=True):
+                event = practice.buy()
+        with sell_col:
+            if st.button(t["practice_sell"], use_container_width=True):
+                event = practice.sell()
+        with reset_col:
+            if st.button(t["practice_reset"], use_container_width=True):
+                st.session_state.paper_practice = None
+                st.rerun()
+
+        if event is not None:
+            status_label = t["practice_success"] if event.approved else t["practice_rejected"]
+            status_message = f"{status_label}: {PRACTICE_REASON_TEXT[st.session_state.lang].get(event.reason, event.reason)} ({event.reason})"
+            if event.approved:
+                st.success(status_message)
+            else:
+                st.warning(status_message)
+
+        progress, synthetic_price, cash, btc = st.columns(4)
+        progress.metric(t["practice_step"], t["practice_step_label"].format(
+            current=practice.candle_number, total=len(practice.prices)
+        ))
+        synthetic_price.metric(t["practice_price"], f"{practice.price:,.2f} USDT")
+        cash.metric(t["practice_cash"], f"{practice.account.usdt_balance:.4f}")
+        btc.metric(t["practice_btc"], f"{practice.account.btc_balance:.8f}")
+        equity_col, pnl_col = st.columns(2)
+        equity_col.metric(t["practice_equity"], f"{practice.equity:.4f} USDT")
+        pnl_col.metric(t["practice_pnl"], f"{practice.pnl:+.4f} USDT")
+
+        st.markdown(f"#### {t['practice_log']}")
+        if practice.events:
+            st.dataframe(pd.DataFrame([
+                {
+                    t["practice_step"]: e.candle_number,
+                    t["practice_action_label"]: e.action,
+                    t["practice_status_label"]: t["practice_success"] if e.approved else t["practice_rejected"],
+                    t["practice_reason_label"]: PRACTICE_REASON_TEXT[st.session_state.lang].get(e.reason, e.reason),
+                    t["practice_price"]: str(e.price),
+                    t["practice_quantity_label"]: str(e.quantity),
+                    t["practice_fee_label"]: str(e.fee_usdt),
+                }
+                for e in reversed(practice.events)
+            ]), use_container_width=True, hide_index=True)
+        else:
+            st.caption(t["practice_help"])
+
+
+# ---------------- PAGE 3: LEDGER (模拟账本与持仓) ----------------
 elif st.session_state.nav_tab == "ledger":
     st.markdown(f"### {t['portfolio_title']}")
     current_equity = paper.get_equity(current_price)
