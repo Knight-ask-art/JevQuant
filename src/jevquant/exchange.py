@@ -274,51 +274,13 @@ class BinanceTestnetAdapter(ExchangeAdapter):
             self.exchange.set_sandbox_mode(True)
 
     def fetch_market_rules(self, symbol: str = "BTC/USDT") -> Dict[str, Any]:
-        markets = self.exchange.load_markets(reload=True)
-        if symbol not in markets:
-            raise ValueError(f"Symbol {symbol} not found on Binance Spot Testnet.")
-        market_info = markets[symbol]
-        raw_info = market_info.get("info", {})
-        status = raw_info.get("status", "TRADING")
+        """Read actual Spot Testnet exchange filters; never substitute defaults.
 
-        filters = raw_info.get("filters", [])
-        min_notional = Decimal("5.0")
-        min_qty = Decimal("0.00001")
-        max_qty = Decimal("9000.00")
-        step_size = Decimal("0.00001")
-        min_price = Decimal("0.01")
-        max_price = Decimal("1000000.00")
-        tick_size = Decimal("0.01")
-
-        for f in filters:
-            ftype = f.get("filterType")
-            if ftype in ("MIN_NOTIONAL", "NOTIONAL"):
-                nv = f.get("minNotional") or f.get("notional")
-                if nv is not None:
-                    min_notional = Decimal(str(nv))
-            elif ftype == "LOT_SIZE":
-                min_qty = Decimal(str(f["minQty"]))
-                max_qty = Decimal(str(f["maxQty"]))
-                step_size = Decimal(str(f["stepSize"]))
-            elif ftype == "PRICE_FILTER":
-                min_price = Decimal(str(f["minPrice"]))
-                max_price = Decimal(str(f["maxPrice"]))
-                tick_size = Decimal(str(f["tickSize"]))
-
-        captured_at = datetime.now(timezone.utc).isoformat()
-        return {
-            "symbol": symbol,
-            "status": status,
-            "min_notional": min_notional,
-            "min_qty": min_qty,
-            "max_qty": max_qty,
-            "step_size": step_size,
-            "min_price": min_price,
-            "max_price": max_price,
-            "tick_size": tick_size,
-            "raw_filters": filters,
-            "captured_at_utc": captured_at,
-        }
+        Testnet and public Spot use the same exchangeInfo filter schema.
+        Reusing the strict parser prevents fabricated trading limits or a
+        missing status from silently enabling orders.
+        """
+        return BinancePublicAdapter(exchange=self.exchange).fetch_market_rules(symbol)
 
     def fetch_closed_candles(self, symbol: str = "BTC/USDT", timeframe: str = "1h", limit: int = 100) -> List[Dict[str, Any]]:
         raw_ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit + 1)

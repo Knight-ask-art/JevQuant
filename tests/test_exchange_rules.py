@@ -1,7 +1,7 @@
 from decimal import Decimal
 from unittest.mock import MagicMock
 import pytest
-from jevquant.exchange import BinancePublicAdapter
+from jevquant.exchange import BinancePublicAdapter, BinanceTestnetAdapter
 
 
 def make_mock_exchange(status="TRADING", filters=None, ticker_last="65000.50"):
@@ -77,3 +77,41 @@ def test_strictly_only_closed_candles_returned():
     assert closed_candles[0]["close"] == Decimal("60200.0")
     assert closed_candles[1]["close"] == Decimal("60700.0")
     assert isinstance(closed_candles[0]["open"], Decimal)
+
+
+def test_testnet_market_rules_use_exact_exchange_filters():
+    mock_ex = make_mock_exchange()
+    adapter = BinanceTestnetAdapter(api_key="test", api_secret="test", exchange=mock_ex)
+    rules = adapter.fetch_market_rules("BTC/USDT")
+    assert rules["min_notional"] == Decimal("5.00000000")
+    assert rules["min_qty"] == Decimal("0.00001")
+    assert rules["status"] == "TRADING"
+    mock_ex.load_markets.assert_called_once_with(reload=True)
+
+
+@pytest.mark.parametrize("filters", [
+    [],
+    [
+        {"filterType": "LOT_SIZE", "minQty": "0.00001",
+         "maxQty": "9000.00", "stepSize": "0.00001"},
+        {"filterType": "PRICE_FILTER", "minPrice": "0.01",
+         "maxPrice": "1000000.00", "tickSize": "0.01"},
+    ],
+])
+def test_testnet_market_rules_fail_closed_on_missing_filters(filters):
+    adapter = BinanceTestnetAdapter(
+        api_key="test", api_secret="test",
+        exchange=make_mock_exchange(filters=filters),
+    )
+    with pytest.raises((RuntimeError, ValueError), match="filter"):
+        adapter.fetch_market_rules("BTC/USDT")
+
+
+@pytest.mark.parametrize("status", ["BREAK", None])
+def test_testnet_market_rules_fail_closed_on_untradable_or_missing_status(status):
+    adapter = BinanceTestnetAdapter(
+        api_key="test", api_secret="test",
+        exchange=make_mock_exchange(status=status),
+    )
+    with pytest.raises(RuntimeError, match="not in TRADING status"):
+        adapter.fetch_market_rules("BTC/USDT")
