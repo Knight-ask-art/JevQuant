@@ -6,6 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 JevQuant is a lightweight automated trading research system pairing **TypeSafe Jev** with **Binance Spot BTC/USDT**. It computes technical indicators on closed 1h candles, queries Jev for structured signals (BUY / SELL / HOLD), evaluates them through an independent risk manager, and executes via an identical interface across Paper, Testnet, and micro-budget Live trading (50 CNY capital cap).
 
+> **Current status: reference implementation, NOT a runnable trading system.** Verify this before making claims about the project's capabilities or building on top of it:
+> - `src/jevquant/runner.py` has **no trading main loop** — only `initialize_runner()` (assembly + startup reconciliation) and `run_live_preflight()`. Nothing schedules the per-closed-candle cycle or wires market data → indicators → Jev → risk → order → ledger together.
+> - `dashboard/app.py` renders **synthetic candles** (generated from `base_btc = 68450.0`), hardcoded ETH/SOL cards, and static KPIs. It is a demo page, not a live console.
+> - `api.binance.com` returns **HTTP 451 (restricted location)** from this environment. Per the spec, stop rather than circumvent. Real market data is currently unreachable.
+> - Live path lacks a real position ledger, post-entry stop-loss execution, and persisted risk state (`RiskManager.daily_entries_count` / `is_halted` reset on restart).
+> - The P4/P5 adapters (`BinanceTestnetAdapter`, `BinanceLiveAdapter`) have **never made a real exchange request** — all coverage is Mock-based.
+
 Key project specifications:
 - Machine specification: `JevQuant.spec` (highest priority source of truth).
 - Phased implementation guide: `JevQuant-开发计划.md`.
@@ -54,5 +61,8 @@ The project follows a standard Python `src`-layout under `src/jevquant/`:
 - `strategy.py`: Jev strategy and baseline comparison strategy (e.g. SMA crossover).
 - `risk.py`: 50 CNY budget allocation, step-size rounding, exit feasibility checker, and daily loss circuit breakers.
 - `orders.py`: Order state machine (`FLAT` -> `ENTRY_SUBMITTING` -> `LONG` -> `EXIT_SUBMITTING`), idempotency via `client_order_id`, and restart reconciliation.
-- `runner.py`: 1h closed-candle trigger, periodic workflow coordinator, and graceful shutdown.
-- `dashboard/`: Real-time monitoring UI matching the dark terminal "Jev Market Reflex" visual design.
+- `runner.py`: Adapter assembly, live preflight checks, and startup reconciliation. **Does not contain the trading main loop** — the per-closed-candle cycle is not implemented anywhere in this codebase.
+- `recording.py`: Read-only, allowlisted JSONL decision-event capture and replay. Not wired into any loop.
+- `practice.py` / `presentation.py`: Dashboard-only helpers for the beginner practice tab and honest metric formatting.
+- `__main__.py`: `python -m jevquant doctor` (offline prerequisite check) and `demo` (forces paper mode, clears credentials, launches the dashboard).
+- `dashboard/`: Streamlit demo UI in the dark terminal "Jev Market Reflex" style. Renders synthetic data; see the status note above.
