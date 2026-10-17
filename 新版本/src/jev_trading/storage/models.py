@@ -99,6 +99,16 @@ class Base(DeclarativeBase):
     pass
 
 
+class SchemaMigrationRow(Base):
+    """Applied schema migrations. Each version runs exactly once per database."""
+
+    __tablename__ = "schema_migrations"
+
+    version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    checksum: Mapped[str] = mapped_column(String(64))
+    applied_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
 class AccountRow(Base):
     __tablename__ = "trading_accounts"
 
@@ -298,11 +308,17 @@ class FillRow(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     order_id: Mapped[str] = mapped_column(String(36), ForeignKey("orders.id"), index=True)
+    # Exchange trade id when the fill came from (or was reconciled with) a venue.
+    external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     qty: Mapped[Decimal] = mapped_column(QTY)
     price: Mapped[Decimal] = mapped_column(MONEY)
     fee_quote: Mapped[Decimal] = mapped_column(MONEY)
     fee_asset: Mapped[str] = mapped_column(String(16), default="USDT")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("order_id", "external_id", name="uq_fills_order_external"),
+    )
 
 
 class PositionRow(Base):

@@ -192,6 +192,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("doctor", help="Offline prerequisite and configuration check.")
 
+    migrate_parser = sub.add_parser(
+        "migrate", help="Apply pending database schema migrations."
+    )
+    migrate_parser.add_argument("--dry-run", action="store_true", help="List only.")
+
     demo = sub.add_parser(
         "demo", help="Run paper cycles against the synthetic market."
     )
@@ -234,6 +239,11 @@ def main(argv: list[str] | None = None) -> int:
         if path.parent and str(path.parent) not in {"", "."}:
             path.parent.mkdir(parents=True, exist_ok=True)
 
+    if args.command == "migrate":
+        from ..migrations import main as migrate_main
+
+        extra = ["--db", settings.database_url] + (["--dry-run"] if args.dry_run else [])
+        return migrate_main(extra)
     if args.command == "doctor":
         return asyncio.run(_doctor(settings))
     if args.command == "status":

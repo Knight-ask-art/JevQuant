@@ -19,6 +19,7 @@ from ..adapters.models.jev import JevAdapter
 from ..adapters.models.llm import ConsoleLLMAdapter
 from ..adapters.models.simulated import SimulatedJevEvaluator, SimulatedPolicyGenerator
 from ..config import Settings, get_settings
+from ..migrations import migrate
 from ..domain.enums import ErrorCode, Mode
 from ..domain.errors import AppError
 from ..domain.money import canonical_str
@@ -154,6 +155,15 @@ class AppContainer:
 
     async def start(self) -> AppContainer:
         await self.db.create_all()
+        # Upgrade databases created by earlier releases (create_all never
+        # alters existing tables). A schema that cannot be upgraded must stop
+        # the service rather than run on a half-known schema.
+        outcomes = await migrate(self.db)
+        mismatched = [o.version for o in outcomes if o.status == "checksum_mismatch"]
+        if mismatched:
+            raise RuntimeError(
+                f"Applied migrations changed since they ran: {', '.join(mismatched)}"
+            )
         await self.broker.start()
         await self.modes.initialize()
         account = await self.repo.get_or_create_account(

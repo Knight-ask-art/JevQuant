@@ -37,7 +37,7 @@ shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 | Deterministic synthetic backtest replay | ✅ implemented, explicitly labelled synthetic |
 | Real OHLCV / Freqtrade replay | ❌ not implemented |
 | Real fill-ledger rebuild for Hummingbot | ❌ follow-up (unknown states are reconciled, not invented) |
-| Testnet position/PnL ledger | ❌ order state only; no position projection yet |
+| Testnet position/PnL ledger | ✅ rebuilt on reconcile from venue-confirmed close orders |
 
 ## Quick start (local, no Docker, no keys)
 
@@ -64,7 +64,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 80 tests: policy, risk, execution, audit, API, TOTP, backtest, exits
+pytest                     # 88 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations
 ```
 
 Or run the whole local check in one step:
@@ -151,7 +151,7 @@ frontend/
   src/pages/    Overview, Strategy Desk, Jev Signals, Orders & Positions,
                 Backtests, Models & Costs, Risk & Modes, Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          80 deterministic tests
+tests/          88 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)
@@ -203,7 +203,10 @@ contradict `JEV_APP_ENV=prod`.
   assumptions; it is not evidence of edge and does not use historical exchange data.
 - **Hummingbot fill reconciliation is partial.** Order state is mapped and unknown states
   force reconciliation; rebuilding a complete fill ledger is a documented follow-up.
-- **Testnet does not maintain a local position/PnL ledger yet**; it records order state.
+- **Testnet positions are rebuilt on reconcile, not live.** When the venue confirms a
+  close that the ledger still had resting, `POST /api/v1/execution/reconcile` closes the
+  position and books its PnL; until then the local row is the last known state. Balances
+  are the locally projected figure, not a periodic pull of the venue account.
 - **The synthetic demo clock advances per cycle**, while policy expiry uses real wall
   clock. This is a demo property, not a production clock design.
 - **Single-process deployment.** PostgreSQL + Redis Streams are supported by configuration;

@@ -104,6 +104,27 @@ class Repository:
             await session.flush()
             return row
 
+    async def adjust_account_cash(
+        self, account_id: str, *, cash_delta: Decimal, realized_delta: Decimal
+    ) -> None:
+        """Move settled cash for an exchange-managed account.
+
+        Used when the venue confirms a fill the local projection had not
+        applied yet (reconciliation), so the cash figure follows the venue.
+        """
+
+        async with self.db.session() as session:
+            row = await session.get(AccountRow, account_id)
+            if row is None:
+                raise ValueError(f"account {account_id} not found")
+            row.cash_quote_usdt += cash_delta
+            row.realized_pnl_usdt += realized_delta
+            row.daily_realized_pnl_usdt += realized_delta
+            equity = row.cash_quote_usdt
+            if equity > row.peak_equity_usdt:
+                row.peak_equity_usdt = equity
+            await session.flush()
+
     async def get_account(self, account_id: str) -> AccountRow | None:
         async with self.db.session() as session:
             return await session.get(AccountRow, account_id)
@@ -123,6 +144,15 @@ class Repository:
                 .order_by(PositionRow.opened_at)
             )
             return list(result.scalars())
+
+    async def settled_position(self, position_id: str) -> PositionRow:
+        """A position row freshly read from the store (never a stale identity)."""
+
+        async with self.db.session() as session:
+            row = await session.get(PositionRow, position_id)
+            if row is None:
+                raise ValueError(f"position {position_id} not found")
+            return row
 
     async def get_open_position(self, account_id: str, symbol: str) -> PositionRow | None:
         async with self.db.session() as session:
@@ -861,6 +891,80 @@ class Repository:
                 ).scalars()
             )
 
+    async def list_fills_for_order(self, order_id: str) -> list[FillRow]:
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(FillRow)
+                        .where(FillRow.order_id == order_id)
+                        .order_by(FillRow.created_at)
+                    )
+                ).scalars()
+            )
+
+    async def add_exchange_fill(
+        self,
+        *,
+        order_id: str,
+        trade_id: str,
+        qty: Decimal,
+        price: Decimal,
+        fee_quote: Decimal,
+        fee_asset: str = "USDT",
+        created_at: datetime | None = None,
+    ) -> FillRow | None:
+        """Append one exchange-reported fill exactly once.
+
+        Idempotent per (order, trade id): a reconciliation pass that sees the
+        same trade twice must not double-count it.
+        """
+
+        if qty <= ZERO:
+            return None
+        async with self.db.session() as session:
+            existing = await self._exchange_fill(session, order_id, trade_id)
+            if existing is not None:
+                return existing
+            row = FillRow(
+                order_id=order_id,
+                external_id=str(trade_id),
+                qty=qty,
+                price=price,
+                fee_quote=fee_quote,
+                fee_asset=fee_asset,
+                created_at=created_at or utcnow(),
+            )
+            session.add(row)
+            try:
+                await session.flush()
+            except IntegrityError:
+                # A concurrent pass inserted the same trade first; it wins.
+                await session.rollback()
+                return await self._exchange_fill(session, order_id, trade_id)
+            return row
+
+    @staticmethod
+    async def _exchange_fill(session, order_id: str, trade_id: str) -> FillRow | None:
+        return (
+            await session.execute(
+                select(FillRow).where(
+                    FillRow.order_id == order_id,
+                    FillRow.external_id == str(trade_id),
+                )
+            )
+        ).scalars().first()
+
+    async def set_position_realized_pnl(
+        self, position_id: str, realized_pnl_usdt: Decimal
+    ) -> None:
+        async with self.db.session() as session:
+            row = await session.get(PositionRow, position_id)
+            if row is None:
+                raise ValueError(f"position {position_id} not found")
+            row.realized_pnl_usdt = realized_pnl_usdt
+            await session.flush()
+
     # ------------------------------------------------------------------
     # PnL snapshots
     # ------------------------------------------------------------------
@@ -1210,6 +1314,46 @@ class Repository:
                     .limit(1)
                 )
             ).scalar_one_or_none()
+
+    async def get_order_for_intent(self, intent_id: str) -> OrderRow | None:
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(OrderRow)
+                    .where(OrderRow.intent_id == intent_id)
+                    .order_by(OrderRow.created_at.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+
+    async def settle_reconciled_close(
+        self,
+        position_id: str,
+        *,
+        qty: Decimal,
+        realized_pnl_usdt: Decimal,
+        exit_order_id: str,
+        closed: bool,
+        now: datetime | None = None,
+    ) -> None:
+        """Apply a venue-confirmed close to the position row.
+
+        Cash is handled by :meth:`adjust_account_cash`; this only records what
+        is left of the position after the confirmed quantity.
+        """
+
+        async with self.db.session() as session:
+            row = await session.get(PositionRow, position_id)
+            if row is None:
+                raise ValueError(f"position {position_id} not found")
+            row.qty = max(qty, ZERO)
+            row.realized_pnl_usdt = realized_pnl_usdt
+            row.exit_order_id = exit_order_id
+            if closed:
+                row.qty = ZERO
+                row.status = PositionStatus.CLOSED.value
+                row.closed_at = now or utcnow()
+            await session.flush()
 
     async def latest_close_order_for_signal(self, signal_id: str) -> OrderRow | None:
         """The newest order placed by a CLOSE intent of this signal."""

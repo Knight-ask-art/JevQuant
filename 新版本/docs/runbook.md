@@ -30,7 +30,9 @@ Checklist before trusting a screenshot:
 5. Run one cycle and verify:
    - orders carry a real `exchange_order_id`;
    - unknown responses surface as `RECONCILIATION_REQUIRED`, never as fills;
-   - positions/PnL are **not** assumed — the testnet position ledger is a known gap.
+   - a close the venue reported filled but the ledger still had resting is settled by
+     `POST /api/v1/execution/reconcile` (position closed, PnL and cash booked);
+     balances remain the local projection rather than a pull of the venue account.
 6. Exercise `POST /api/v1/execution/reconcile` after a deliberately interrupted submit.
 
 Testnet is an integration environment, not a strategy-validation environment.
@@ -85,6 +87,23 @@ Symptom: a signal is `RECONCILIATION_REQUIRED`; an order status is unknown.
 Entries block automatically (`market_feed_unhealthy`, `stale_market_data`,
 `policy_unavailable`). Exits continue. Confirm dependency margin notes; do not disable
 staleness thresholds to force a trade.
+
+## Schema migrations
+
+`jev migrate` (or `python -m jev_trading.migrations`, or starting the service) applies
+pending migrations in order and records them in `schema_migrations`:
+
+| Version | Effect |
+|---|---|
+| `0001_baseline` | marks a pre-migration database |
+| `0002_positions_mode` | adds `positions.mode` (existing rows become `paper`) |
+| `0003_fills_external_id` | adds `fills.external_id` + unique (order, trade) index |
+
+- `jev migrate --dry-run` lists pending versions without changing anything.
+- A database is upgraded in place; the ledger rows are preserved.
+- If an applied migration's source changed, startup fails with `checksum_mismatch`.
+  Never edit a migration that has run — add a new one.
+- Back up the database before migrating in production.
 
 ## Restart behaviour
 

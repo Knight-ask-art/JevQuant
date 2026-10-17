@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import httpx
 
-from ...domain.enums import OrderStatus
+from ...domain.enums import IntentType, OrderStatus, SignalState
 from ...domain.errors import (
     DependencyBadResponseError,
     DependencyUnavailableError,
@@ -39,6 +39,16 @@ STATUS_MAP = {
     "EXPIRED": OrderStatus.CANCELLED,
     "REJECTED": OrderStatus.REJECTED,
 }
+
+
+# A venue-reported price outside this band is treated as malformed rather than
+# trusted. Every allowed symbol trades far inside it.
+SANE_PRICE_MIN = Decimal("0.00000001")
+SANE_PRICE_MAX = Decimal("10000000")
+
+
+def rules_sane(price: Decimal) -> bool:
+    return SANE_PRICE_MIN <= price <= SANE_PRICE_MAX
 
 
 def client_order_id(idempotency_key: str) -> str:
@@ -231,6 +241,14 @@ class BinanceTestnetExecutionAdapter:
         )
 
     async def reconcile(self, account_id: str) -> ReconciliationResult:
+        """Bring working orders and the position ledger in line with the venue.
+
+        Order state is always reconciled from ``GET /api/v3/order``. The
+        position ledger is then rebuilt from the fills the venue confirms, so a
+        close that filled while the local projection had it resting becomes a
+        closed position with realized PnL and cash, not a permanently open one.
+        """
+
         self._require_configured()
         orders = [
             order
@@ -270,23 +288,163 @@ class BinanceTestnetExecutionAdapter:
                 continue
             executed_qty = Decimal(str(data.get("executedQty", "0")))
             quote = Decimal(str(data.get("cummulativeQuoteQty", "0")))
-            avg_price = quote / executed_qty if executed_qty > ZERO else None
+            avg_price = None
+            if executed_qty > ZERO and quote > ZERO:
+                avg_price = quote / executed_qty
+                if not rules_sane(avg_price):
+                    unknown += 1
+                    notes.append(f"{order.id}: venue returned an implausible average price")
+                    continue
+            elif executed_qty > ZERO:
+                unknown += 1
+                notes.append(f"{order.id}: filled quantity without a quote amount")
+                continue
+            try:
+                fee_quote = await self._ingest_fills(order.id, data)
+                # The account ledger must use the same weighted average the
+                # order row shows, otherwise reconciliation PnL is inconsistent.
+                fills = await self.repo.list_fills_for_order(order.id)
+                total_qty = sum((fill.qty for fill in fills), ZERO)
+                if total_qty > ZERO:
+                    avg_price = (
+                        sum((fill.qty * fill.price for fill in fills), ZERO) / total_qty
+                    )
+                if fills:
+                    fee_quote = sum((fill.fee_quote for fill in fills), ZERO)
+            except DependencyBadResponseError as exc:
+                unknown += 1
+                notes.append(f"{order.id}: {exc.message}")
+                continue
             await self.repo.update_order_from_exchange(
                 order.id,
                 status=mapped.value,
                 filled_qty=executed_qty,
                 avg_fill_price=avg_price,
+                fee_quote=fee_quote,
                 note=f"reconciled from {raw_status}",
             )
+
+        try:
+            notes.extend(await self.reconcile_account(account_id))
+        except Exception as exc:  # noqa: BLE001
+            unknown += 1
+            notes.append(f"account ledger: {type(exc).__name__}")
         return ReconciliationResult(
             healthy=unknown == 0,
             checked_orders=checked,
             unknown_orders=unknown,
-            notes=notes
-            + [
-                "Position/PnL rebuild from exchange fills remains a follow-up "
-                "milestone; order state is reconciled."
-            ],
+            notes=notes,
+        )
+
+    async def _ingest_fills(self, order_id: str, data: dict[str, Any]) -> Decimal:
+        """Persist the venue's individual trades exactly once; return their fees."""
+
+        trades = data.get("fills")
+        if not isinstance(trades, list):
+            trades = []
+        total_fee = ZERO
+        for index, trade in enumerate(trades):
+            if not isinstance(trade, dict):
+                continue
+            # Accept only the documented submit schema
+            # {price, qty, commission, commissionAsset}. Anything else is
+            # treated as unknown rather than silently counted as fill 0.
+            if not {"price", "qty", "commission", "commissionAsset"} <= set(trade):
+                raise DependencyBadResponseError(
+                    "Binance Testnet fill list is not the expected schema."
+                )
+            commission = Decimal(str(trade.get("commission", "0")))
+            fee_quote = (
+                commission
+                if str(trade.get("commissionAsset", "")).upper() == "USDT"
+                else ZERO
+            )
+            trade_id = trade.get("id") or trade.get("tradeId") or f"{order_id}:{index}"
+            await self.repo.add_exchange_fill(
+                order_id=order_id,
+                trade_id=str(trade_id),
+                qty=Decimal(str(trade.get("qty", "0"))),
+                price=Decimal(str(trade.get("price", "0"))),
+                fee_quote=fee_quote,
+            )
+            total_fee += fee_quote
+        return total_fee
+
+    async def reconcile_account(self, account_id: str) -> list[str]:
+        """Rebuild position, cash and realized PnL from venue-confirmed closes."""
+
+        account = await self.repo.get_account(account_id)
+        if account is None:
+            raise ValueError(f"account {account_id} not found")
+        notes: list[str] = []
+        delta_cash = ZERO
+        delta_realized = ZERO
+        adopted = 0
+        for position in await self.repo.get_open_positions(account_id):
+            if position.mode != "testnet":
+                continue
+            signal = await self.repo.get_signal(position.signal_id)
+            if signal is None or signal.state != SignalState.EXIT_PENDING.value:
+                continue
+            close_intent = await self.repo.get_signal_intent(
+                signal.id, intent_type=IntentType.CLOSE
+            )
+            if close_intent is None:
+                continue
+            exchange_order = await self.repo.get_order_for_intent(close_intent.id)
+            if exchange_order is None or exchange_order.status != OrderStatus.FILLED.value:
+                continue
+
+            exit_qty = exchange_order.filled_qty or ZERO
+            exit_price = exchange_order.avg_fill_price or ZERO
+            if exit_qty <= ZERO or exit_price <= ZERO or position.qty <= ZERO:
+                notes.append(f"{position.symbol}: filled close missing quantity or price")
+                continue
+            qty = min(exit_qty, position.qty)
+            exit_fee = exchange_order.fee_quote or ZERO
+            entry_fee = await self._entry_fee(position)
+            entry_fee_alloc = entry_fee * qty / position.qty
+            realized = qty * (exit_price - position.avg_entry_price) - exit_fee - entry_fee_alloc
+
+            delta_cash += qty * exit_price - exit_fee
+            delta_realized += realized
+            remaining = position.qty - qty
+            closed = remaining <= position.qty * Decimal("0.00000001")
+            await self.repo.settle_reconciled_close(
+                position.id,
+                qty=remaining,
+                realized_pnl_usdt=(position.realized_pnl_usdt or ZERO) + realized,
+                exit_order_id=exchange_order.id,
+                closed=closed,
+            )
+            await self.repo.transition_signal(
+                signal.id,
+                SignalState.CLOSED,
+                {"reason": "exchange_close_confirmed", "order_id": exchange_order.id},
+            )
+            await self.repo.update_intent_status(close_intent.id, "EXECUTED")
+            adopted += 1
+            notes.append(f"{position.symbol}: exchange close confirmed; position reconciled")
+
+        if delta_cash != ZERO or delta_realized != ZERO:
+            await self.repo.adjust_account_cash(
+                account_id, cash_delta=delta_cash, realized_delta=delta_realized
+            )
+        if adopted:
+            notes.append(f"{adopted} position(s) rebuilt from exchange fills")
+        return notes
+
+    async def _entry_fee(self, position) -> Decimal:
+        if not position.entry_order_id:
+            return ZERO
+        entry = await self.repo.get_order(position.entry_order_id)
+        if entry is None:
+            return ZERO
+        if entry.fee_quote and entry.fee_quote > ZERO:
+            return entry.fee_quote
+        return sum(
+            (fill.fee_quote for fill in await self.repo.list_fills_for_order(entry.id)),
+            ZERO,
         )
 
     async def health(self) -> dict[str, object]:

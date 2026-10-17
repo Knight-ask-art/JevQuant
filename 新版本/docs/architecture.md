@@ -30,7 +30,9 @@ Checklist before trusting a screenshot:
 5. Run one cycle and verify:
    - orders carry a real `exchange_order_id`;
    - unknown responses surface as `RECONCILIATION_REQUIRED`, never as fills;
-   - positions/PnL are **not** assumed — the testnet position ledger is a known gap.
+   - a close the venue reported filled but the ledger still had resting is settled by
+     `POST /api/v1/execution/reconcile` (position closed, PnL and cash booked);
+     balances remain the local projection rather than a pull of the venue account.
 6. Exercise `POST /api/v1/execution/reconcile` after a deliberately interrupted submit.
 
 Testnet is an integration environment, not a strategy-validation environment.
