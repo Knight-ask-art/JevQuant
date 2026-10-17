@@ -34,7 +34,7 @@ fi
 mkdir -p "$(dirname "$TARGET")"
 tar -xzf "$TARBALL" -C "$(dirname "$TARGET")"
 
-APP_DIR="$TARGET/新版本"
+APP_DIR="$TARGET"
 cd "$APP_DIR"
 
 if [ ! -f .env ]; then

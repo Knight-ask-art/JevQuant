@@ -52,3 +52,8 @@ data/*.json
 .vscode/
 *.swp
 *.swo
+
+# The 新版本 frontend has a real source directory named lib/. The Python
+# lib/ rule above is intended for build artefacts at the repository root.
+!新版本/frontend/src/lib/
+!新版本/frontend/src/lib/**
