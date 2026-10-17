@@ -38,7 +38,7 @@ shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 | Real OHLCV / Freqtrade replay | ❌ not implemented |
 | Real fill-ledger rebuild for Hummingbot | ❌ follow-up (unknown states are reconciled, not invented) |
 | Testnet position/PnL ledger | ✅ rebuilt on reconcile from venue-confirmed close orders |
-| Exchange balance sync (testnet/live) | ✅ snapshot + drift audit; never edits the ledger |
+| Exchange balance sync (testnet/live) | ✅ snapshot + drift audit; surfaced on Models & Costs |
 
 ## Quick start (local, no Docker, no keys)
 
@@ -59,6 +59,7 @@ jev serve                  # FastAPI on http://127.0.0.1:8000
 cd frontend
 npm install
 npm run dev                # http://127.0.0.1:5173 (proxies /api and /ws)
+# JEV_API_URL=http://127.0.0.1:8010 npm run dev   # proxy a different backend
 ```
 
 Default posture is `paper`, synthetic market, simulated policy author + simulated Jev,
@@ -150,7 +151,8 @@ src/jev_trading/
   cli/          `jev` command
 frontend/
   src/pages/    Overview, Strategy Desk, Jev Signals, Orders & Positions,
-                Backtests, Models & Costs, Risk & Modes, Audit & Settings
+                Backtests, Models & Costs (incl. exchange balances), Risk & Modes,
+                Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
 tests/          104 deterministic tests
 docs/           architecture, API contract, runbook

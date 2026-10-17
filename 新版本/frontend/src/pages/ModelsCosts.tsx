@@ -4,6 +4,7 @@ import { ErrorNote, PaperCard, Pill, ScribbleUnderline } from "../components/ui"
 import { useApi } from "../hooks/useApi";
 import { ApiError, api } from "../lib/api";
 import { label, shortId } from "../lib/format";
+import { ExchangeBalances } from "./ExchangeBalances";
 
 interface ConfigResponse {
   config: Record<string, unknown>;
@@ -68,6 +69,8 @@ export function ModelsCosts() {
       </div>
 
       {error && <ErrorNote error={error} />}
+
+      <ExchangeBalances />
 
       <div className="grid grid-3">
         {flags.map(([name, key]) => (
