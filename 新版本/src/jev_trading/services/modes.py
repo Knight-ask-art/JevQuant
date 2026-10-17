@@ -51,6 +51,7 @@ class ModeManager:
         self.market = market
         self.hummingbot = hummingbot
         self.binance_account = binance_account
+        self.account_id = ""
 
     async def initialize(self) -> None:
         if await self.repo.get_state(MODE_KEY) is None:
@@ -131,6 +132,7 @@ class ModeManager:
                 ErrorCode.MODE_NOT_ARMED,
                 "Live mode cannot be set directly; use the arming handshake.",
             )
+        await self._assert_no_live_positions("changing mode")
         if mode is Mode.TESTNET and not (
             self.settings.binance_testnet_api_key
             and self.settings.binance_testnet_api_secret
@@ -209,6 +211,15 @@ class ModeManager:
                 require_withdrawals_disabled=self.settings.require_withdrawals_disabled,
             )
             for item in permission["checks"]:
+                if item["name"] == "permission_endpoint":
+                    # Transport/location failure (e.g. HTTP 451). Report it, but
+                    # the key permissions in *this* response are simply unknown.
+                    check(
+                        "binance_permissions",
+                        False,
+                        "Binance API unreachable: " + str(item.get("detail", ""))[:200],
+                    )
+                    continue
                 check(f"binance_{item['name']}", item["passed"], item["detail"])
         else:
             check("binance_permissions", False, "credentials missing")
@@ -239,6 +250,26 @@ class ModeManager:
         )
         return {"passed": passed, "checks": checks, "arming_token": token}
 
+    async def _assert_no_live_positions(self, action: str) -> None:
+        """Refuse a route change while a live position would lose its exit path.
+
+        After a restart the mode resets to paper, so without this guard real
+        exchange positions would be "closed" on the paper ledger while still
+        open on Binance.
+        """
+
+        if not self.account_id:
+            return
+        positions = await self.repo.get_open_positions(self.account_id)
+        live = sorted({position.symbol for position in positions if position.mode == Mode.LIVE.value})
+        if live:
+            raise AppError(
+                ErrorCode.CONFLICT,
+                f"Cannot continue {action} while live positions are open "
+                f"({', '.join(live)}). Close them from the live route first.",
+                details={"live_symbols": live},
+            )
+
     async def arm_live(
         self,
         *,
@@ -251,6 +282,7 @@ class ModeManager:
             raise ModeNotArmedError(
                 "Live arming requires TRADING_MODE=live and ENABLE_LIVE_TRADING=true."
             )
+        await self._assert_no_live_positions("live arming")
         if confirmation != CONFIRMATION_PHRASE:
             raise AppError(ErrorCode.FORBIDDEN, "Live confirmation phrase did not match.")
         secret = self.settings.mfa_totp_secret

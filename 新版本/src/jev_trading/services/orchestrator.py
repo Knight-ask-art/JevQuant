@@ -30,7 +30,7 @@ from ..domain.enums import ErrorCode
 from ..domain.errors import AppError, ReconciliationRequiredError
 from ..domain.intent import ApprovedTradeIntent, Provenance, TradeIntent
 from ..domain.market import AccountSnapshot, MarketSnapshot
-from ..domain.money import ZERO, canonical_str, quantize_down
+from ..domain.money import ZERO, canonical_str
 from ..domain.policy import EffectivePolicy
 from ..domain.risk import RiskContext, RiskEngine, compute_risk_snapshot_hash
 from ..storage.models import StrategyPolicyRow
@@ -42,6 +42,10 @@ from .modes import ModeManager
 from .policy_service import PolicyService
 
 DEFAULT_INTENT_TTL_SECONDS = 15
+
+# A close order left working for longer than this is cancelled by the exit
+# manager, measured in wall-clock seconds from the order's creation time.
+CLOSE_ORDER_WORKING_LIMIT_SECONDS = 300
 
 
 class CycleResult(BaseModel):
@@ -201,11 +205,9 @@ class TradingOrchestrator:
             )
 
         exit_count, exit_notes = await self._manage_exits(
-            mode=mode,
             policy=policy,
             snapshot_map=snapshot_map,
             system=system,
-            adapter=adapter,
         )
         counters["exits"] = exit_count
         notes.extend(exit_notes)
@@ -759,6 +761,7 @@ class TradingOrchestrator:
                 SignalState.RECONCILIATION_REQUIRED,
                 {"reason": exc.code.value},
             )
+            await self.repo.update_intent_status(intent_id, "RECONCILIATION_REQUIRED")
             await self.audit.record(
                 "execution.reconciliation_required", "intent", intent_id, {}
             )
@@ -768,11 +771,39 @@ class TradingOrchestrator:
                 "order_id": None,
                 "notes": ["execution outcome unknown; reconciliation required"],
             }
-        await self._apply_receipt(row.signal_id, receipt, counters, notes)
-        await self.repo.update_intent_status(intent_id, "EXECUTED")
+        except AppError as exc:
+            # The adapter reported a definite failure: no order exists, so the
+            # signal must not stay parked in EXECUTION_PENDING forever.
+            await self.repo.transition_signal(
+                row.signal_id, SignalState.ERROR, {"reason": exc.code.value}
+            )
+            await self.repo.update_intent_status(intent_id, "ERROR")
+            await self.audit.record(
+                "execution.error", "intent", intent_id, {"code": exc.code.value}
+            )
+            return {
+                "intent_id": intent_id,
+                "status": SignalState.ERROR.value,
+                "order_id": None,
+                "notes": [f"execution error {exc.code.value}"],
+            }
+        counters.setdefault("errors", 0)
+        outcome = await self._apply_receipt(row.signal_id, receipt, counters, notes)
+        # Accepted/partial fills may still complete; only a definite rejection
+        # or error ends the intent here.
+        final_status = {
+            "FILLED": "EXECUTED",
+            "PARTIALLY_FILLED": "EXECUTED",
+            "ACCEPTED": "ACCEPTED",
+            "CANCELLED": "CANCELLED",
+            "UNKNOWN": "RECONCILIATION_REQUIRED",
+        }.get(outcome, "ERROR")
+        await self.repo.update_intent_status(intent_id, final_status)
+        signal_after = await self.repo.get_signal(row.signal_id)
         return {
             "intent_id": intent_id,
-            "status": receipt.status.value,
+            "status": signal_after.state if signal_after is not None else final_status,
+            "intent_status": final_status,
             "order_id": receipt.order_id,
             "position_id": receipt.position_id,
             "filled_qty": canonical_str(receipt.filled_qty),
@@ -780,10 +811,26 @@ class TradingOrchestrator:
             "notes": notes,
         }
 
+    def _receipt_outcome(self, receipt) -> str:
+        """Classify a receipt by the signal state it leads to."""
+
+        if receipt.status is OrderStatus.FILLED:
+            return "FILLED"
+        if receipt.status is OrderStatus.PARTIALLY_FILLED:
+            return "PARTIALLY_FILLED"
+        if receipt.status in {OrderStatus.ACCEPTED, OrderStatus.SHADOWED}:
+            return "ACCEPTED"
+        if receipt.status is OrderStatus.CANCELLED:
+            return "CANCELLED"
+        if receipt.status is OrderStatus.UNKNOWN:
+            return "UNKNOWN"
+        return "ERROR"
+
     async def _apply_receipt(
         self, signal_id: str, receipt, counters: dict[str, int], notes: list[str]
-    ) -> None:
+    ) -> str:
         status = receipt.status
+        outcome = self._receipt_outcome(receipt)
         try:
             if status is OrderStatus.FILLED:
                 await self.repo.transition_signal(
@@ -831,12 +878,12 @@ class TradingOrchestrator:
                     SignalState.RECONCILIATION_REQUIRED,
                     {"reason": "unknown_order_status"},
                 )
-                counters["errors"] += 1
+                counters["errors"] = counters.get("errors", 0) + 1
             else:
                 await self.repo.transition_signal(
                     signal_id, SignalState.ERROR, {"reason": status.value}
                 )
-                counters["errors"] += 1
+                counters["errors"] = counters.get("errors", 0) + 1
         except ValueError as exc:
             notes.append(f"receipt transition skipped: {exc}")
         await self.audit.record(
@@ -855,6 +902,106 @@ class TradingOrchestrator:
                 "avg_fill_price": canonical_str(receipt.avg_fill_price),
             },
         )
+        return outcome
+
+    async def _now(self) -> datetime:
+        """Wall-clock now. Isolated so tests can pin it."""
+
+        return datetime.now(UTC)
+
+    @staticmethod
+    def _mode_of(position) -> Mode:
+        try:
+            return Mode(getattr(position, "mode", None) or Mode.PAPER.value)
+        except ValueError:
+            return Mode.PAPER
+
+    async def _resolve_pending_close(
+        self, position, signal, adapter, now: datetime, notes: list[str]
+    ) -> int:
+        """Finish or back out a close order that is still EXIT_PENDING.
+
+        The exit manager used to skip EXIT_PENDING signals outright, so a
+        resting close (or any non-AppError) left the position permanently
+        unmanaged. This reconciles the working close with its recorded order:
+
+        * filled        -> CLOSED
+        * rejected/error -> POSITION_OPEN (a fresh exit may be attempted)
+        * still working  -> cancelled once older than the working limit, then
+                            POSITION_OPEN once the cancel is acknowledged
+        """
+
+        # Resolve against the close order of *this* signal, not "whatever order
+        # this signal has" - the entry order is not a close.
+        intent = await self.repo.get_signal_intent(signal.id, intent_type=IntentType.CLOSE)
+        order = await self.repo.latest_close_order_for_signal(signal.id)
+        state_note = {
+            "symbol": position.symbol,
+            "intent_id": intent.id if intent else None,
+            "order_status": order.status if order else None,
+        }
+        if order is None:
+            notes.append(f"{position.symbol}: exit pending without an order; manual review")
+            return 0
+
+        if order.status == OrderStatus.FILLED.value:
+            await self.repo.transition_signal(
+                signal.id, SignalState.CLOSED, {**state_note, "source": "close_resolved"}
+            )
+            if intent is not None:
+                await self.repo.update_intent_status(intent.id, "EXECUTED")
+            await self.audit.record("exit.resolved", "position", position.id, state_note)
+            return 1
+        if order.status == OrderStatus.PARTIALLY_FILLED.value:
+            notes.append(f"{position.symbol}: partial exit still working")
+            return 0
+        if order.status in {OrderStatus.REJECTED.value, "ERROR", "UNKNOWN"}:
+            await self.repo.transition_signal(
+                signal.id,
+                SignalState.POSITION_OPEN,
+                {**state_note, "reason": "close_rejected"},
+            )
+            if intent is not None:
+                await self.repo.update_intent_status(intent.id, order.status)
+            notes.append(f"{position.symbol}: exit rejected; position kept open")
+            return 0
+
+        created = order.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        age = (now - created).total_seconds()
+        if age < CLOSE_ORDER_WORKING_LIMIT_SECONDS:
+            notes.append(f"{position.symbol}: exit order working")
+            return 0
+        try:
+            await adapter.cancel(order.id)
+        except ReconciliationRequiredError:
+            await self.repo.transition_signal(
+                signal.id,
+                SignalState.RECONCILIATION_REQUIRED,
+                {**state_note, "reason": "cancel_outcome_unknown"},
+            )
+            if intent is not None:
+                await self.repo.update_intent_status(
+                    intent.id, "RECONCILIATION_REQUIRED"
+                )
+            notes.append(f"{position.symbol}: exit cancel outcome unknown; reconcile")
+            return 0
+        except AppError as exc:
+            notes.append(f"{position.symbol}: exit cancel failed ({exc.code.value})")
+            return 0
+        await self.repo.transition_signal(
+            signal.id,
+            SignalState.POSITION_OPEN,
+            {**state_note, "reason": "close_cancelled_after_timeout"},
+        )
+        if intent is not None:
+            await self.repo.update_intent_status(intent.id, "CANCELLED")
+        await self.audit.record(
+            "exit.cancelled", "position", position.id, {**state_note, "age_seconds": int(age)}
+        )
+        notes.append(f"{position.symbol}: stale exit order cancelled; retry next cycle")
+        return 0
 
     async def _policy_for_position(self, position, current: EffectivePolicy | None):
         if current is not None and str(current.policy_id) == position.policy_id:
@@ -884,17 +1031,21 @@ class TradingOrchestrator:
     async def _manage_exits(
         self,
         *,
-        mode: Mode,
         policy: EffectivePolicy | None,
         snapshot_map: dict[str, MarketSnapshot],
         system,
-        adapter,
     ) -> tuple[int, list[str]]:
-        now = datetime.now(UTC)
+        """Route deterministic exits for every open position.
+
+        Each position exits through the adapter of the mode that opened it, not
+        the currently selected mode: after a restart (live resets to paper) or
+        a mode change, a real exchange position must still be closed on the
+        exchange that holds it.
+        """
+
+        now = await self._now()
         notes: list[str] = []
         exits = 0
-        if adapter is None:
-            return 0, ["no execution adapter for current mode"]
         positions = await self.repo.get_open_positions(self.account_id)
         for position in positions:
             snapshot = snapshot_map.get(position.symbol)
@@ -911,13 +1062,26 @@ class TradingOrchestrator:
             if snapshot is None:
                 continue
 
+            position_mode = self._mode_of(position)
+            adapter = self.execution_for_mode.get(position_mode)
+            if adapter is None:
+                notes.append(
+                    f"{position.symbol}: no execution adapter for {position_mode.value}"
+                )
+                continue
+            execute = position_mode is not await self.modes.current_mode()
+
             signal = await self.repo.get_signal(position.signal_id)
             if signal is None:
                 notes.append(f"{position.symbol}: position has no signal; manual review")
                 continue
             state = SignalState(signal.state)
+            if state is SignalState.EXIT_PENDING:
+                exits += await self._resolve_pending_close(
+                    position, signal, adapter, now, notes
+                )
+                continue
             if state in {
-                SignalState.EXIT_PENDING,
                 SignalState.RECONCILIATION_REQUIRED,
                 SignalState.CLOSED,
                 SignalState.ERROR,
@@ -935,8 +1099,13 @@ class TradingOrchestrator:
                 state = SignalState.POSITION_OPEN
             if state is not SignalState.POSITION_OPEN:
                 continue
-            if await self.repo.has_unsettled_close(self.account_id, position.symbol):
+            if await self.repo.has_unsettled_close_for(
+                self.account_id, position.symbol, position_mode.value
+            ):
                 notes.append(f"{position.symbol}: unsettled close order; no duplicate exit")
+                continue
+            if execute and await self.modes.kill_switch_active():
+                notes.append(f"{position.symbol}: exit deferred by kill switch on {position_mode.value}")
                 continue
 
             reason = self._exit_reason(position, snapshot, now)
@@ -976,7 +1145,7 @@ class TradingOrchestrator:
                 intent_id=uuid4(),
                 signal_id=UUID(signal.id),
                 policy_id=exit_policy.policy_id,
-                mode=mode,
+                mode=position_mode,
                 account_id=UUID(self.account_id),
                 symbol=position.symbol,
                 side=Side.SELL,

@@ -19,7 +19,8 @@ from ..adapters.models.jev import JevAdapter
 from ..adapters.models.llm import ConsoleLLMAdapter
 from ..adapters.models.simulated import SimulatedJevEvaluator, SimulatedPolicyGenerator
 from ..config import Settings, get_settings
-from ..domain.enums import Mode
+from ..domain.enums import ErrorCode, Mode
+from ..domain.errors import AppError
 from ..domain.money import canonical_str
 from ..domain.policy import PolicyCompiler
 from ..domain.risk import RiskEngine
@@ -116,6 +117,9 @@ class AppContainer:
         self.account_id = ""
         self.orchestrator: TradingOrchestrator | None = None
         self._cycle_task: asyncio.Task[None] | None = None
+        # One cycle at a time: the scheduler and manual HTTP cycles share the
+        # ledger and must not interleave position reads with writes.
+        self._cycle_lock = asyncio.Lock()
 
     def _build_policy_generator(self):
         settings = self.settings
@@ -153,6 +157,7 @@ class AppContainer:
             "main", self.settings.trading_mode, self.settings.paper_starting_equity
         )
         self.account_id = account.id
+        self.modes.account_id = account.id
         self.orchestrator = TradingOrchestrator(
             settings=self.settings,
             repo=self.repo,
@@ -195,7 +200,9 @@ class AppContainer:
         while True:
             try:
                 await asyncio.sleep(interval)
-                result = await self.run_cycle()
+                # Never queue cycles up behind each other: a slow cycle lets
+                # the next interval fire, and the scheduler should skip it.
+                result = await self.run_cycle(wait=False)
                 logger.info(
                     "auto cycle %s mode=%s signals=%s executed=%s",
                     result.cycle_id,
@@ -320,10 +327,20 @@ class AppContainer:
             "execution_backend": self.settings.execution_backend,
         }
 
-    async def run_cycle(self, *, refresh_policy: bool = False):
-        if self.orchestrator is None:
+    async def run_cycle(self, *, refresh_policy: bool = False, wait: bool = True):
+        orchestrator = self.orchestrator
+        if orchestrator is None:
             raise RuntimeError("container has not been started")
-        return await self.orchestrator.run_cycle(refresh_policy=refresh_policy)
+        if not self._cycle_lock.locked():
+            async with self._cycle_lock:
+                return await orchestrator.run_cycle(refresh_policy=refresh_policy)
+        if not wait:
+            raise AppError(
+                ErrorCode.CONFLICT,
+                "A cycle is already running; retry when it finishes.",
+            )
+        async with self._cycle_lock:
+            return await orchestrator.run_cycle(refresh_policy=refresh_policy)
 
     async def close(self) -> None:
         if self._cycle_task is not None:

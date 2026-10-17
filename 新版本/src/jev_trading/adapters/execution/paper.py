@@ -124,7 +124,12 @@ class PaperExecutionAdapter:
         )
 
     async def cancel(self, order_id: str) -> None:
+        # Paper orders have no exchange-side state: a cancel is final at once,
+        # so the order row must stop counting as unsettled.
         await self.repo.record_order_event(order_id, "CANCEL_REQUESTED", {"backend": self.name})
+        await self.repo.update_order_status(
+            order_id, OrderStatus.CANCELLED, note="paper cancel is immediate"
+        )
 
     async def reconcile(self, account_id: str) -> ReconciliationResult:
         return ReconciliationResult(

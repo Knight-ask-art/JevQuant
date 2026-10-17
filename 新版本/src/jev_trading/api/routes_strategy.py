@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ..domain.enums import ErrorCode
 from ..domain.errors import AppError
+from ..domain.money import canonical_str
 from .security import require_operator
 
 router = APIRouter(prefix="/api/v1/strategy", tags=["strategy"])
@@ -76,7 +77,7 @@ async def generate_policy(
         "equity_usdt": float(account.equity_usdt),
         "available_quote_usdt": float(account.available_quote_usdt),
         "open_positions": account.open_positions,
-        "daily_realized_pnl_pct": float(account.daily_realized_pnl_pct),
+        "daily_realized_pnl_pct": canonical_str(account.daily_realized_pnl_pct),
     }
 
     generator = container.policy_generator

@@ -324,6 +324,9 @@ class PositionRow(Base):
     exit_order_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     policy_id: Mapped[str] = mapped_column(String(36))
     signal_id: Mapped[str] = mapped_column(String(36))
+    # Execution route that owns this position. Exits must go back through the
+    # same adapter even after a restart or a mode change.
+    mode: Mapped[str] = mapped_column(String(16), default="paper")
     is_simulated: Mapped[bool] = mapped_column(Boolean, default=False)
 
 

@@ -94,6 +94,40 @@ def test_reconcile_endpoint_uses_the_active_adapter(open_client):
     assert "notes" in body
 
 
+def test_mode_change_is_refused_while_a_live_position_is_open(open_client):
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    container = open_client.app.state.container
+
+    async def _open_live_position():
+        async with container.db.session() as session:
+            from jev_trading.storage.models import PositionRow
+
+            session.add(
+                PositionRow(
+                    account_id=container.account_id,
+                    symbol="BTCUSDT",
+                    qty=Decimal("0.001"),
+                    avg_entry_price=Decimal("68000"),
+                    stop_loss_bps=Decimal("100"),
+                    take_profit_bps=Decimal("200"),
+                    max_holding_seconds=3600,
+                    status="OPEN",
+                    opened_at=datetime.now(UTC),
+                    policy_id="p",
+                    signal_id="s",
+                    mode="live",
+                    is_simulated=False,
+                )
+            )
+
+    open_client.portal.call(_open_live_position)
+    response = open_client.post("/api/v1/mode/set", json={"mode": "shadow"})
+    assert response.status_code == 409
+    assert "live positions" in response.json()["error"]["message"]
+
+
 def test_backtest_endpoint_returns_synthetic_report(open_client):
     response = open_client.post(
         "/api/v1/backtests",

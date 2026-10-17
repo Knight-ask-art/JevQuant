@@ -83,5 +83,5 @@ async def run_demo_cycle(
             "Manual cycles are disabled in live mode. Use the configured "
             "auto-cycle scheduler instead.",
         )
-    result = await container.run_cycle(refresh_policy=refresh_policy)
+    result = await container.run_cycle(refresh_policy=refresh_policy, wait=False)
     return result.model_dump(mode="json")

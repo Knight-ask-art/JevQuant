@@ -528,9 +528,57 @@ class Repository:
                 return existing, False
             return row, True
 
+    async def get_signal_intent(
+        self, signal_id: str, *, intent_type: IntentType
+    ) -> TradeIntentRow | None:
+        """The intent a signal is currently acting on (latest of its kind)."""
+
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(TradeIntentRow)
+                    .where(
+                        TradeIntentRow.signal_id == signal_id,
+                        TradeIntentRow.intent_type == intent_type.value,
+                    )
+                    .order_by(TradeIntentRow.created_at.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+
     async def get_intent(self, intent_id: str) -> TradeIntentRow | None:
         async with self.db.session() as session:
             return await session.get(TradeIntentRow, intent_id)
+
+    async def latest_unsettled_close_intent(
+        self, account_id: str, symbol: str, mode: str
+    ) -> TradeIntentRow | None:
+        """The most recent close intent on a route that may still be working."""
+
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(TradeIntentRow)
+                    .where(
+                        TradeIntentRow.account_id == account_id,
+                        TradeIntentRow.symbol == symbol,
+                        TradeIntentRow.mode == mode,
+                        TradeIntentRow.intent_type == IntentType.CLOSE.value,
+                        TradeIntentRow.status.in_(
+                            [
+                                "APPROVED",
+                                "EXECUTION_PENDING",
+                                "EXECUTED",
+                                OrderStatus.ACCEPTED.value,
+                                OrderStatus.PARTIALLY_FILLED.value,
+                                OrderStatus.UNKNOWN.value,
+                            ]
+                        ),
+                    )
+                    .order_by(TradeIntentRow.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
 
     async def get_intent_by_idempotency(self, key: str) -> TradeIntentRow | None:
         async with self.db.session() as session:
@@ -701,6 +749,7 @@ class Repository:
                         entry_order_id=order_id,
                         policy_id=str(intent.policy_id),
                         signal_id=str(intent.signal_id),
+                        mode=intent.mode.value,
                         is_simulated=intent.mode is not Mode.LIVE,
                     )
                     session.add(result_position)
@@ -1072,12 +1121,69 @@ class Repository:
             await session.flush()
             return row
 
-    async def has_unsettled_close(self, account_id: str, symbol: str) -> bool:
+    async def record_order_row(
+        self,
+        *,
+        approved: ApprovedTradeIntent,
+        order_id: str,
+        status: OrderStatus,
+        now: datetime | None = None,
+    ) -> None:
+        """Persist an order without applying any fill to the ledger."""
+
+        intent = approved.intent
+        async with self.db.session() as session:
+            session.add(
+                OrderRow(
+                    id=order_id,
+                    intent_id=str(intent.intent_id),
+                    exchange_order_id=None,
+                    symbol=intent.symbol,
+                    side=intent.side.value,
+                    order_type=intent.order_preference.value,
+                    qty=approved.approved_qty,
+                    price=approved.approved_limit_price,
+                    status=status.value,
+                    filled_qty=ZERO,
+                    avg_fill_price=ZERO,
+                    fee_quote=ZERO,
+                    mode=intent.mode.value,
+                    is_simulated=intent.mode is not Mode.LIVE,
+                    created_at=now or utcnow(),
+                )
+            )
+            await session.flush()
+
+    async def update_order_status(self, order_id: str, status: OrderStatus, *, note: str) -> None:
+        """Record a local status change after a cancel was acknowledged."""
+
+        async with self.db.session() as session:
+            row = await session.get(OrderRow, order_id)
+            if row is None:
+                raise ValueError(f"order {order_id} not found")
+            row.status = status.value
+            session.add(
+                OrderEventRow(
+                    order_id=order_id,
+                    event_type=status.value,
+                    payload_json={"note": note},
+                )
+            )
+            await session.flush()
+
+    async def has_unsettled_close_for(
+        self, account_id: str, symbol: str, mode: str
+    ) -> bool:
+        """A close order on this account+symbol+route that may still fill."""
+
         async with self.db.session() as session:
             row = (
                 await session.execute(
                     select(OrderRow)
+                    .join(TradeIntentRow, TradeIntentRow.id == OrderRow.intent_id)
                     .where(
+                        TradeIntentRow.account_id == account_id,
+                        TradeIntentRow.mode == mode,
                         OrderRow.symbol == symbol,
                         OrderRow.side == "sell",
                         OrderRow.status.in_(
@@ -1104,6 +1210,23 @@ class Repository:
                     .limit(1)
                 )
             ).scalar_one_or_none()
+
+    async def latest_close_order_for_signal(self, signal_id: str) -> OrderRow | None:
+        """The newest order placed by a CLOSE intent of this signal."""
+
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(OrderRow)
+                    .join(TradeIntentRow, TradeIntentRow.id == OrderRow.intent_id)
+                    .where(
+                        TradeIntentRow.signal_id == signal_id,
+                        TradeIntentRow.intent_type == IntentType.CLOSE.value,
+                    )
+                    .order_by(OrderRow.created_at.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
 
     async def latest_market_marks(self) -> dict[str, Decimal]:
         from sqlalchemy import and_

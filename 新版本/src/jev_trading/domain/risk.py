@@ -229,7 +229,14 @@ class RiskEngine:
             failures.append(
                 RuleFailure(rule="policy_mismatch", message="Intent policy_id is not active.")
             )
-        if intent.mode is not Mode.SHADOW and intent.mode.value != ctx.system.mode:
+        # Entries must match the server mode. Exits may carry the mode that owns
+        # the position (live resets to paper on restart, but the exchange
+        # position still has to be closed on the live route).
+        if (
+            is_entry
+            and intent.mode is not Mode.SHADOW
+            and intent.mode.value != ctx.system.mode
+        ):
             failures.append(
                 RuleFailure(
                     rule="mode_mismatch",

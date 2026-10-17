@@ -42,6 +42,9 @@ class ShadowExecutionAdapter:
 
     async def cancel(self, order_id: str) -> None:
         await self.repo.record_order_event(order_id, "SHADOW_CANCEL_NOOP")
+        await self.repo.update_order_status(
+            order_id, OrderStatus.CANCELLED, note="shadow cancel is local only"
+        )
 
     async def reconcile(self, account_id: str) -> ReconciliationResult:
         return ReconciliationResult(healthy=True, notes=["Shadow sink has no external state."])

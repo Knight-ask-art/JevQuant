@@ -53,7 +53,7 @@ Secrets are never returned by any endpoint.
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| POST | `/api/v1/mode/set` | `{"mode":"paper"\|"shadow"\|"testnet"\|"live"}` | `live` returns `MODE_NOT_ARMED`; live only via handshake |
+| POST | `/api/v1/mode/set` | `{"mode":"paper"\|"shadow"\|"testnet"\|"live"}` | `live` returns `MODE_NOT_ARMED`; 409 while a live position is open |
 | POST | `/api/v1/mode/preflight-live` | — | returns `{passed, checks[], arming_token}`; token is null on failure |
 | POST | `/api/v1/mode/arm-live` | `{"arming_token","confirmation","totp_code"}` | confirmation must be `ARM LIVE TRADING` |
 | POST | `/api/v1/mode/disarm` | `{"reason"}` | stops new entries; keeps mode for exits |
@@ -99,7 +99,10 @@ purpose denied by the provider is rejected with `PURPOSE_NOT_ALLOWED` (HTTP 403)
 
 Dispatch rules: the intent must exist, be `APPROVED`, have a persisted approved risk
 decision, be unexpired, and match the active mode. Unknown outcomes return
-`RECONCILIATION_REQUIRED`; they never fabricate a fill.
+`RECONCILIATION_REQUIRED`; they never fabricate a fill. The response `status` is the
+signal state after dispatch and `intent_status` is the intent's final status.
+
+`POST /api/v1/demo/cycle` returns HTTP 409 while another cycle is running.
 
 ## Backtests
 
