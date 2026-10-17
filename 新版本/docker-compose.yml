@@ -1,0 +1,60 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: jev
+      POSTGRES_PASSWORD: jev
+      POSTGRES_DB: jev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jev -d jev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    environment:
+      JEV_APP_ENV: dev
+      JEV_DATABASE_URL: postgresql+asyncpg://jev:jev@db:5432/jev
+      JEV_REDIS_URL: redis://redis:6379/0
+      JEV_EXECUTION_BACKEND: paper
+      JEV_TRADING_MODE: paper
+      JEV_ENABLE_LIVE_TRADING: "false"
+      JEV_SYNTHETIC_MARKET: "true"
+      JEV_DEMO_MODE: "true"
+      JEV_AUTH_DISABLED: "true"
+      JEV_AUTO_CYCLE_SECONDS: "0"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:

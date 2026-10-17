@@ -1,0 +1,31 @@
+:root {
+  --paper: #f8f5ee;
+  --paper-2: #f2ece2;
+  --card: #fffdf8;
+
+  --ink: #34302c;
+  --ink-soft: #665e57;
+  --muted: #95897d;
+
+  --line: #dfd5c8;
+  --line-strong: #c9bcaa;
+
+  --terracotta: #c76548;
+  --terracotta-fade: #f4e4d9;
+
+  --olive: #517264;
+  --olive-fade: #e4ece5;
+
+  --pencil-yellow: #eddc9e;
+  --danger: #a84c46;
+  --danger-fade: #f6e2df;
+
+  --serif: "Source Serif 4", "Iowan Old Style", Georgia, serif;
+  --sans: "Inter", "IBM Plex Sans", system-ui, sans-serif;
+  --hand: "Kalam", "Segoe Print", cursive;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --shadow-note: 0 1px 0 rgba(52, 48, 44, 0.06), 0 10px 24px -22px rgba(52, 48, 44, 0.45);
+  --max-width: 1360px;
+}
