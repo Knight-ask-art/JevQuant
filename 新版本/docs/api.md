@@ -91,7 +91,7 @@ purpose denied by the provider is rejected with `PURPOSE_NOT_ALLOWED` (HTTP 403)
 | POST | `/api/v1/execution/intents` | internal | dispatch an approved intent: `{"intent_id":"..."}` |
 | POST | `/api/v1/execution/reconcile` | internal | ask the adapter to re-check unknown orders |
 | GET | `/api/v1/execution/health` | operator | adapter health for the active mode |
-| POST | `/api/v1/execution/balances/sync` | operator | read testnet/live venue balances, record + audit drift |
+| POST | `/api/v1/execution/balances/sync` | operator | read testnet/live venue balances, record + audit drift; drift triggers one rate-limited reconcile (`reconciled` in the response) |
 | GET | `/api/v1/execution/balances` | operator | latest venue balance snapshot per route/asset |
 | GET | `/api/v1/orders?limit=100` | operator | orders |
 | GET | `/api/v1/orders/{order_id}` | operator | one order |

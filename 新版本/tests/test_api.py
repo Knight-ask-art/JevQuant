@@ -138,6 +138,8 @@ def test_balance_sync_endpoint_reports_unconfigured_routes(open_client):
     assert body["in_tolerance"] is True
     assert set(body["skipped"]) == {"testnet", "live"}
     assert all("not configured" in reason for reason in body["skipped"].values())
+    # Nothing drifted, so nothing was reconciled.
+    assert body["reconciled"] == {}
 
     latest = open_client.get("/api/v1/execution/balances")
     assert latest.status_code == 200

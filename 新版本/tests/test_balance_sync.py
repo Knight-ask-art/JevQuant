@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import pytest
 
+from jev_trading.adapters.execution.base import ReconciliationResult
 from jev_trading.domain.enums import Mode
 from jev_trading.domain.money import canonical_str
 from jev_trading.services.balance_sync import BalanceSyncService
@@ -26,11 +29,32 @@ from conftest import NOW
 class FakeAdapter:
     view: BalanceView | None = None
     error: Exception | None = None
+    reconcile_result: Any = None
+    reconcile_error: Exception | None = None
+    reconcile_calls: int = 0
+    reconcile_accounts: list[str] = field(default_factory=list)
 
     async def fetch_balances(self) -> BalanceView | None:
         if self.error is not None:
             raise self.error
         return self.view
+
+    async def reconcile(self, account_id: str) -> ReconciliationResult:
+        self.reconcile_calls += 1
+        self.reconcile_accounts.append(account_id)
+        if self.reconcile_error is not None:
+            raise self.reconcile_error
+        return self.reconcile_result or ReconciliationResult(
+            healthy=True, checked_orders=1
+        )
+
+
+class FakeClock:
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
 
 
 class Recorder:
@@ -74,7 +98,7 @@ def view(**overrides: Any) -> BalanceView:
     return BalanceView(**values)
 
 
-def make_service(repo, adapters):
+def make_service(repo, adapters, **overrides):
     recorder = Recorder()
     service = BalanceSyncService(
         repo=repo,
@@ -83,6 +107,7 @@ def make_service(repo, adapters):
         adapters=adapters,
         account_id="",
         base_assets={"BTCUSDT": "BTC", "ETHUSDT": "ETH"},
+        **overrides,
     )
     return service, recorder
 
@@ -143,6 +168,136 @@ async def test_drift_raises_an_alarm_and_leaves_ledger_untouched(repo):
         ).scalar_one()
     assert Decimal(str(cash)) == Decimal("1000")
     assert after is not None
+
+
+async def test_drift_triggers_one_reconciliation(repo):
+    account = await account_with_cash(repo, "1000")
+    adapter = FakeAdapter(
+        view=view(free_quote=Decimal("1012.5")),
+        reconcile_result=ReconciliationResult(healthy=True, checked_orders=2),
+    )
+    service, recorder = make_service(repo, {Mode.TESTNET: adapter})
+    service.account_id = account.id
+
+    report = await service.sync()
+
+    assert adapter.reconcile_calls == 1
+    assert adapter.reconcile_accounts == [account.id]
+    outcome = report.reconciled["testnet"]
+    assert outcome["triggered"] is True
+    assert outcome["healthy"] is True
+    assert outcome["checked_orders"] == 2
+    assert outcome["ledger_quote_after"] == "1000"
+    assert "balance.reconcile_triggered" in recorder.types()
+    assert "balance.reconcile_finished" in recorder.types()
+
+
+async def test_agreement_does_not_reconcile(repo):
+    account = await account_with_cash(repo, "1000")
+    adapter = FakeAdapter(view=view())
+    service, _recorder = make_service(repo, {Mode.TESTNET: adapter})
+    service.account_id = account.id
+
+    report = await service.sync()
+
+    assert adapter.reconcile_calls == 0
+    assert report.reconciled == {}
+
+
+async def test_reconcile_is_rate_limited_per_route(repo):
+    account = await account_with_cash(repo, "1000")
+    adapter = FakeAdapter(view=view(free_quote=Decimal("1012.5")))
+    clock = FakeClock(datetime(2026, 10, 18, 12, 0, tzinfo=UTC))
+    service, _recorder = make_service(
+        repo,
+        {Mode.TESTNET: adapter},
+        clock=clock,
+        reconcile_cooldown_seconds=300,
+    )
+    service.account_id = account.id
+
+    first = await service.sync()
+    assert first.reconciled["testnet"]["triggered"] is True
+    assert adapter.reconcile_calls == 1
+
+    clock.now += timedelta(seconds=60)
+    second = await service.sync()
+    suppressed = second.reconciled["testnet"]
+    assert suppressed["triggered"] is False
+    assert suppressed["reason"] == "cooldown"
+    assert suppressed["cooldown_seconds"] == 300
+    assert adapter.reconcile_calls == 1
+
+    clock.now += timedelta(seconds=300)
+    third = await service.sync()
+    assert third.reconciled["testnet"]["triggered"] is True
+    assert adapter.reconcile_calls == 2
+
+
+async def test_concurrent_syncs_reconcile_once(repo):
+    account = await account_with_cash(repo, "1000")
+    adapter = FakeAdapter(view=view(free_quote=Decimal("1012.5")))
+    service, _recorder = make_service(repo, {Mode.TESTNET: adapter})
+    service.account_id = account.id
+
+    reports = await asyncio.gather(service.sync(), service.sync())
+
+    assert adapter.reconcile_calls == 1
+    # One run reconciled; the other saw the cooldown that run started.
+    triggered = [
+        report.reconciled["testnet"]["triggered"]
+        for report in reports
+        if report.reconciled
+    ]
+    assert triggered == [True, False]
+
+
+async def test_failed_reconcile_is_audited_and_does_not_break_sync(repo):
+    account = await account_with_cash(repo, "1000")
+    adapter = FakeAdapter(
+        view=view(free_quote=Decimal("1012.5")),
+        reconcile_error=RuntimeError("venue down"),
+    )
+    service, recorder = make_service(repo, {Mode.TESTNET: adapter})
+    service.account_id = account.id
+
+    report = await service.sync()
+
+    assert report.drifts[0].within_tolerance is False
+    assert report.reconciled["testnet"]["error"] == "RuntimeError"
+    assert "balance.reconcile_failed" in recorder.types()
+    assert len(await repo.latest_balance_snapshots()) == 1
+
+
+async def test_auto_reconcile_can_be_disabled(repo):
+    account = await account_with_cash(repo, "1000")
+    adapter = FakeAdapter(view=view(free_quote=Decimal("1012.5")))
+    service, recorder = make_service(repo, {Mode.TESTNET: adapter}, auto_reconcile=False)
+    service.account_id = account.id
+
+    report = await service.sync()
+
+    assert adapter.reconcile_calls == 0
+    assert report.reconciled == {}
+    assert "balance.drift" in recorder.types()
+
+
+async def test_route_without_reconcile_reports_the_reason(repo):
+    account = await account_with_cash(repo, "1000")
+
+    class FetchOnly:
+        async def fetch_balances(self):
+            return view(free_quote=Decimal("1012.5"))
+
+    service, _recorder = make_service(repo, {Mode.TESTNET: FetchOnly()})
+    service.account_id = account.id
+
+    report = await service.sync()
+
+    assert report.reconciled["testnet"] == {
+        "triggered": False,
+        "reason": "adapter exposes no reconcile",
+    }
 
 
 async def test_dust_inside_tolerance_is_not_drift(repo):

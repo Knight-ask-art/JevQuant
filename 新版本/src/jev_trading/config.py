@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     # Exchange-account balance sync (testnet/live venues only). 0 disables the
     # scheduler; POST /api/v1/execution/balances/sync still runs on demand.
     balance_sync_seconds: int = Field(default=0, ge=0, le=86_400)
+    # When a balance read leaves tolerance, run one reconciliation for that
+    # route so a fill the ledger missed can settle itself. The cooldown is per
+    # route and starts even on failure: a persistent difference must not turn
+    # every sync into a burst of venue calls.
+    balance_auto_reconcile: bool = True
+    balance_reconcile_cooldown_seconds: int = Field(default=300, ge=0, le=86_400)
 
     @field_validator("allowed_symbols")
     @classmethod

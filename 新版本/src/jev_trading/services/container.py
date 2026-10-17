@@ -125,6 +125,11 @@ class AppContainer:
         # One cycle at a time: the scheduler and manual HTTP cycles share the
         # ledger and must not interleave position reads with writes.
         self._cycle_lock = asyncio.Lock()
+        # Position/ledger writers: a trading cycle and a venue reconciliation
+        # both read open positions and apply settlements. They must not
+        # interleave, whether the reconcile is operator-triggered or fired by a
+        # balance drift.
+        self.ledger_lock = asyncio.Lock()
         self.balance_sync: BalanceSyncService | None = None
         self._balance_task: asyncio.Task[None] | None = None
 
@@ -199,6 +204,10 @@ class AppContainer:
                 "synthetic": self.settings.synthetic_market,
                 "auto_cycle_seconds": self.settings.auto_cycle_seconds,
                 "balance_sync_seconds": self.settings.balance_sync_seconds,
+                "balance_auto_reconcile": self.settings.balance_auto_reconcile,
+                "balance_reconcile_cooldown_seconds": (
+                    self.settings.balance_reconcile_cooldown_seconds
+                ),
             },
         )
         self.balance_sync = BalanceSyncService(
@@ -208,6 +217,9 @@ class AppContainer:
             adapters=self.execution_for_mode,
             account_id=self.account_id,
             base_assets={symbol: symbol.removesuffix("USDT") for symbol in self.settings.allowed_symbols},
+            auto_reconcile=self.settings.balance_auto_reconcile,
+            reconcile_cooldown_seconds=self.settings.balance_reconcile_cooldown_seconds,
+            reconcile_lock=self.ledger_lock,
         )
         if self.settings.balance_sync_seconds > 0:
             scheduler = BalanceSyncScheduler(
@@ -363,14 +375,16 @@ class AppContainer:
             raise RuntimeError("container has not been started")
         if not self._cycle_lock.locked():
             async with self._cycle_lock:
-                return await orchestrator.run_cycle(refresh_policy=refresh_policy)
+                async with self.ledger_lock:
+                    return await orchestrator.run_cycle(refresh_policy=refresh_policy)
         if not wait:
             raise AppError(
                 ErrorCode.CONFLICT,
                 "A cycle is already running; retry when it finishes.",
             )
         async with self._cycle_lock:
-            return await orchestrator.run_cycle(refresh_policy=refresh_policy)
+            async with self.ledger_lock:
+                return await orchestrator.run_cycle(refresh_policy=refresh_policy)
 
     async def close(self) -> None:
         for task in (self._balance_task, self._cycle_task):

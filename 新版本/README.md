@@ -38,7 +38,7 @@ shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 | Real OHLCV / Freqtrade replay | ❌ not implemented |
 | Real fill-ledger rebuild for Hummingbot | ❌ follow-up (unknown states are reconciled, not invented) |
 | Testnet position/PnL ledger | ✅ rebuilt on reconcile from venue-confirmed close orders |
-| Exchange balance sync (testnet/live) | ✅ snapshot + drift audit; surfaced on Models & Costs |
+| Exchange balance sync (testnet/live) | ✅ snapshot + drift audit; drift triggers one rate-limited reconcile; surfaced on Models & Costs |
 
 ## Quick start (local, no Docker, no keys)
 
@@ -66,7 +66,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 104 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
+pytest                     # 111 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:
@@ -176,6 +176,8 @@ Highlights:
 | `JEV_MAX_POSITION_NOTIONAL_USDT` | `500` | hard envelope |
 | `JEV_ENTRY_FILTER_TTL_SECONDS` | `60` | max age of cached exchange filters used for an entry |
 | `JEV_BALANCE_SYNC_SECONDS` | `0` | periodic testnet/live venue balance sync; 0 = manual |
+| `JEV_BALANCE_AUTO_RECONCILE` | `true` | reconcile once when a venue balance leaves tolerance |
+| `JEV_BALANCE_RECONCILE_COOLDOWN_SECONDS` | `300` | per-route minimum seconds between auto-reconciles |
 | `JEV_MAX_DAILY_LOSS_PCT` | `2` | hard envelope |
 | `JEV_REQUIRE_WITHDRAWALS_DISABLED` | `true` | live key policy |
 | `JEV_REQUIRE_IP_RESTRICT` | `true` | live key policy |

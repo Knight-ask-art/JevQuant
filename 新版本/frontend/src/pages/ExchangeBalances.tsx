@@ -26,9 +26,24 @@ interface BalanceDrift {
   base_mismatch: Record<string, { ledger: string; venue: string; difference: string }>;
 }
 
+interface ReconcileOutcome {
+  triggered: boolean;
+  reason?: string;
+  healthy?: boolean;
+  error?: string;
+  checked_orders?: number;
+  unknown_orders?: number;
+  notes?: string[];
+  difference?: string;
+  ledger_quote_after?: string;
+  last_reconcile_at?: string;
+  cooldown_seconds?: number;
+}
+
 interface SyncResult {
   drifts: BalanceDrift[];
   skipped: Record<string, string>;
+  reconciled?: Record<string, ReconcileOutcome>;
   in_tolerance: boolean;
 }
 
@@ -77,6 +92,35 @@ export function ExchangeBalances() {
   });
   const configured = routeRows.some((row) => row.snapshot);
   const anyDrift = result ? !result.in_tolerance : false;
+  const triggeredReconcile = Object.values(result?.reconciled ?? {}).some(
+    (outcome) => outcome.triggered,
+  );
+  const reconcileCoolingDown = Object.values(result?.reconciled ?? {}).some(
+    (outcome) => outcome.reason === "cooldown",
+  );
+  const reconcileLines = Object.entries(result?.reconciled ?? {}).map(
+    ([route, outcome]) => {
+      if (!outcome.triggered) {
+        return outcome.reason === "cooldown"
+          ? `${label(route)}: reconciliation ran ${timeAgo(outcome.last_reconcile_at)} (cooldown ${outcome.cooldown_seconds}s)`
+          : `${label(route)}: reconciliation not run — ${outcome.reason ?? "unavailable"}`;
+      }
+      if (outcome.error) {
+        return `${label(route)}: reconciliation failed (${outcome.error}) — ledger untouched`;
+      }
+      const checked = outcome.checked_orders ?? 0;
+      const unknown = outcome.unknown_orders ?? 0;
+      const parts = [
+        `${label(route)}: reconciliation ${outcome.healthy ? "healthy" : "incomplete"}`,
+        `${checked} order${checked === 1 ? "" : "s"} checked`,
+      ];
+      if (unknown) parts.push(`${unknown} unknown`);
+      if (outcome.ledger_quote_after !== undefined) {
+        parts.push(`ledger now ${money(outcome.ledger_quote_after)} USDT`);
+      }
+      return parts.join(" · ");
+    },
+  );
 
   return (
     <PaperCard
@@ -90,7 +134,9 @@ export function ExchangeBalances() {
     >
       <p className="small" style={{ marginBottom: 12, color: "var(--ink-soft)" }}>
         The exchange's view of the account is recorded next to the ledger's figure. Drift is
-        reported for reconciliation — it never rewrites cash or positions.
+        reported for reconciliation — it never rewrites cash or positions. A drift triggers one
+        reconciliation for that route, rate-limited so a persistent difference cannot hammer the
+        venue.
       </p>
       {error && <ErrorNote error={error} />}
 
@@ -99,8 +145,19 @@ export function ExchangeBalances() {
           {result.drifts.length === 0
             ? "No route returned a balance: nothing is configured, so nothing is claimed."
             : anyDrift
-              ? "Drift outside tolerance — run reconciliation before trusting the ledger."
+              ? triggeredReconcile
+                ? "Drift outside tolerance — reconciliation was triggered for the affected route; check its notes below."
+                : reconcileCoolingDown
+                  ? "Drift outside tolerance — reconciliation ran recently; the per-route cooldown is still active."
+                  : "Drift outside tolerance — run reconciliation before trusting the ledger."
               : "Venue and ledger agree within tolerance."}
+          {reconcileLines.length > 0 && (
+            <div className="small" style={{ marginTop: 6 }}>
+              {reconcileLines.map((line, index) => (
+                <div key={`${index}-${line}`}>{line}</div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

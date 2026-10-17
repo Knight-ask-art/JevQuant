@@ -72,7 +72,10 @@ async def reconcile(
             ErrorCode.DEPENDENCY_UNAVAILABLE,
             f"No execution adapter is configured for mode {mode.value}.",
         )
-    result = await adapter.reconcile(container.account_id)
+    # Serialized with trading cycles and the drift-triggered reconcile: both
+    # read open positions and apply venue-confirmed settlements.
+    async with container.ledger_lock:
+        result = await adapter.reconcile(container.account_id)
     await container.audit.record(
         "execution.reconciled",
         "system",
@@ -88,8 +91,9 @@ async def sync_balances(
 ) -> dict[str, object]:
     """Read the venue account on each tradeable route and compare with the ledger.
 
-    Records the venue view and raises an audit event on drift. It never edits
-    the ledger: differences are reported for reconciliation, not absorbed.
+    Records the venue view and raises an audit event on drift. A drift triggers
+    one reconciliation for that route (rate-limited); the sync itself never
+    edits the ledger: differences are settled only from venue-confirmed trades.
     """
 
     container = _container(request)
@@ -105,6 +109,7 @@ async def sync_balances(
     return {
         "drifts": [drift_payload(drift) for drift in report.drifts],
         "skipped": report.skipped,
+        "reconciled": report.reconciled,
         "in_tolerance": report.in_tolerance,
     }
 

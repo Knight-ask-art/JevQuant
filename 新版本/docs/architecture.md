@@ -177,6 +177,17 @@ base quantities. A route that cannot be read (unconfigured, transport error) is
 skipped and audited as `balance.sync_failed`, never assumed. The scheduler runs on
 `JEV_BALANCE_SYNC_SECONDS`; `POST /api/v1/execution/balances/sync` runs it on demand.
 
+A drift triggers one `reconcile()` for that route — reconciliation is the only path
+that may settle the difference, from venue-confirmed fills. The trigger is audited as
+`balance.reconcile_triggered` / `balance.reconcile_finished` (or
+`balance.reconcile_failed`, storing only the error type) and is rate limited per route
+by `JEV_BALANCE_RECONCILE_COOLDOWN_SECONDS`; the cooldown starts even on failure, so
+a persistent difference cannot hammer an unhealthy venue. `JEV_BALANCE_AUTO_RECONCILE=false`
+disables the trigger. Concurrent syncs (API and scheduler) are serialized, so one
+drift is not reconciled twice, and reconciles take the container's ledger lock so a
+reconcile cannot interleave with a trading cycle's position writes. The sync response
+reports the outcome per route (`reconciled`), including a suppressed trigger.
+
 ## Failure behaviour
 
 | Failure | New entries | Existing exits | Notes |
@@ -190,7 +201,7 @@ skipped and audited as `balance.sync_failed`, never assumed. The scheduler runs 
 | Redis unavailable | blocked **only if configured** | continue | in-process bus still delivers |
 | Execution adapter unhealthy | blocked | blocked | `execution_unhealthy` |
 | Unknown order outcome | blocked for that signal | manual reconciliation | `RECONCILIATION_REQUIRED` |
-| Venue balance differs from ledger | unchanged | unchanged | audit `balance.drift`; sync never edits the ledger |
+| Venue balance differs from ledger | unchanged | unchanged | audit `balance.drift`; one auto-reconcile per route (cooldown) may settle venue-confirmed fills |
 | Kill switch | blocked | continue | mode unchanged |
 | Live not armed | blocked | continue | only relevant in live mode |
 

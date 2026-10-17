@@ -16,7 +16,7 @@ interpreting venue trades, which is reconciliation's job.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -88,6 +88,9 @@ class BalanceDrift:
 class BalanceDriftReport:
     drifts: list[BalanceDrift]
     skipped: dict[str, str]  # route -> reason no venue view was read
+    # route -> outcome of the reconciliation a drift triggered (empty when
+    # every route agreed, or when auto-reconciliation is off).
+    reconciled: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def in_tolerance(self) -> bool:
