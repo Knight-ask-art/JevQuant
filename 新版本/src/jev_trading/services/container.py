@@ -52,7 +52,10 @@ class AppContainer:
             if settings.synthetic_market
             else BinanceMarketDataProvider(settings.binance_base_url)
         )
-        self.market = MarketService(self.market_provider)
+        self.market = MarketService(
+            self.market_provider,
+            entry_filter_ttl_seconds=settings.entry_filter_ttl_seconds,
+        )
         self.compiler = PolicyCompiler(settings.server_limits)
         self.policy_service = PolicyService(
             self.repo, self.compiler, settings.server_limits, self.audit, self.broker

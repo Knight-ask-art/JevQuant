@@ -118,6 +118,15 @@ and synthetic defaults. For a cluster, `deploy/k8s/` provides the object skeleto
 - The Ingress must pass `/ws` upgrades; the shipped annotations raise proxy timeouts for
   the event stream.
 
+## Exchange filters
+
+Filters (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL) are always discovered at runtime, never
+hardcoded. The cache is bounded, and **entry paths** only trust filters younger than
+`JEV_ENTRY_FILTER_TTL_SECONDS` (default 60 s): an older value forces a re-query, and a
+failed re-query blocks that entry. A venue halting a symbol therefore cannot be traded on
+a cached `TRADING` status for more than that window. Exit paths may use the longer cache
+so they keep working during a brief `exchangeInfo` outage.
+
 ## Environment hygiene
 
 - `.env` is git-ignored. Never commit keys.

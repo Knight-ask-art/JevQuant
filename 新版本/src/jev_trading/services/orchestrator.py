@@ -508,7 +508,7 @@ class TradingOrchestrator:
         symbol = symbol_policy.symbol
         marks = {key: value.mid for key, value in snapshot_map.items()}
         try:
-            rules = await self.market.filters(symbol)
+            rules = await self.market.entry_filters(symbol)
             account = await self.repo.account_snapshot(self.account_id, marks, now)
             position = await self.repo.get_open_position(self.account_id, symbol)
             last_entry = await self.repo.last_entry_at(self.account_id, symbol)

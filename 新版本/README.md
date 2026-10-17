@@ -64,7 +64,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 76 tests: policy, risk, execution, audit, API, TOTP, backtest, exits
+pytest                     # 79 tests: policy, risk, execution, audit, API, TOTP, backtest, exits
 ```
 
 Or run the whole local check in one step:
@@ -151,7 +151,7 @@ frontend/
   src/pages/    Overview, Strategy Desk, Jev Signals, Orders & Positions,
                 Backtests, Models & Costs, Risk & Modes, Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          76 deterministic tests
+tests/          79 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)
@@ -171,6 +171,7 @@ Highlights:
 | `JEV_AUTO_CYCLE_SECONDS` | `0` | background scheduler interval; 0 = manual |
 | `JEV_AUTH_DISABLED` | `true` | must be `false` in prod |
 | `JEV_MAX_POSITION_NOTIONAL_USDT` | `500` | hard envelope |
+| `JEV_ENTRY_FILTER_TTL_SECONDS` | `60` | max age of cached exchange filters used for an entry |
 | `JEV_MAX_DAILY_LOSS_PCT` | `2` | hard envelope |
 | `JEV_REQUIRE_WITHDRAWALS_DISABLED` | `true` | live key policy |
 | `JEV_REQUIRE_IP_RESTRICT` | `true` | live key policy |

@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     max_policy_ttl_seconds: int = 7200
     allowed_symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
     market_staleness_ms: int = 5000
+    # Maximum age of a cached exchange filter snapshot used to admit an entry.
+    # Older values force a refresh; a refresh failure blocks the entry.
+    entry_filter_ttl_seconds: int = Field(default=60, ge=1, le=600)
     fee_bps: Decimal = Decimal("10")
     slippage_bps: Decimal = Decimal("2")
     exit_slippage_bps: Decimal = Decimal("8")
