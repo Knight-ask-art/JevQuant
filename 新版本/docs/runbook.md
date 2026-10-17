@@ -41,7 +41,11 @@ Testnet is an integration environment, not a strategy-validation environment.
 
 1. Server: Docker Engine with the compose plugin, 2 GB RAM, outbound HTTPS to
    `testnet.binance.vision`. Images are multi-arch; check `uname -m`.
-2. Clone the repository and `cd 新版本`.
+2. Clone the repository and `cd 新版本` — or upload the deployment archive and run
+   `ssh <user>@<host> 'bash -s' < deploy/remote-bootstrap.sh`, which installs Docker,
+   extracts the archive, generates the three random secrets into `.env`, builds the
+   images sequentially, and starts the stack. It never writes venue keys: fill those
+   afterwards and recreate the API container.
 3. `cp deploy/server.env.example .env`, then fill:
    - `POSTGRES_PASSWORD`
    - `JEV_ADMIN_API_KEY` / `JEV_INTERNAL_EXECUTION_KEY` (random, distinct)
