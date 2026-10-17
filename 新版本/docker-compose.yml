@@ -1,20 +1,22 @@
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: jev
-      POSTGRES_PASSWORD: jev
-      POSTGRES_DB: jev
+      POSTGRES_USER: ${POSTGRES_USER:-jev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-jev}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U jev -d jev"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jev} -d ${POSTGRES_DB:-jev}"]
       interval: 5s
       timeout: 3s
       retries: 10
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data
@@ -28,19 +30,16 @@ services:
     build:
       context: .
       dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    # Mode, auth and venue credentials come from the untracked .env; the two
+    # values below belong to the compose network and override it.
+    env_file:
+      - .env
     environment:
-      JEV_APP_ENV: dev
-      JEV_DATABASE_URL: postgresql+asyncpg://jev:jev@db:5432/jev
+      JEV_DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-jev}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-jev}"
       JEV_REDIS_URL: redis://redis:6379/0
-      JEV_EXECUTION_BACKEND: paper
-      JEV_TRADING_MODE: paper
-      JEV_ENABLE_LIVE_TRADING: "false"
-      JEV_SYNTHETIC_MARKET: "true"
-      JEV_DEMO_MODE: "true"
-      JEV_AUTH_DISABLED: "true"
-      JEV_AUTO_CYCLE_SECONDS: "0"
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     depends_on:
       db:
         condition: service_healthy
@@ -50,8 +49,11 @@ services:
   web:
     build:
       context: frontend
+    restart: unless-stopped
+    # Default: localhost only. Reach it through an SSH tunnel, or set
+    # WEB_BIND=0.0.0.0 behind a TLS-terminating proxy.
     ports:
-      - "8080:80"
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:80"
     depends_on:
       - api
 

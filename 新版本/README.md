@@ -229,13 +229,16 @@ contradict `JEV_APP_ENV=prod`.
 ## Docker Compose
 
 ```bash
-docker compose up --build
-# API   http://127.0.0.1:8000
-# UI    http://127.0.0.1:8080
-# Postgres + Redis included; defaults remain paper/synthetic.
+cp .env.example .env          # set POSTGRES_PASSWORD; fill venue keys if needed
+docker compose up -d --build
+# UI    http://127.0.0.1:8080  (WEB_BIND defaults to localhost)
+# API   only reachable through the web proxy; it is not published
+# Postgres + Redis included; mode, auth and venue keys come from .env
 ```
 
-Never place production keys in `docker-compose.yml`; use secrets or environment injection.
+For a remote testnet host start from `deploy/server.env.example`. Reach the UI over an
+SSH tunnel (`ssh -L 8080:127.0.0.1:8080 user@host`) or set `WEB_BIND=0.0.0.0` behind a
+TLS-terminating proxy. Never place keys in `docker-compose.yml`; `.env` is git-ignored.
 
 ## Kubernetes
 

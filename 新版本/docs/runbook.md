@@ -37,6 +37,30 @@ Checklist before trusting a screenshot:
 
 Testnet is an integration environment, not a strategy-validation environment.
 
+## Remote testnet simulation host (Docker Compose)
+
+1. Server: Docker Engine with the compose plugin, 2 GB RAM, outbound HTTPS to
+   `testnet.binance.vision`. Images are multi-arch; check `uname -m`.
+2. Clone the repository and `cd 新版本`.
+3. `cp deploy/server.env.example .env`, then fill:
+   - `POSTGRES_PASSWORD`
+   - `JEV_ADMIN_API_KEY` / `JEV_INTERNAL_EXECUTION_KEY` (random, distinct)
+   - `JEV_BINANCE_TESTNET_API_KEY` / `JEV_BINANCE_TESTNET_API_SECRET`
+   - `JEV_PAPER_STARTING_EQUITY` = the testnet account's tUSDT total
+4. `docker compose up -d --build`, then `docker compose logs -f api`. The startup
+   log must show a healthy database and Redis; the API is not published directly.
+5. `ssh -L 8080:127.0.0.1:8080 user@host`, open `http://127.0.0.1:8080`, and paste
+   `JEV_ADMIN_API_KEY` into **Audit & Settings**.
+6. Before any cycle, run `POST /api/v1/execution/balances/sync`: it must return a
+   testnet view. If the database already existed in paper mode, switch the mode
+   explicitly; `.env` only seeds the first start.
+7. Run one cycle, verify the order carries an `exchange_order_id`, then sync
+   balances again and inspect `balance.reconcile_triggered` / `_finished` if the
+   venue figure moved.
+8. Keep one API replica. Schedulers, the kill switch and the arming token are
+   in-process; `pgdata` and `redisdata` are the only durable state outside the
+   audit trail.
+
 ## Preparing Live (supervised only)
 
 Live is a Hummingbot-backed route and requires a trade-only Binance key with withdrawals
