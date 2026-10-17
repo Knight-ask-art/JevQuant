@@ -88,6 +88,7 @@ class _OpenTrade:
     entry_price: Decimal
     entry_index: int
     entry_time: datetime
+    entry_fee: Decimal = Decimal("0")
 
 
 @dataclass
@@ -138,7 +139,10 @@ def _close_trade(
 ) -> None:
     exit_fee = trade.qty * exit_price * fee_rate
     gross = trade.qty * (exit_price - trade.entry_price)
+    # The entry fee already left the equity when the trade opened; the reported
+    # per-trade PnL must still include it so net PnL matches the equity curve.
     state.equity += gross - exit_fee
+    pnl = gross - trade.entry_fee - exit_fee
     state.trades.append(
         {
             "symbol": trade.symbol,
@@ -148,7 +152,7 @@ def _close_trade(
             "opened_at": trade.entry_time.isoformat(),
             "closed_at": closed_at.isoformat(),
             "holding_minutes": holding_minutes,
-            "pnl_usdt": canonical_str(gross - exit_fee),
+            "pnl_usdt": canonical_str(pnl),
             "reason": reason,
         }
     )
@@ -185,13 +189,15 @@ def _run_symbol(spec: BacktestSpec, symbol: str) -> _SymbolState:
                 qty = quantize_down(notional / fill, QTY_STEP)
                 if qty <= ZERO:
                     continue
-                state.equity -= qty * fill * fee_rate
+                entry_fee = qty * fill * fee_rate
+                state.equity -= entry_fee
                 open_trade = _OpenTrade(
                     symbol=symbol,
                     qty=qty,
                     entry_price=fill,
                     entry_index=index,
                     entry_time=candle.close_time,
+                    entry_fee=entry_fee,
                 )
         else:
             held = index - open_trade.entry_index
@@ -259,7 +265,9 @@ def run_backtest(spec: BacktestSpec) -> dict[str, Any]:
     for symbol in spec.symbols:
         state = _run_symbol(spec, symbol)
         wins = [item for item in state.trades if Decimal(item["pnl_usdt"]) > ZERO]
-        pnl = sum((Decimal(item["pnl_usdt"]) for item in state.trades), ZERO)
+        # The equity ledger is authoritative: per-trade PnL and the curve are
+        # built from the same cash movements, so the net figure is the delta.
+        pnl = state.equity - spec.starting_equity_usdt
         per_symbol[symbol] = {
             "trades": len(state.trades),
             "win_rate_pct": canonical_str(

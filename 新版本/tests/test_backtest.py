@@ -1,5 +1,7 @@
 """Backtests are deterministic and honest about being synthetic."""
 
+from decimal import Decimal
+
 from jev_trading.services.backtest import BacktestSpec, run_backtest
 
 
@@ -33,3 +35,17 @@ def DecimalLike(value: str) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+def test_net_pnl_matches_ending_equity():
+    spec = BacktestSpec(symbols=("BTCUSDT", "SOLUSDT"), candles=1500, seed=7)
+    report = run_backtest(spec)
+    for symbol, result in report["per_symbol"].items():
+        assert Decimal(result["net_pnl_usdt"]) == (
+            Decimal(result["ending_equity_usdt"]) - spec.starting_equity_usdt
+        ), symbol
+    total_delta = sum(
+        Decimal(result["ending_equity_usdt"]) - spec.starting_equity_usdt
+        for result in report["per_symbol"].values()
+    )
+    assert Decimal(report["summary"]["net_pnl_usdt"]) == total_delta

@@ -721,7 +721,25 @@ class Repository:
                     ).scalar_one_or_none()
                 if position is None:
                     raise ValueError("cannot record a close without an open position")
-                realized = filled_qty * (avg_price - position.avg_entry_price) - fee_quote
+                # The entry fee left the account when the position opened, so it
+                # is a realized cost of this trade. Allocate it per unit from the
+                # entry order's fill so partial closes stay exact.
+                entry_fee_alloc = ZERO
+                if position.entry_order_id:
+                    entry_order = await session.get(OrderRow, position.entry_order_id)
+                    if (
+                        entry_order is not None
+                        and entry_order.filled_qty > ZERO
+                        and entry_order.fee_quote > ZERO
+                    ):
+                        entry_fee_alloc = (
+                            entry_order.fee_quote * filled_qty / entry_order.filled_qty
+                        )
+                realized = (
+                    filled_qty * (avg_price - position.avg_entry_price)
+                    - fee_quote
+                    - entry_fee_alloc
+                )
                 account.cash_quote_usdt += filled_qty * avg_price - fee_quote
                 account.realized_pnl_usdt += realized
                 account.daily_realized_pnl_usdt += realized

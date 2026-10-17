@@ -83,6 +83,17 @@ def test_policy_generation_is_compiled_and_marked(open_client):
     assert current["active"] is True
 
 
+def test_reconcile_endpoint_uses_the_active_adapter(open_client):
+    response = open_client.post(
+        "/api/v1/execution/reconcile",
+        headers={"X-Internal-Key": "change-me-internal"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["healthy"] is True
+    assert "notes" in body
+
+
 def test_backtest_endpoint_returns_synthetic_report(open_client):
     response = open_client.post(
         "/api/v1/backtests",

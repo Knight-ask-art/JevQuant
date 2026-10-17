@@ -70,7 +70,7 @@ async def reconcile(
             ErrorCode.DEPENDENCY_UNAVAILABLE,
             f"No execution adapter is configured for mode {mode.value}.",
         )
-    result = await adapter.reconcile()
+    result = await adapter.reconcile(container.account_id)
     await container.audit.record(
         "execution.reconciled",
         "system",
