@@ -277,6 +277,76 @@ async def test_working_close_is_left_alone_until_it_times_out(repo, server_limit
     assert any("working" in note for note in notes), notes
 
 
+async def test_fresh_exit_uses_a_retry_key_when_an_older_close_still_works(
+    repo, server_limits
+):
+    account, policy, ctx, engine, signal, position, paper = await open_position(
+        repo, server_limits
+    )
+    # An older close for this symbol is still ACCEPTED (for another signal).
+    await park_resting_close(repo, policy, ctx, position, engine, "close-earlier-1")
+
+    other = await repo.create_signal(
+        symbol="BTCUSDT",
+        policy_id=str(policy.policy_id),
+        snapshot_id=str(ctx.market.snapshot_id),
+        side="BUY",
+    )
+    for state in (
+        SignalState.JEV_EVALUATING,
+        SignalState.SCORED,
+        SignalState.ELIGIBLE,
+        SignalState.INTENT_CREATED,
+        SignalState.RISK_PENDING,
+        SignalState.APPROVED,
+        SignalState.EXECUTION_PENDING,
+    ):
+        await repo.transition_signal(other.id, state)
+    # A second, separate open position for the same symbol carrying its own signal.
+    async with repo.db.session() as session:
+        row = await session.get(PositionRow, position.id)
+        row.status = "CLOSED"
+        session.add(
+            PositionRow(
+                account_id=account.id,
+                symbol="BTCUSDT",
+                qty=position.qty,
+                avg_entry_price=position.avg_entry_price,
+                stop_loss_bps=Decimal("1"),
+                take_profit_bps=Decimal("200"),
+                max_holding_seconds=3600,
+                status="OPEN",
+                opened_at=NOW,
+                policy_id=str(policy.policy_id),
+                signal_id=other.id,
+                mode=Mode.PAPER.value,
+                is_simulated=True,
+            )
+        )
+    await repo.transition_signal(other.id, SignalState.ACCEPTED)
+    await repo.transition_signal(other.id, SignalState.FILLED)
+    await repo.transition_signal(other.id, SignalState.POSITION_OPEN)
+
+    container = ActiveContainer()
+    container.execution_for_mode = {Mode.PAPER: paper}
+    orchestrator = make_orchestrator(repo, container, account.id)
+    orchestrator.market = ChainedMarket([ctx.symbol_rules])
+    snapshot = ctx.market.model_copy(
+        update={"bid": ctx.market.bid * Decimal("0.98"), "ask": ctx.market.ask * Decimal("0.98")}
+    )
+    await orchestrator._manage_exits(
+        policy=policy, snapshot_map={snapshot.symbol: snapshot}, system=system_snapshot()
+    )
+
+    closes = [
+        intent
+        for intent in await repo.list_intents(limit=20)
+        if intent.intent_type == "CLOSE" and intent.signal_id == other.id
+    ]
+    assert len(closes) == 1, closes
+    assert "retry-" in closes[0].idempotency_key
+
+
 async def test_live_position_exits_through_live_route_after_restart_to_paper(
     repo, server_limits
 ):

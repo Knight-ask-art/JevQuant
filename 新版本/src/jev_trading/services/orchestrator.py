@@ -1003,6 +1003,21 @@ class TradingOrchestrator:
         notes.append(f"{position.symbol}: stale exit order cancelled; retry next cycle")
         return 0
 
+    async def _await_snapshot(self, symbol: str, now: datetime) -> MarketSnapshot | None:
+        """The next snapshot for a symbol after price ``now``.
+
+        With the live feed that is simply the latest snapshot. With the demo
+        clock the provider yields one fresh closed candle per call, so asking
+        again is the only way to see a different price without waiting.
+        """
+
+        snapshots = await self.market.snapshots([symbol], now)
+        if not snapshots:
+            return None
+        snapshot = snapshots[0]
+        await self.repo.insert_market_snapshot(snapshot)
+        return snapshot
+
     async def _policy_for_position(self, position, current: EffectivePolicy | None):
         if current is not None and str(current.policy_id) == position.policy_id:
             return current
@@ -1051,14 +1066,12 @@ class TradingOrchestrator:
             snapshot = snapshot_map.get(position.symbol)
             if snapshot is None:
                 try:
-                    fetched = await self.market.snapshots([position.symbol], now)
-                    if fetched:
-                        snapshot = fetched[0]
-                        snapshot_map[position.symbol] = snapshot
-                        await self.repo.insert_market_snapshot(snapshot)
+                    snapshot = await self._await_snapshot(position.symbol, now)
                 except AppError as exc:
                     notes.append(f"{position.symbol}: exit feed unavailable ({exc.code.value})")
                     continue
+                if snapshot is not None:
+                    snapshot_map[position.symbol] = snapshot
             if snapshot is None:
                 continue
 
@@ -1099,11 +1112,6 @@ class TradingOrchestrator:
                 state = SignalState.POSITION_OPEN
             if state is not SignalState.POSITION_OPEN:
                 continue
-            if await self.repo.has_unsettled_close_for(
-                self.account_id, position.symbol, position_mode.value
-            ):
-                notes.append(f"{position.symbol}: unsettled close order; no duplicate exit")
-                continue
             if execute and await self.modes.kill_switch_active():
                 notes.append(f"{position.symbol}: exit deferred by kill switch on {position_mode.value}")
                 continue
@@ -1111,6 +1119,14 @@ class TradingOrchestrator:
             reason = self._exit_reason(position, snapshot, now)
             if reason is None:
                 continue
+            idempotency_suffix = f"{int(now.timestamp() // 60)}"
+            if await self.repo.has_unsettled_close_for(
+                self.account_id, position.symbol, position_mode.value
+            ):
+                # An earlier close of this symbol is still working. The demo
+                # clock keeps the old minute key, so the idempotency check
+                # below cannot see this new signal; give it its own key.
+                idempotency_suffix = f"retry-{int(now.timestamp())}-{signal.id[:8]}"
             exit_policy = await self._policy_for_position(position, policy)
             if exit_policy is None:
                 notes.append(f"{position.symbol}: exit policy unavailable")
@@ -1126,8 +1142,7 @@ class TradingOrchestrator:
                 continue
 
             idempotency_key = (
-                f"close-{position.id[:8]}-{position.symbol}-"
-                f"{int(now.timestamp() // 60)}-sell"
+                f"close-{position.id[:8]}-{position.symbol}-{idempotency_suffix}-sell"
             )
             if await self.repo.get_intent_by_idempotency(idempotency_key) is not None:
                 continue
