@@ -28,6 +28,7 @@ from ...domain.errors import (
 from ...domain.intent import ApprovedTradeIntent
 from ...domain.market import MarketSnapshot, SymbolFilters
 from ...domain.money import ZERO, canonical_str
+from ...services.balances import BalanceView
 from ...storage.repository import ExecutionFill, Repository
 from .base import ExecutionReceipt, ReconciliationResult
 
@@ -369,6 +370,58 @@ class BinanceTestnetExecutionAdapter:
             )
             total_fee += fee_quote
         return total_fee
+
+    async def fetch_balances(self) -> BalanceView | None:
+        """The venue account view, or ``None`` when this route is not configured.
+
+        Only asset codes and meaningful amounts are kept; assets the venue
+        reports as exactly zero are dropped so the view stays small.
+        """
+
+        if not self.configured:
+            return None
+        data = await self._request("GET", "/api/v3/account", {})
+        balances = data.get("balances")
+        if not isinstance(balances, list):
+            raise DependencyBadResponseError(
+                "Binance Testnet account response has no balances."
+            )
+        quote = "USDT"
+        free_quote = ZERO
+        locked_quote = ZERO
+        base_quantity: dict[str, Decimal] = {}
+        for item in balances:
+            if not isinstance(item, dict):
+                continue
+            asset = str(item.get("asset", "")).upper()
+            if not asset:
+                continue
+            try:
+                free = Decimal(str(item.get("free", "0")))
+                locked = Decimal(str(item.get("locked", "0")))
+            except Exception:  # noqa: BLE001
+                raise DependencyBadResponseError(
+                    "Binance Testnet balance entry was malformed."
+                )
+            if asset == quote:
+                free_quote += free
+                locked_quote += locked
+            elif free + locked > ZERO:
+                base_quantity[asset] = free + locked
+        # Without per-asset step sizes from exchangeInfo, compare base amounts
+        # exactly: an unexplained base difference is always worth reporting.
+        base_tolerance = {asset: ZERO for asset in base_quantity}
+        return BalanceView(
+            route="testnet",
+            venue="binance_testnet",
+            quote_asset=quote,
+            free_quote=free_quote,
+            locked_quote=locked_quote,
+            base_quantity=base_quantity,
+            base_tolerance=base_tolerance,
+            is_simulated=self.is_simulated,
+            raw_summary={"account_type": str(data.get("accountType", ""))},
+        )
 
     async def reconcile_account(self, account_id: str) -> list[str]:
         """Rebuild position, cash and realized PnL from venue-confirmed closes."""

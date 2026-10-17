@@ -128,6 +128,22 @@ def test_mode_change_is_refused_while_a_live_position_is_open(open_client):
     assert "live positions" in response.json()["error"]["message"]
 
 
+def test_balance_sync_endpoint_reports_unconfigured_routes(open_client):
+    response = open_client.post("/api/v1/execution/balances/sync")
+    assert response.status_code == 200
+    body = response.json()
+    # Paper/synthetic defaults: neither testnet nor live is configured, so
+    # nothing is read and nothing is claimed.
+    assert body["drifts"] == []
+    assert body["in_tolerance"] is True
+    assert set(body["skipped"]) == {"testnet", "live"}
+    assert all("not configured" in reason for reason in body["skipped"].values())
+
+    latest = open_client.get("/api/v1/execution/balances")
+    assert latest.status_code == 200
+    assert latest.json()["items"] == []
+
+
 def test_backtest_endpoint_returns_synthetic_report(open_client):
     response = open_client.post(
         "/api/v1/backtests",

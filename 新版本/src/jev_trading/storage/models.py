@@ -361,6 +361,22 @@ class PnlSnapshotRow(Base):
     drawdown_pct: Mapped[Decimal] = mapped_column(PCT)
 
 
+class BalanceSnapshotRow(Base):
+    """One exchange-account view on one route, as the venue reported it."""
+
+    __tablename__ = "balance_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    asset: Mapped[str] = mapped_column(String(16))
+    free: Mapped[Decimal] = mapped_column(MONEY)
+    locked: Mapped[Decimal] = mapped_column(MONEY)
+    total: Mapped[Decimal] = mapped_column(MONEY)
+    is_simulated: Mapped[bool] = mapped_column(Boolean, default=False)
+    raw_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+
+
 class AuditEventRow(Base):
     __tablename__ = "audit_events"
 

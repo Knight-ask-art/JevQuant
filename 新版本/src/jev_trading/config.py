@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # interval between cycle starts.
     auto_cycle_seconds: int = Field(default=0, ge=0, le=3600)
 
+    # Exchange-account balance sync (testnet/live venues only). 0 disables the
+    # scheduler; POST /api/v1/execution/balances/sync still runs on demand.
+    balance_sync_seconds: int = Field(default=0, ge=0, le=86_400)
+
     @field_validator("allowed_symbols")
     @classmethod
     def _normalize_symbols(cls, value: list[str]) -> list[str]:

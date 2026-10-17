@@ -38,6 +38,7 @@ shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 | Real OHLCV / Freqtrade replay | ❌ not implemented |
 | Real fill-ledger rebuild for Hummingbot | ❌ follow-up (unknown states are reconciled, not invented) |
 | Testnet position/PnL ledger | ✅ rebuilt on reconcile from venue-confirmed close orders |
+| Exchange balance sync (testnet/live) | ✅ snapshot + drift audit; never edits the ledger |
 
 ## Quick start (local, no Docker, no keys)
 
@@ -64,7 +65,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 88 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations
+pytest                     # 104 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:
@@ -151,7 +152,7 @@ frontend/
   src/pages/    Overview, Strategy Desk, Jev Signals, Orders & Positions,
                 Backtests, Models & Costs, Risk & Modes, Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          88 deterministic tests
+tests/          104 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)
@@ -172,6 +173,7 @@ Highlights:
 | `JEV_AUTH_DISABLED` | `true` | must be `false` in prod |
 | `JEV_MAX_POSITION_NOTIONAL_USDT` | `500` | hard envelope |
 | `JEV_ENTRY_FILTER_TTL_SECONDS` | `60` | max age of cached exchange filters used for an entry |
+| `JEV_BALANCE_SYNC_SECONDS` | `0` | periodic testnet/live venue balance sync; 0 = manual |
 | `JEV_MAX_DAILY_LOSS_PCT` | `2` | hard envelope |
 | `JEV_REQUIRE_WITHDRAWALS_DISABLED` | `true` | live key policy |
 | `JEV_REQUIRE_IP_RESTRICT` | `true` | live key policy |

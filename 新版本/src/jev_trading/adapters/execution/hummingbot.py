@@ -8,6 +8,7 @@ response becomes RECONCILIATION_REQUIRED; it is never blindly retried.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ from ...domain.errors import (
 )
 from ...domain.intent import ApprovedTradeIntent
 from ...domain.market import MarketSnapshot, SymbolFilters
+from ...services.balances import BalanceView
 from ...storage.repository import Repository
 from .base import ExecutionReceipt, ReconciliationResult
 
@@ -164,6 +166,88 @@ class HummingbotExecutionAdapter:
             raise ReconciliationRequiredError(
                 "Hummingbot cancel outcome is unknown."
             ) from exc
+
+    async def fetch_balances(self) -> BalanceView | None:
+        """Connector balances from Hummingbot, mapped onto a route-agnostic view.
+
+        Hummingbot reports ``[base_available, base_total, quote_available,
+        quote_total]`` per trading pair. Base totals are summed per asset and
+        the quote totals per quote asset. The response shape is *not* verified
+        against a running Hummingbot, so an unexpected payload raises instead of
+        being guessed at.
+        """
+
+        if not self.configured:
+            return None
+        pairs = ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+        try:
+            response = await self._client.post(
+                self.base_url + "/accounts/balances",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json={"account_name": self.connector_name, "trading_pairs": pairs},
+            )
+        except httpx.HTTPError as exc:
+            raise DependencyUnavailableError(
+                "Hummingbot balance request failed.", details={"reason": type(exc).__name__}
+            ) from exc
+        if response.status_code >= 400:
+            raise DependencyBadResponseError(
+                "Hummingbot rejected the balance request.",
+                details={"http_status": response.status_code},
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise DependencyBadResponseError("Hummingbot returned non-JSON balances.") from exc
+        if not isinstance(data, dict):
+            raise DependencyBadResponseError("Hummingbot balance payload was not an object.")
+        if "balances" not in data or not isinstance(data["balances"], dict):
+            raise DependencyBadResponseError(
+                "Hummingbot balance payload has no balances object."
+            )
+        # Never fall back to the whole payload: another connector's balances
+        # shown as ours would be worse than reporting nothing.
+        views = data["balances"].get(self.connector_name)
+        if not isinstance(views, dict):
+            raise DependencyBadResponseError(
+                "Hummingbot balance payload did not contain the connector."
+            )
+        base_qty: dict[str, Decimal] = {}
+        base_tol: dict[str, Decimal] = {}
+        quote_free = Decimal("0")
+        quote_locked = Decimal("0")
+        for pair, entry in views.items():
+            if not isinstance(entry, dict):
+                raise DependencyBadResponseError(
+                    "Hummingbot pair balance was not an object."
+                )
+            base, quote = (str(pair).split("-") + ["", ""])[:2]
+            try:
+                base_total = Decimal(str(entry.get("base_total", "0")))
+                quote_free += Decimal(str(entry.get("quote_available", "0")))
+                quote_locked_total = entry.get("quote_total")
+                if quote_locked_total is not None:
+                    quote_locked += Decimal(str(quote_locked_total)) - Decimal(
+                        str(entry.get("quote_available", "0"))
+                    )
+            except Exception:  # noqa: BLE001
+                raise DependencyBadResponseError(
+                    "Hummingbot balance amounts were malformed."
+                )
+            if base and base_total > 0:
+                base_qty[base] = base_qty.get(base, Decimal("0")) + base_total
+                base_tol[base] = Decimal("0.00000001")
+        return BalanceView(
+            route="live",
+            venue=self.connector_name,
+            quote_asset="USDT",
+            free_quote=quote_free,
+            locked_quote=max(quote_locked, Decimal("0")),
+            base_quantity=base_qty,
+            base_tolerance=base_tol,
+            is_simulated=False,
+            raw_summary={"pairs": sorted(views)},
+        )
 
     async def reconcile(self, account_id: str) -> ReconciliationResult:
         self._require_configured()

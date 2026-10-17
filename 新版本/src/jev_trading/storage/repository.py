@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 
 from ..domain.enums import (
@@ -34,6 +34,7 @@ from .models import (
     ArmingTokenRow,
     AuditEventRow,
     BacktestRunRow,
+    BalanceSnapshotRow,
     FillRow,
     JevEvaluationRow,
     MarketSnapshotRow,
@@ -964,6 +965,42 @@ class Repository:
                 raise ValueError(f"position {position_id} not found")
             row.realized_pnl_usdt = realized_pnl_usdt
             await session.flush()
+
+    # ------------------------------------------------------------------
+    # exchange balance snapshots
+    # ------------------------------------------------------------------
+    async def insert_balance_snapshot(self, row: BalanceSnapshotRow) -> BalanceSnapshotRow:
+        async with self.db.session() as session:
+            session.add(row)
+            await session.flush()
+            return row
+
+    async def latest_balance_snapshots(self) -> list[BalanceSnapshotRow]:
+        """The most recent snapshot for each route/asset pair."""
+
+        async with self.db.session() as session:
+            latest = (
+                select(
+                    BalanceSnapshotRow.source,
+                    BalanceSnapshotRow.asset,
+                    func.max(BalanceSnapshotRow.created_at).label("as_of"),
+                )
+                .group_by(BalanceSnapshotRow.source, BalanceSnapshotRow.asset)
+                .subquery()
+            )
+            rows = (
+                await session.execute(
+                    select(BalanceSnapshotRow).join(
+                        latest,
+                        and_(
+                            BalanceSnapshotRow.source == latest.c.source,
+                            BalanceSnapshotRow.asset == latest.c.asset,
+                            BalanceSnapshotRow.created_at == latest.c.as_of,
+                        ),
+                    )
+                )
+            ).scalars()
+            return list(rows)
 
     # ------------------------------------------------------------------
     # PnL snapshots

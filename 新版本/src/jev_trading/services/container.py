@@ -28,6 +28,7 @@ from ..domain.risk import RiskEngine
 from ..storage.db import Database
 from ..storage.repository import Repository
 from .audit import AuditService
+from .balance_sync import BalanceSyncScheduler, BalanceSyncService
 from .events import EventBroker
 from .market_service import MarketService
 from .modes import ModeManager
@@ -124,6 +125,8 @@ class AppContainer:
         # One cycle at a time: the scheduler and manual HTTP cycles share the
         # ledger and must not interleave position reads with writes.
         self._cycle_lock = asyncio.Lock()
+        self.balance_sync: BalanceSyncService | None = None
+        self._balance_task: asyncio.Task[None] | None = None
 
     def _build_policy_generator(self):
         settings = self.settings
@@ -195,8 +198,22 @@ class AppContainer:
                 "execution_backend": self.settings.execution_backend,
                 "synthetic": self.settings.synthetic_market,
                 "auto_cycle_seconds": self.settings.auto_cycle_seconds,
+                "balance_sync_seconds": self.settings.balance_sync_seconds,
             },
         )
+        self.balance_sync = BalanceSyncService(
+            repo=self.repo,
+            audit=self.audit,
+            broker=self.broker,
+            adapters=self.execution_for_mode,
+            account_id=self.account_id,
+            base_assets={symbol: symbol.removesuffix("USDT") for symbol in self.settings.allowed_symbols},
+        )
+        if self.settings.balance_sync_seconds > 0:
+            scheduler = BalanceSyncScheduler(
+                self.balance_sync, interval_seconds=self.settings.balance_sync_seconds
+            )
+            self._balance_task = asyncio.create_task(scheduler.loop())
         if self.settings.auto_cycle_seconds > 0:
             self._cycle_task = asyncio.create_task(self._auto_cycle_loop())
         return self
@@ -356,13 +373,15 @@ class AppContainer:
             return await orchestrator.run_cycle(refresh_policy=refresh_policy)
 
     async def close(self) -> None:
-        if self._cycle_task is not None:
-            self._cycle_task.cancel()
-            try:
-                await self._cycle_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._cycle_task = None
+        for task in (self._balance_task, self._cycle_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+        self._balance_task = None
+        self._cycle_task = None
         await self.market.close()
         await self.paper.close()
         await self.shadow.close()

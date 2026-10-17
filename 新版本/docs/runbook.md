@@ -88,6 +88,17 @@ Entries block automatically (`market_feed_unhealthy`, `stale_market_data`,
 `policy_unavailable`). Exits continue. Confirm dependency margin notes; do not disable
 staleness thresholds to force a trade.
 
+## Exchange balance sync
+
+`JEV_BALANCE_SYNC_SECONDS=60` (or `POST /api/v1/execution/balances/sync`) reads the
+testnet or Hummingbot account on each tradeable route and stores it in
+`balance_snapshots`. It raises `balance.drift` when the quote balance differs by more
+than 0.01 USDT or a base-asset quantity differs by more than its step size.
+
+Drift is a signal, not an instruction: the ledger is never rewritten from a balance
+difference. Investigate with `POST /api/v1/execution/reconcile`; if that does not
+explain the gap, compare the fills manually before touching anything.
+
 ## Schema migrations
 
 `jev migrate` (or `python -m jev_trading.migrations`, or starting the service) applies
