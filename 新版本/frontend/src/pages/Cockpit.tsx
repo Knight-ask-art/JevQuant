@@ -59,6 +59,10 @@ export function Cockpit() {
   const automation = view?.automation;
   const models = view?.models;
   const currentMode = mode?.mode ?? "paper";
+  // Paper fills locally; testnet sends signed orders to the exchange. Say
+  // which one is doing the work instead of leaving the operator to infer it.
+  const venueRoute =
+    currentMode === "testnet" ? t("venue.routeTestnet") : t("venue.routePaper");
   const universeSymbols = universe.data?.symbols ?? view?.server_limits.allowed_symbols ?? [];
   const marks = universe.data?.marks ?? {};
   const activeSymbol =
@@ -206,6 +210,31 @@ export function Cockpit() {
       {error && <ErrorNote error={error} />}
       {notice && <div className="callout olive">{notice}</div>}
 
+      <div className={`venue-banner ${currentMode === "testnet" ? "testnet" : "paper"}`}>
+        <span className="venue-badge">
+          {currentMode === "testnet" ? t("venue.testnetBadge") : t("venue.paperBadge")}
+        </span>
+        <div className="venue-copy">
+          <strong>
+            {currentMode === "testnet" ? t("venue.testnetTitle") : t("venue.paperTitle")}
+          </strong>
+          <span>
+            {currentMode === "testnet" ? t("venue.testnetBody") : t("venue.paperBody")}
+          </span>
+        </div>
+        <div className="venue-facts">
+          <span>
+            <em>{t("venue.data")}</em> {label(view?.data_source ?? "—")}
+          </span>
+          <span>
+            <em>{t("venue.orders")}</em> {venueRoute}
+          </span>
+          <span>
+            <em>{t("venue.ledger")}</em> {t("venue.ledgerScope", { mode: label(currentMode) })}
+          </span>
+        </div>
+      </div>
+
       <div className="mode-switch">
         {(["paper", "testnet"] as const).map((value) => (
           <button
@@ -222,7 +251,9 @@ export function Cockpit() {
         ))}
         <div className="mode-note">
           <span className="small muted">
-            {t("cockpit.mode")}: {label(currentMode)}
+            {currentMode === "testnet"
+              ? t("cockpit.testnetSwitchNote")
+              : t("cockpit.paperSwitchNote")}
           </span>
           <Link className="small" to="/risk">
             {t("cockpit.liveNote")}
@@ -382,6 +413,7 @@ export function Cockpit() {
                   <thead>
                     <tr>
                       <th>{t("common.symbol")}</th>
+                      <th>{t("cockpit.heldOn")}</th>
                       <th className="num">{t("common.qty")}</th>
                       <th className="num">{t("common.entry")}</th>
                       <th className="num">{t("common.mark")}</th>
@@ -395,6 +427,17 @@ export function Cockpit() {
                       <tr key={position.id}>
                         <td>
                           <strong>{position.symbol}</strong>
+                        </td>
+                        <td>
+                          <Pill
+                            tone={
+                              position.mode === "testnet" || position.mode === "live"
+                                ? "danger"
+                                : "olive"
+                            }
+                          >
+                            {label(position.mode ?? currentMode)}
+                          </Pill>
                         </td>
                         <td className="num">{position.qty}</td>
                         <td className="num">{money(position.avg_entry_price)}</td>

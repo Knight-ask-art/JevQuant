@@ -31,6 +31,15 @@ export function RiskModes() {
   const mode = view?.mode;
   const account = view?.account;
   const limits = view?.server_limits;
+  // One sentence that answers "is this real money?" without reading the rest
+  // of the page.
+  const routeSentence = (() => {
+    if (mode?.kill_switch) return t("risk.routeKill");
+    if (mode?.mode === "live" && mode?.live_armed) return t("risk.routeLive");
+    if (mode?.mode === "testnet") return t("risk.routeTestnet");
+    if (mode?.mode === "shadow") return t("risk.routeShadow");
+    return t("risk.routePaper");
+  })();
 
   async function action(
     name: string,
@@ -73,6 +82,11 @@ export function RiskModes() {
 
       {error && <ErrorNote error={error} />}
       {notice && <div className="callout olive">{notice}</div>}
+
+      <div className={`alert-band ${mode?.kill_switch ? "danger" : "olive"}`}>
+        <strong>{t("risk.currentRoute")}</strong>
+        <span>{routeSentence}</span>
+      </div>
 
       <div className="grid grid-3">
         <PaperCard eyebrow={t("risk.mode")} title={t("risk.executionRoute")}>
