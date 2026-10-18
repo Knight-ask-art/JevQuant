@@ -29,7 +29,6 @@ def make_testnet_adapter(repo, payload):
     adapter = BinanceTestnetExecutionAdapter(
         repo, base_url="https://testnet.invalid", api_key="k", api_secret="s"
     )
-    adapter.is_simulated = True
 
     async def _request(method, path, params=None):
         assert method == "GET" and path == "/api/v3/account"
@@ -60,6 +59,7 @@ async def test_testnet_balances_map_quote_and_base_assets(repo):
     # Zero balances are dropped; base tolerance is exact without exchangeInfo.
     assert view.base_quantity == {"BTC": Decimal("0.001")}
     assert view.base_tolerance["BTC"] == Decimal("0")
+    assert view.is_simulated is False
     assert "USDT" not in view.base_quantity
 
 

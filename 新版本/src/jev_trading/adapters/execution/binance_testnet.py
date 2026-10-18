@@ -77,6 +77,9 @@ class BinanceTestnetExecutionAdapter:
         self.recv_window = recv_window
         self._client = httpx.AsyncClient(timeout=timeout)
         self.configured = bool(self._api_key and self._api_secret)
+        # This adapter talks to Binance's test venue: orders and balances are
+        # real HTTP results, never locally simulated.
+        self.is_simulated = False
 
     def _require_configured(self) -> None:
         if not self.configured:
