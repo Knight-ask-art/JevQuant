@@ -45,11 +45,12 @@ export function Cockpit() {
   const [modelsOpen, setModelsOpen] = useState(false);
   const [symbolsOpen, setSymbolsOpen] = useState(false);
   const [symbol, setSymbol] = useState<string | null>(null);
-  const [chartInterval, setChartInterval] = useState<ChartInterval>("15m");
+  const [chartInterval, setChartInterval] = useState<ChartInterval>("1m");
   const [series, setSeries] = useState<CandleSeries | null>(null);
   const [chartError, setChartError] = useState<ApiError | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartSeq, setChartSeq] = useState(0);
+  const [hover, setHover] = useState<Candle | null>(null);
 
   const view = status.data;
   const mode = view?.mode;
@@ -71,10 +72,11 @@ export function Cockpit() {
     let cancelled = false;
     setChartLoading(true);
     setChartError(null);
+    setHover(null);
     api
       .get<CandleSeries>(
         `/api/v1/market/candles?symbol=${encodeURIComponent(activeSymbol)}` +
-          `&interval=${chartInterval}&limit=120`,
+          `&interval=${chartInterval}&limit=80`,
       )
       .then((result) => {
         if (!cancelled) setSeries(result);
@@ -100,6 +102,16 @@ export function Cockpit() {
     lastCandle && firstCandle && firstCandle.c > 0
       ? ((lastCandle.c - firstCandle.c) / firstCandle.c) * 100
       : null;
+  const shown = hover ?? lastCandle;
+  const formatCandleTime = (iso: string) => {
+    const date = new Date(iso);
+    return date.toLocaleString(undefined, {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
 
   async function act(name: string, work: () => Promise<unknown>) {
     setBusy(name);
@@ -188,6 +200,9 @@ export function Cockpit() {
             title={
               <span className="row" style={{ gap: 10, flexWrap: "wrap" }}>
                 {activeSymbol ?? t("cockpit.symbols")}
+                <span className="tone-badge" title={currentMode === "testnet" ? t("cockpit.testnetHint") : t("cockpit.paperHint")}>
+                  {currentMode === "testnet" ? t("cockpit.testnet") : t("cockpit.paper")}
+                </span>
                 {lastCandle && (
                   <span className="mono" style={{ fontSize: 20 }}>
                     {num(lastCandle.c)}
@@ -195,7 +210,8 @@ export function Cockpit() {
                 )}
                 {changePct !== null && (
                   <span className={changePct < 0 ? "neg small" : "pos small"}>
-                    {pct(changePct)}
+                    {changePct < 0 ? "" : "+"}
+                    {pct(changePct)} · {t("cockpit.rangeChange", { n: candles.length })}
                   </span>
                 )}
                 {series?.synthetic && (
@@ -238,6 +254,34 @@ export function Cockpit() {
                 ))}
               </div>
             </div>
+            {shown && (
+              <div className="ohlc-strip mono">
+                <span>
+                  <em>{t("cockpit.ohlcTime")}</em>{" "}
+                  <strong>{formatCandleTime(shown.t)}</strong>
+                </span>
+                <span>
+                  <em>O</em> {num(shown.o, 2)}
+                </span>
+                <span>
+                  <em>H</em> {num(shown.h, 2)}
+                </span>
+                <span>
+                  <em>L</em> {num(shown.l, 2)}
+                </span>
+                <span>
+                  <em>C</em> {num(shown.c, 2)}
+                </span>
+                <span>
+                  <em>{t("cockpit.volume")}</em> {compactMoney(shown.v)}
+                </span>
+                {hover && (
+                  <span className={shown.c >= shown.o ? "pos" : "neg"}>
+                    {pct(((shown.c - shown.o) / shown.o) * 100)}
+                  </span>
+                )}
+              </div>
+            )}
             {chartError ? (
               <div className="callout danger">
                 {t("cockpit.chartUnavailable", { error: chartError.message })}
@@ -251,7 +295,7 @@ export function Cockpit() {
                 candles={candles}
                 ariaLabel={`${activeSymbol} ${chartInterval}`}
                 formatPrice={(value) => num(value, value < 1 ? 6 : 2)}
-                formatVolume={(value) => compactMoney(value)}
+                onHover={setHover}
               />
             )}
           </PaperCard>

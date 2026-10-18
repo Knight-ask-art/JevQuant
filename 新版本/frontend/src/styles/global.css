@@ -1037,8 +1037,47 @@ table.data th.num {
 .candle-chart {
   display: block;
   width: 100%;
-  height: auto;
   margin-top: 4px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.ohlc-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 6px 2px 8px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  border-bottom: 1px dashed var(--line);
+  margin-bottom: 2px;
+}
+
+.ohlc-strip em {
+  font-style: normal;
+  color: var(--muted);
+  margin-right: 4px;
+  letter-spacing: 0.04em;
+}
+
+.ohlc-strip strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tone-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  vertical-align: middle;
 }
 
 .symbol-grid {
