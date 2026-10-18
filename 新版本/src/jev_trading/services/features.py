@@ -7,21 +7,15 @@ Decimal at the execution boundary.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from math import sqrt
 from typing import Sequence
 
+# The candle shape lives in the domain so market providers can return it
+# without importing a service. Re-exported here for existing callers.
+from ..domain.market import Candle
 
-@dataclass(frozen=True)
-class Candle:
-    open_time: datetime
-    close_time: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
+__all__ = ["Candle"]
 
 
 def sma(values: Sequence[float], period: int) -> float | None:

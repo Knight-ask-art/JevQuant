@@ -18,8 +18,9 @@ from ...domain.errors import (
     DependencyUnavailableError,
     ProviderRateLimitedError,
 )
-from ...domain.market import MarketSnapshot, SymbolFilters
-from ...services.features import Candle, build_features
+from ...domain.market import Candle, MarketSnapshot, SymbolFilters
+from ...services.features import build_features
+from ...services.klines import INTERVALS
 
 
 class BinanceMarketDataProvider:
@@ -179,6 +180,75 @@ class BinanceMarketDataProvider:
         if errors and not snapshots:
             raise errors[0]
         return snapshots
+
+    async def spot_candidates(self, limit: int = 40) -> list[dict[str, Any]]:
+        """Trading USDT spot pairs by 24h quote volume, for the universe picker."""
+
+        payload = await self._request("/api/v3/ticker/24hr")
+        if not isinstance(payload, list):
+            raise DependencyBadResponseError("24h ticker response was not a list.")
+        info = await self.exchange_info()
+        permitted = {
+            item.get("symbol")
+            for item in info.get("symbols", [])
+            if item.get("status") == "TRADING" and item.get("quoteAsset") == "USDT"
+        }
+        ranked = sorted(
+            (
+                item
+                for item in payload
+                if isinstance(item, dict) and item.get("symbol") in permitted
+            ),
+            key=lambda item: float(item.get("quoteVolume") or 0),
+            reverse=True,
+        )
+        return [
+            {
+                "symbol": item["symbol"],
+                "base": item["symbol"][: -len("USDT")],
+                "quote_volume_usdt": item.get("quoteVolume"),
+                "price_change_pct": item.get("priceChangePercent"),
+                "last_price": item.get("lastPrice"),
+            }
+            for item in ranked[:limit]
+        ]
+
+    async def klines(
+        self, symbol: str, interval: str = "1m", limit: int = 120
+    ) -> list[Candle]:
+        """Closed candles for charting. The last, still-forming bar is dropped."""
+
+        if interval not in INTERVALS:
+            raise DependencyBadResponseError(f"unsupported kline interval {interval!r}")
+        rows = await self._request(
+            "/api/v3/klines",
+            {"symbol": symbol, "interval": interval, "limit": min(int(limit) + 1, 1000)},
+        )
+        if not isinstance(rows, list):
+            raise DependencyBadResponseError("klines response was not a list.")
+        now = datetime.now(UTC)
+        candles: list[Candle] = []
+        for row in rows:
+            try:
+                close_time = datetime.fromtimestamp(int(row[6]) / 1000, tz=UTC)
+                if close_time > now:
+                    continue
+                candles.append(
+                    Candle(
+                        open_time=datetime.fromtimestamp(int(row[0]) / 1000, tz=UTC),
+                        close_time=close_time,
+                        open=float(row[1]),
+                        high=float(row[2]),
+                        low=float(row[3]),
+                        close=float(row[4]),
+                        volume=float(row[5]),
+                    )
+                )
+            except (IndexError, TypeError, ValueError) as exc:
+                raise DependencyBadResponseError(
+                    f"klines row malformed for {symbol}"
+                ) from exc
+        return candles[-int(limit) :]
 
     async def health(self) -> dict[str, object]:
         try:

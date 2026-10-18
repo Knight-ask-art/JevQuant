@@ -145,6 +145,19 @@ Symbols outside `JEV_ALLOWED_SYMBOLS` are rejected.
 Verification returns `{"valid": true, "count": n, "head": "sha256:..."}` or
 `{"valid": false, "count": n, "broken_seq": k}`.
 
+## Symbol universe and charts
+
+| Method | Path | Body / query | Notes |
+|---|---|---|---|
+| GET | `/api/v1/market/universe` | — | traded symbols, venue candidates (real data only), last marks |
+| PUT | `/api/v1/market/universe` | `{"symbols": ["BTCUSDT", "ETHUSDT"]}` | hard envelope; exchange rules are read first and symbols without them are rejected |
+| GET | `/api/v1/market/candles` | `?symbol=BTCUSDT&interval=15m&limit=120` | closed candles only; `1m`, `5m`, `15m`, `1h`, `4h` |
+
+The universe is persisted in `system_state` and applied to the live settings and the
+policy compiler, so a symbol outside it is discarded before the LLM, Jev, risk or
+execution can see it. The model still chooses a (possibly narrower) universe from it.
+A failed kline fetch is reported as an error, never replaced with synthetic bars.
+
 ## Runtime settings
 
 | Method | Path | Body | Notes |

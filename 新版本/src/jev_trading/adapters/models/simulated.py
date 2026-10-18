@@ -38,7 +38,11 @@ SIMULATED_MODEL = "simulated-rule-based"
 
 
 class SimulatedPolicyGenerator:
-    """A deterministic stand-in for the Console LLM."""
+    """A deterministic stand-in for the Console LLM.
+
+    It is rule-based, not adaptive: it scores the whole universe with a fixed
+    momentum rule and lets the server compiler clamp whatever it proposes.
+    """
 
     model_name = SIMULATED_MODEL
 
@@ -66,6 +70,20 @@ class SimulatedPolicyGenerator:
         allowed = sorted(self.server.allowed_symbols & set(symbols.keys()))
         if not allowed:
             allowed = sorted(self.server.allowed_symbols)
+        # Stand-in for the model choosing its universe: keep the strongest
+        # momentum names, and only when momentum is actually positive.
+        ranked = sorted(
+            (
+                (symbol, float(symbols[symbol].get("return_15m_bps", 0.0)))
+                for symbol in allowed
+                if symbol in symbols
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        picked = [symbol for symbol, momentum in ranked[:2] if momentum > 0]
+        if not picked:
+            picked = [symbol for symbol, _ in ranked[:1]] or allowed[:1]
         per_symbol_cap = min(Decimal("300"), self.server.max_position_notional_usdt)
         universe = [
             SymbolPolicy(
@@ -76,8 +94,12 @@ class SimulatedPolicyGenerator:
                 max_slippage_bps=Decimal("12"),
                 entry_cooldown_seconds=60,
             )
-            for symbol in allowed
+            for symbol in picked
         ]
+        selection_note = (
+            f"Rule-based selection kept {', '.join(picked)} of {', '.join(allowed)} "
+            "by 15m momentum."
+        )
 
         policy = StrategyPolicy(
             schema_version=SCHEMA_VERSION,
@@ -113,7 +135,7 @@ class SimulatedPolicyGenerator:
             rationale=(
                 "SIMULATED policy: deterministic rule-based stand-in used when no "
                 "Console LLM credential is configured. It exists to exercise the "
-                "risk, execution and audit pipeline end to end."
+                "risk, execution and audit pipeline end to end. " + selection_note
             ),
         )
         latency_ms = int((time.perf_counter() - started) * 1000)

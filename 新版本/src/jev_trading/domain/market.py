@@ -8,6 +8,7 @@ TRADING, the system refuses to trade (fail-closed).
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -16,6 +17,19 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, computed_field
 
 from .errors import ValidationAppError
 from .money import ZERO, dec, quantize_down, round_price, safe_div
+
+
+@dataclass(frozen=True)
+class Candle:
+    """A closed OHLCV bar. Float because it feeds model features, never sizing."""
+
+    open_time: datetime
+    close_time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
 
 
 class SymbolFilters(BaseModel):

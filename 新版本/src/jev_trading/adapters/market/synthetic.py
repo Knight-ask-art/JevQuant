@@ -12,8 +12,45 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Sequence
 
-from ...domain.market import MarketSnapshot, SymbolFilters
-from ...services.features import Candle, build_features
+from ...domain.market import Candle, MarketSnapshot, SymbolFilters
+from ...services.features import build_features
+from ...services.klines import SYNTHETIC_LOOKBACK_MINUTES, upsample
+
+
+def extend_history(
+    candles: list[Candle], minutes: int, *, seed: int, symbol: str
+) -> list[Candle]:
+    """Prepend a plausible past so longer chart intervals have enough bars.
+
+    Deterministic per symbol, mean-reverting around the base price. It exists
+    only to make the demo chart legible and is labelled synthetic end to end.
+    """
+
+    if len(candles) >= minutes:
+        return candles
+    rng = random.Random(f"{seed}:{symbol}:extended")
+    base = float(BASE_PRICES.get(symbol, Decimal("100")))
+    needed = minutes - len(candles)
+    start = candles[0].open_time - timedelta(minutes=needed)
+    price = candles[0].open
+    extended: list[Candle] = []
+    for index in range(needed):
+        mean_reversion = (base - price) / base * 0.002
+        price = max(0.01, price * (1.0 + mean_reversion + rng.gauss(0.0, 0.0009)))
+        open_price = extended[-1].close if extended else price
+        close_time = start + timedelta(minutes=index + 1)
+        extended.append(
+            Candle(
+                open_time=close_time - timedelta(minutes=1),
+                close_time=close_time,
+                open=open_price,
+                high=max(open_price, price) * (1.0 + abs(rng.gauss(0, 0.0004))),
+                low=min(open_price, price) * (1.0 - abs(rng.gauss(0, 0.0004))),
+                close=price,
+                volume=max(1.0, rng.gauss(1000, 250)),
+            )
+        )
+    return extended + candles
 
 BASE_PRICES: dict[str, Decimal] = {
     "BTCUSDT": Decimal("68000"),
@@ -190,6 +227,29 @@ class SyntheticMarketDataProvider:
             min_notional=Decimal(spec["min_notional"]),
             notional_apply_to_market=True,
         )
+
+    async def klines(
+        self, symbol: str, interval: str = "1m", limit: int = 120
+    ) -> list[Candle]:
+        """Replay the simulated minute history, upsampled to ``interval``."""
+
+        lookback = SYNTHETIC_LOOKBACK_MINUTES.get(interval)
+        if lookback is None:
+            raise ValueError(f"unsupported kline interval {interval!r}")
+        now = (self._sim_clock if self.advance_each_call else datetime.now(UTC)).astimezone(
+            UTC
+        )
+        if symbol not in self._candles:
+            # Seeding uses the wall clock, so run it against wall time and let
+            # _advance catch the history up to the simulated clock.
+            self._seed_history(symbol, datetime.now(UTC).astimezone(UTC))
+        self._advance(symbol, now)
+        candles = extend_history(
+            self._candles[symbol], lookback, seed=self.seed, symbol=symbol
+        )
+        self._candles[symbol] = candles
+        series = upsample(candles[-lookback:], interval, now)
+        return series[-int(limit) :]
 
     async def health(self) -> dict[str, object]:
         return {

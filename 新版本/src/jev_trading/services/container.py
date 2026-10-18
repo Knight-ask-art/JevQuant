@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, AsyncIterator
 
 from pydantic import SecretStr
 
@@ -43,6 +44,7 @@ logger = logging.getLogger("jev_trading.container")
 class AppContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.default_universe = list(settings.allowed_symbols)
         self.db = Database(settings.database_url)
         self.repo = Repository(self.db)
         self.audit = AuditService(self.repo)
@@ -140,6 +142,9 @@ class AppContainer:
         self._automation_enabled = settings.auto_cycle_seconds > 0
         self._next_cycle_at: datetime | None = None
         self._automation_lock = asyncio.Lock()
+        # Serializes changes to the symbol universe: the settings, compiler
+        # and simulator must move together.
+        self._settings_lock = asyncio.Lock()
 
     def _build_policy_generator(self):
         settings = self.settings
@@ -182,6 +187,7 @@ class AppContainer:
             )
         await self.broker.start()
         await self.modes.initialize()
+        await self._load_symbol_universe()
         # Credentials entered through the UI outlive a container restart, so
         # load them before the orchestrator is wired to the adapters.
         await self._load_runtime_settings()
@@ -238,6 +244,58 @@ class AppContainer:
             )
             self._balance_task = asyncio.create_task(scheduler.loop())
         return self
+
+    # ------------------------------------------------------------------
+    # symbol universe
+    # ------------------------------------------------------------------
+    def symbol_universe(self) -> list[str]:
+        return list(self.settings.allowed_symbols)
+
+    @asynccontextmanager
+    async def settings_lock(self) -> AsyncIterator[None]:
+        async with self._settings_lock:
+            yield
+
+    async def apply_symbol_universe(self, symbols: list[str], *, actor: str) -> None:
+        """Make ``symbols`` the hard envelope for every downstream component.
+
+        The orchestrator reads ``self.settings`` each cycle, so mutating the
+        settings object is enough; the compiler's snapshot and the synthetic
+        simulator are rebuilt explicitly. Callers hold ``settings_lock()``.
+        """
+
+        normalized = list(dict.fromkeys(symbol.strip().upper() for symbol in symbols))
+        if not normalized:
+            raise ValueError("the symbol universe cannot be empty")
+        self.settings.allowed_symbols = normalized
+        self.compiler = PolicyCompiler(self.settings.server_limits)
+        self.policy_service.compiler = self.compiler
+        self.policy_service.server_limits = self.settings.server_limits
+        if isinstance(self.market_provider, SyntheticMarketDataProvider):
+            self.market_provider.symbols = list(normalized)
+        await self.repo.set_state("symbol_universe", normalized)
+        await self.audit.record(
+            "settings.universe_updated",
+            "settings",
+            None,
+            {"symbols": normalized, "actor": actor},
+        )
+
+    async def _load_symbol_universe(self) -> None:
+        stored = await self.repo.get_state("symbol_universe")
+        if isinstance(stored, list) and stored:
+            symbols = [str(item).upper() for item in stored]
+        else:
+            env = self.settings.allowed_symbols
+            if self.settings.synthetic_market and isinstance(
+                self.market_provider, SyntheticMarketDataProvider
+            ):
+                # The synthetic feed can only serve symbols it knows.
+                symbols = [item for item in env if item in self.market_provider.symbols]
+            else:
+                symbols = env
+        if symbols and symbols != self.settings.allowed_symbols:
+            await self.apply_symbol_universe(symbols, actor="system:startup")
 
     # ------------------------------------------------------------------
     # runtime configuration (persisted in system_state, never echoed back)

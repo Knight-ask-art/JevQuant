@@ -991,3 +991,66 @@ table.data th.num {
   max-height: 660px;
   overflow-y: auto;
 }
+
+/* symbol chips, candlestick chart, symbol grid */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  border-color: var(--ink-soft);
+  color: var(--ink);
+}
+
+.chip.active {
+  border-color: var(--terracotta);
+  background: var(--terracotta-fade);
+  color: var(--ink);
+}
+
+.chip.active span:first-child {
+  color: var(--terracotta);
+  font-weight: 600;
+}
+
+.chip .pos,
+.pos {
+  color: var(--olive);
+}
+
+.chip .neg,
+.neg {
+  color: var(--danger);
+}
+
+.candle-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 4px;
+}
+
+.symbol-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.symbol-grid .chip {
+  justify-content: space-between;
+  border-radius: var(--radius-sm);
+}

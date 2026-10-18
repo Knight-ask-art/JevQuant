@@ -32,6 +32,9 @@ Return exactly one JSON object that validates against schema strategy-policy/1.0
 Rules:
 - Output JSON only. No prose, no markdown, no code fences.
 - Never propose limits above absolute_server_limits; they are hard caps.
+- The universe you receive is a hard maximum. You decide which symbols to
+  trade and may include a strict subset, each with its own limits; symbols
+  outside it are discarded.
 - mode_scope may only contain modes you were told are active.
 - Keep rationale under 400 words.
 - You never place orders and never see exchange credentials."""

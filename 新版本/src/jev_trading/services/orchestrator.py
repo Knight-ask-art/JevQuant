@@ -133,6 +133,7 @@ class TradingOrchestrator:
         marks = {symbol: snap.mid for symbol, snap in snapshot_map.items()}
         account = await self.repo.account_snapshot(self.account_id, marks, started)
 
+        now = datetime.now(UTC)
         policy_generated = False
         if not kill and (policy is None or refresh_policy):
             try:
@@ -264,10 +265,19 @@ class TradingOrchestrator:
     async def _generate_policy(
         self, mode: Mode, snapshots: list[MarketSnapshot], account: AccountSnapshot
     ) -> EffectivePolicy:
+        now = datetime.now(UTC)
+        recent: dict[str, list[dict[str, float]]] = {}
+        for snap in snapshots:
+            _snap, bars = await self._entry_snapshot(snap, now)
+            recent[snap.symbol] = bars
         market_summary = {
             "universe": sorted({snap.symbol for snap in snapshots}),
             "timeframes": ["1m", "5m"],
-            "as_of": datetime.now(UTC).isoformat(),
+            "as_of": now.isoformat(),
+            "selection": (
+                "You choose which symbols from the universe to trade. A symbol "
+                "outside the universe is discarded by the server compiler."
+            ),
             "symbols": {
                 snap.symbol: {
                     "snapshot_id": str(snap.snapshot_id),
@@ -277,6 +287,7 @@ class TradingOrchestrator:
                 }
                 for snap in snapshots
             },
+            "recent_candles_1m": recent,
             "data_source": self.market.source,
             "simulated": any(snap.is_synthetic for snap in snapshots),
         }
@@ -298,12 +309,40 @@ class TradingOrchestrator:
         )
         return effective
 
+    async def _entry_snapshot(
+        self, snapshot: MarketSnapshot, now: datetime
+    ) -> tuple[MarketSnapshot, list[dict[str, float]]]:
+        """Add recent 1m bars to the state the models receive.
+
+        The snapshot already carries indicators; a strategy author that also
+        sees the candles can describe an entry style in terms of actual price
+        action rather than a single tick. A failure to fetch them is not fatal:
+        the features and mid are still a complete, honest description.
+        """
+
+        try:
+            candles = await self.market.klines(snapshot.symbol, interval="1m", limit=30)
+        except AppError:
+            return snapshot, []
+        return snapshot, [
+            {
+                "t": candle.close_time.isoformat(),
+                "o": candle.open,
+                "h": candle.high,
+                "l": candle.low,
+                "c": candle.close,
+                "v": candle.volume,
+            }
+            for candle in candles
+        ]
+
     def _jev_state(
         self,
         policy: EffectivePolicy,
         symbol_policy,
         snapshot: MarketSnapshot,
         now: datetime,
+        recent: list[dict[str, float]] | None = None,
     ) -> dict[str, Any]:
         return {
             "symbol": snapshot.symbol,
@@ -315,6 +354,7 @@ class TradingOrchestrator:
             "ask": float(snapshot.ask),
             "spread_bps": float(snapshot.spread_bps),
             **snapshot.features,
+            "recent_candles_1m": recent or [],
             "policy": {
                 "allowed_sides": [side.value for side in symbol_policy.allowed_sides],
                 "max_spread_bps": float(symbol_policy.max_spread_bps),
@@ -390,7 +430,8 @@ class TradingOrchestrator:
             },
         )
         await self.repo.transition_signal(signal.id, SignalState.JEV_EVALUATING)
-        state = self._jev_state(policy, symbol_policy, snapshot, now)
+        snapshot, recent = await self._entry_snapshot(snapshot, now)
+        state = self._jev_state(policy, symbol_policy, snapshot, now, recent)
         from ..adapters.models.base import build_jev_questions
 
         questions = build_jev_questions()

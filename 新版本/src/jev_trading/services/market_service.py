@@ -41,6 +41,17 @@ class MarketService:
     ) -> list[MarketSnapshot]:
         return await self.provider.snapshots(symbols, now=now or datetime.now(UTC))
 
+    async def klines(self, symbol: str, interval: str = "1m", limit: int = 120):
+        return await self.provider.klines(symbol, interval=interval, limit=limit)
+
+    async def spot_candidates(self, limit: int = 40) -> list[dict[str, object]]:
+        """Liquid USDT pairs the venue lists, when the provider can supply them."""
+
+        candidates = getattr(self.provider, "spot_candidates", None)
+        if candidates is None:
+            return []
+        return await candidates(limit=limit)
+
     def cached_filters(self, symbol: str) -> SymbolFilters | None:
         """The cached filters, only if they are fresh enough to trust for entries.
 

@@ -333,3 +333,74 @@ def test_automation_can_be_switched_without_a_restart(open_client):
     assert disabled.status_code == 200
     assert disabled.json()["enabled"] is False
     assert disabled.json()["next_run_at"] is None
+
+
+def test_symbol_universe_narrows_the_hard_envelope(open_client):
+    listing = open_client.get("/api/v1/market/universe").json()
+    assert "BTCUSDT" in listing["symbols"]
+
+    changed = open_client.put(
+        "/api/v1/market/universe", json={"symbols": ["ETHUSDT", "ethusdt"]}
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["symbols"] == ["ETHUSDT"]
+
+    status = open_client.get("/api/v1/system/status").json()
+    assert status["server_limits"]["allowed_symbols"] == ["ETHUSDT"]
+
+    # A policy generated afterwards cannot propose BTC: the compiler clamps
+    # it out, because the operator's list is the server envelope.
+    policy = open_client.post(
+        "/api/v1/strategy/policies/generate", json={"purpose": "trade_runtime"}
+    ).json()
+    universe = policy["effective"]["universe"]
+    assert [item["symbol"] for item in universe] == ["ETHUSDT"]
+
+    cycle = open_client.post("/api/v1/demo/cycle").json()
+    assert "ETHUSDT" in cycle["symbols"]
+    assert "BTCUSDT" not in cycle["symbols"]
+
+    signals = open_client.get("/api/v1/signals?limit=50").json()["items"]
+    assert signals and {item["symbol"] for item in signals} == {"ETHUSDT"}
+
+
+def test_symbol_universe_rejects_non_usdt_symbols(open_client):
+    bad = open_client.put("/api/v1/market/universe", json={"symbols": ["BTCBUSD"]})
+    assert bad.status_code == 422
+    empty = open_client.put("/api/v1/market/universe", json={"symbols": []})
+    assert empty.status_code == 422
+
+
+def test_candles_are_closed_and_upsampled(open_client):
+    response = open_client.get(
+        "/api/v1/market/candles?symbol=BTCUSDT&interval=15m&limit=40"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["symbol"] == "BTCUSDT"
+    assert body["interval"] == "15m"
+    assert body["synthetic"] is True
+    candles = body["candles"]
+    assert 20 <= len(candles) <= 40
+    for candle in candles:
+        assert candle["l"] <= min(candle["o"], candle["c"]) <= max(candle["o"], candle["c"]) <= candle["h"]
+    opens = [candle["t"] for candle in candles]
+    assert opens == sorted(opens)
+
+    bad_interval = open_client.get(
+        "/api/v1/market/candles?symbol=BTCUSDT&interval=7m"
+    )
+    assert bad_interval.status_code == 422
+    assert bad_interval.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_candles_survive_a_restart_with_the_stored_universe(tmp_path):
+    with TestClient(create_app(make_settings(tmp_path))) as api:
+        assert api.put(
+            "/api/v1/market/universe", json={"symbols": ["SOLUSDT"]}
+        ).status_code == 200
+    with TestClient(create_app(make_settings(tmp_path))) as api:
+        listing = api.get("/api/v1/market/universe").json()
+        assert listing["symbols"] == ["SOLUSDT"]
+        candles = api.get("/api/v1/market/candles?symbol=BTCUSDT&interval=5m&limit=30")
+        assert candles.status_code == 200

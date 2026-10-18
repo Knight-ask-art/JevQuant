@@ -1,25 +1,55 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { CandleChart } from "../components/CandleChart";
 import { EquityChart } from "../components/charts";
 import { ModelSettingsModal } from "../components/ModelSettingsModal";
+import { SymbolPicker } from "../components/SymbolPicker";
 import { EmptyState, ErrorNote, PaperCard, Pill, ScribbleUnderline, Stat } from "../components/ui";
 import { useApi } from "../hooks/useApi";
 import { useI18n } from "../i18n";
 import { ApiError, api } from "../lib/api";
-import { clock, countdown, label, money, pct, shortId, signed, timeAgo } from "../lib/format";
-import type { OrderView, PnlPoint, SystemStatus } from "../lib/types";
+import {
+  clock,
+  compactMoney,
+  countdown,
+  label,
+  money,
+  num,
+  pct,
+  shortId,
+  signed,
+  timeAgo,
+} from "../lib/format";
+import type {
+  Candle,
+  CandleSeries,
+  OrderView,
+  PnlPoint,
+  SystemStatus,
+  UniverseView,
+} from "../lib/types";
 
 const INTERVALS = [60, 300, 900, 1800, 3600];
+const CHART_INTERVALS = ["1m", "5m", "15m", "1h", "4h"] as const;
+type ChartInterval = (typeof CHART_INTERVALS)[number];
 
 export function Cockpit() {
   const { t } = useI18n();
   const status = useApi<SystemStatus>("/api/v1/system/status", 5000);
   const pnl = useApi<{ items: PnlPoint[] }>("/api/v1/pnl?limit=120", 15000);
   const orders = useApi<{ items: OrderView[] }>("/api/v1/orders?limit=6", 10000);
+  const universe = useApi<UniverseView>("/api/v1/market/universe", 30000);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [modelsOpen, setModelsOpen] = useState(false);
+  const [symbolsOpen, setSymbolsOpen] = useState(false);
+  const [symbol, setSymbol] = useState<string | null>(null);
+  const [chartInterval, setChartInterval] = useState<ChartInterval>("15m");
+  const [series, setSeries] = useState<CandleSeries | null>(null);
+  const [chartError, setChartError] = useState<ApiError | null>(null);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartSeq, setChartSeq] = useState(0);
 
   const view = status.data;
   const mode = view?.mode;
@@ -27,17 +57,57 @@ export function Cockpit() {
   const automation = view?.automation;
   const models = view?.models;
   const currentMode = mode?.mode ?? "paper";
+  const universeSymbols = universe.data?.symbols ?? view?.server_limits.allowed_symbols ?? [];
+  const marks = universe.data?.marks ?? {};
+  const activeSymbol =
+    symbol && universeSymbols.includes(symbol) ? symbol : universeSymbols[0] ?? null;
   const points = (pnl.data?.items ?? [])
     .slice()
     .reverse()
     .map((point) => ({ at: point.as_of, equity_usdt: point.equity_usdt }));
+
+  useEffect(() => {
+    if (!activeSymbol) return;
+    let cancelled = false;
+    setChartLoading(true);
+    setChartError(null);
+    api
+      .get<CandleSeries>(
+        `/api/v1/market/candles?symbol=${encodeURIComponent(activeSymbol)}` +
+          `&interval=${chartInterval}&limit=120`,
+      )
+      .then((result) => {
+        if (!cancelled) setSeries(result);
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setSeries(null);
+          setChartError(caught as ApiError);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setChartLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSymbol, chartInterval, chartSeq]);
+
+  const candles: Candle[] = series?.symbol === activeSymbol ? series.candles : [];
+  const lastCandle = candles[candles.length - 1];
+  const firstCandle = candles[0];
+  const changePct =
+    lastCandle && firstCandle && firstCandle.c > 0
+      ? ((lastCandle.c - firstCandle.c) / firstCandle.c) * 100
+      : null;
 
   async function act(name: string, work: () => Promise<unknown>) {
     setBusy(name);
     setError(null);
     try {
       await work();
-      await Promise.all([status.reload(), pnl.reload(), orders.reload()]);
+      setChartSeq((value) => value + 1);
+      await Promise.all([status.reload(), pnl.reload(), orders.reload(), universe.reload()]);
     } catch (caught) {
       setError(caught as ApiError);
     } finally {
@@ -114,6 +184,79 @@ export function Cockpit() {
       <div className="cockpit-grid">
         <div className="stack">
           <PaperCard
+            eyebrow={t("cockpit.price")}
+            title={
+              <span className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                {activeSymbol ?? t("cockpit.symbols")}
+                {lastCandle && (
+                  <span className="mono" style={{ fontSize: 20 }}>
+                    {num(lastCandle.c)}
+                  </span>
+                )}
+                {changePct !== null && (
+                  <span className={changePct < 0 ? "neg small" : "pos small"}>
+                    {pct(changePct)}
+                  </span>
+                )}
+                {series?.synthetic && (
+                  <Pill tone="terracotta">{t("ribbon.syntheticData")}</Pill>
+                )}
+              </span>
+            }
+            actions={
+              <button className="button ghost small" onClick={() => setSymbolsOpen(true)}>
+                {t("cockpit.manageSymbols")}
+              </button>
+            }
+          >
+            <div className="row" style={{ marginBottom: 8, flexWrap: "wrap" }}>
+              <div className="row" style={{ flexWrap: "wrap" }}>
+                {universeSymbols.map((item) => {
+                  const mark = Number(marks[item] ?? 0);
+                  return (
+                    <button
+                      key={item}
+                      type="button"
+                      className={`chip${item === activeSymbol ? " active" : ""}`}
+                      onClick={() => setSymbol(item)}
+                    >
+                      <span>{item.replace(/USDT$/, "")}</span>
+                      <span className="small muted">{mark ? num(mark) : ""}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="segmented" style={{ marginLeft: "auto" }}>
+                {CHART_INTERVALS.map((value) => (
+                  <button
+                    key={value}
+                    className={chartInterval === value ? "active" : ""}
+                    onClick={() => setChartInterval(value)}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {chartError ? (
+              <div className="callout danger">
+                {t("cockpit.chartUnavailable", { error: chartError.message })}
+              </div>
+            ) : !activeSymbol ? (
+              <EmptyState title={t("symbols.empty")} />
+            ) : candles.length < 2 ? (
+              <div className="loading">{chartLoading ? "…" : t("cockpit.noMarks")}</div>
+            ) : (
+              <CandleChart
+                candles={candles}
+                ariaLabel={`${activeSymbol} ${chartInterval}`}
+                formatPrice={(value) => num(value, value < 1 ? 6 : 2)}
+                formatVolume={(value) => compactMoney(value)}
+              />
+            )}
+          </PaperCard>
+
+          <PaperCard
             eyebrow={t("cockpit.trend")}
             title={t("cockpit.trendNote", {
               mode: label(currentMode),
@@ -142,6 +285,9 @@ export function Cockpit() {
                   value: money(account?.gross_exposure_usdt),
                 })}
               />
+            </div>
+            <div className="eyebrow" style={{ marginTop: 16 }}>
+              {t("cockpit.symbols")} · {universeSymbols.join(" · ")}
             </div>
             <div style={{ marginTop: 12 }}>
               <EquityChart points={points} height={200} />
@@ -325,6 +471,17 @@ export function Cockpit() {
         models={models}
         onClose={() => setModelsOpen(false)}
         onSaved={() => {
+          void status.reload();
+        }}
+      />
+      <SymbolPicker
+        open={symbolsOpen}
+        universe={universe.data ?? undefined}
+        onClose={() => setSymbolsOpen(false)}
+        onSaved={() => {
+          setSymbol(null);
+          setChartSeq((value) => value + 1);
+          void universe.reload();
           void status.reload();
         }}
       />

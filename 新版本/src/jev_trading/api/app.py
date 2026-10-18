@@ -26,6 +26,7 @@ from .routes_activity import router as activity_router
 from .routes_backtest import router as backtest_router
 from .routes_connections import router as connections_router
 from .routes_execution import router as execution_router
+from .routes_market import router as market_router
 from .routes_mode import router as mode_router
 from .routes_settings import router as settings_router
 from .routes_strategy import router as strategy_router
@@ -135,6 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(system_router)
     app.include_router(mode_router)
+    app.include_router(market_router)
     app.include_router(settings_router)
     app.include_router(strategy_router)
     app.include_router(activity_router)

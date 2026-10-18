@@ -252,3 +252,39 @@ export interface CycleResult {
   simulated: boolean;
   notes: string[];
 }
+
+export interface Candle {
+  t: string;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+}
+
+export interface CandleSeries {
+  symbol: string;
+  interval: string;
+  source: string;
+  synthetic: boolean;
+  candles: Candle[];
+}
+
+export interface UniverseCandidate {
+  symbol: string;
+  base: string;
+  quote_volume_usdt: string | null;
+  price_change_pct: string | null;
+  last_price: string | null;
+}
+
+export interface UniverseView {
+  symbols: string[];
+  configured: string[];
+  defaults: string[];
+  candidates: UniverseCandidate[];
+  active_universe: string[];
+  marks: Record<string, string>;
+  source: string;
+  synthetic: boolean;
+}

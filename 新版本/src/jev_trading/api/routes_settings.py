@@ -9,6 +9,8 @@ Two concerns live here:
 * **Auto-cycle.** The background cadence can be switched on or off without a
   container restart. Existing positions keep their deterministic exits either
   way; disabling only stops new cycles.
+
+The symbol universe has its own routes in ``routes_market``.
 """
 
 from __future__ import annotations
