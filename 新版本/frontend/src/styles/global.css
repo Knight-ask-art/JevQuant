@@ -1347,3 +1347,52 @@ table.data th.num {
 .link-button:hover {
   color: var(--ink);
 }
+
+/* Agent narration: the journal reads as a conversation, one block per turn. */
+.agent-narration {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 8px;
+  max-width: 860px;
+}
+
+.agent-turn {
+  padding-left: 10px;
+  border-left: 2px solid var(--line-strong);
+}
+
+.agent-turn-head {
+  color: var(--ink-soft);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.agent-turn .tool-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .callout[role="status"]::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 8px;
+    border-radius: 50%;
+    background: var(--terracotta);
+    animation: jev-pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes jev-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}

@@ -22,6 +22,32 @@ from .audit import AuditService
 from .events import EventBroker
 
 
+# Which trace fields Agent Desk narrates. The full trace (tool names, budgets)
+# stays out of the journal: it is large and not part of the economic record.
+_TRACE_FLAGS = ("forced_answer", "repaired", "tool_fallback")
+
+
+def _trace_flags(trace: Any) -> dict[str, bool]:
+    if not isinstance(trace, dict):
+        return {}
+    return {name: True for name in _TRACE_FLAGS if trace.get(name)}
+
+
+def _with_trace_flags(
+    usage: dict[str, Any] | None, trace: dict[str, bool] | None
+) -> dict[str, Any]:
+    """Provider usage as-is, with the run's flags hung off ``__trace__``.
+
+    Kept off the provider's own keys so token accounting is never confused
+    by journal-only fields.
+    """
+
+    merged = dict(usage or {})
+    if trace:
+        merged["__trace__"] = dict(trace)
+    return merged
+
+
 class PolicyService:
     def __init__(
         self,
@@ -167,6 +193,9 @@ class PolicyService:
             usage=result.usage,
             latency_ms=result.latency_ms,
             rationale=raw.rationale,
+            # Per-call turn numbers are already stored; these flags say how
+            # the run ended so Agent Desk can narrate it.
+            trace=_trace_flags(trace),
         )
         await self.audit.record(
             "policy.activated",
@@ -244,6 +273,7 @@ class PolicyService:
         latency_ms: int = 0,
         rationale: str | None = None,
         error_code: str | None = None,
+        trace: dict[str, bool] | None = None,
     ) -> None:
         """Persist the agent journal entry; never fail a cycle for it."""
 
@@ -257,7 +287,7 @@ class PolicyService:
                 status=status,
                 turns=turns,
                 tool_calls=tool_calls if isinstance(tool_calls, list) else [],
-                usage=usage or {},
+                usage=_with_trace_flags(usage, trace),
                 latency_ms=latency_ms,
                 rationale=rationale,
                 error_code=error_code,

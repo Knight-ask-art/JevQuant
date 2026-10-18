@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -40,7 +40,53 @@ const TOOL_LABELS: Record<string, Key> = {
   get_recent_decisions: "agent.tool.decisions",
   get_recent_trades: "agent.tool.trades",
   get_performance_summary: "agent.tool.performance",
+  get_recent_evaluations: "agent.tool.evaluations",
 };
+
+/** Group the flat call list by agent turn; calls arrive in turn order. */
+function byTurn(calls: AgentToolCall[]): Array<[number, AgentToolCall[]]> {
+  const turns: Array<[number, AgentToolCall[]]> = [];
+  for (const call of calls) {
+    const turn = Number(call.turn ?? 1);
+    const last = turns[turns.length - 1];
+    if (last && last[0] === turn) last[1].push(call);
+    else turns.push([turn, [call]]);
+  }
+  return turns;
+}
+
+function traceFlag(usage: Record<string, unknown>, flag: string): boolean {
+  const trace = usage.__trace__;
+  if (!trace || typeof trace !== "object") return false;
+  return Boolean((trace as Record<string, unknown>)[flag]);
+}
+
+function ToolCallRow({ call }: { call: AgentToolCall }) {
+  const { t } = useI18n();
+  const known = TOOL_LABELS[call.name];
+  const args = Object.entries(call.arguments ?? {})
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  return (
+    <div
+      className="trace-row"
+      style={{ gridTemplateColumns: "minmax(0, 1fr) auto" }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <Pill tone={call.ok ? "olive" : "danger"} dot>
+          {known ? t(known) : call.name}
+        </Pill>{" "}
+        <span className="small">{call.summary || t("agent.noSummary")}</span>
+        {args && (
+          <div className="mono muted small" title={t("agent.callArgs")}>
+            {args}
+          </div>
+        )}
+      </div>
+      <span className="mono muted small">{call.latency_ms} ms</span>
+    </div>
+  );
+}
 
 export function AgentDesk() {
   const { t } = useI18n();
@@ -48,7 +94,7 @@ export function AgentDesk() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [openRun, setOpenRun] = useState<string | null>(null);
+  const [limit, setLimit] = useState(10);
   const [traces, setTraces] = useState<Record<string, AgentRunDetail>>({});
   const [traceError, setTraceError] = useState<string | null>(null);
 
@@ -59,16 +105,20 @@ export function AgentDesk() {
   const effective = policy?.effective as EffectivePolicy | undefined;
   const regime = effective?.regime ?? raw?.regime;
   const universe = effective?.universe ?? [];
-  const runs = agent?.runs ?? [];
+  const runs = (agent?.runs ?? []).slice(0, limit);
+  const newest = runs[0];
 
   async function think() {
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
+      // The authoring loop can take minutes; a dropped socket must not read
+      // as a failed decision.
       const result = await api.post<{ policy_id: string }>(
         "/api/v1/strategy/policies/generate",
         { purpose: "trade_runtime" },
+        { timeoutMs: 300_000 },
       );
       setNotice(t("agent.decided", { id: shortId(result.policy_id, 8) }));
       await status.reload();
@@ -79,24 +129,16 @@ export function AgentDesk() {
     }
   }
 
-  async function toggleRun(run: AgentRun) {
-    setTraceError(null);
-    if (openRun === run.id) {
-      setOpenRun(null);
-      return;
-    }
-    setOpenRun(run.id);
+  function loadTrace(run: AgentRun) {
     // The newest run ships its trace in the list payload; older runs are
-    // fetched once and kept so expanding them again is instant.
+    // fetched once and kept so the narration renders instantly next time.
     if (run.tools.length > 0 || traces[run.id]) return;
-    try {
-      const detail = await api.get<AgentRunDetail>(
-        `/api/v1/strategy/agent/${run.id}`,
-      );
-      setTraces((current) => ({ ...current, [run.id]: detail }));
-    } catch (caught) {
-      setTraceError((caught as ApiError).message);
-    }
+    api
+      .get<AgentRunDetail>(`/api/v1/strategy/agent/${run.id}`)
+      .then((detail) =>
+        setTraces((current) => ({ ...current, [run.id]: detail })),
+      )
+      .catch((caught: ApiError) => setTraceError(caught.message));
   }
 
   const shownTools = (run: AgentRun): AgentToolCall[] =>
@@ -109,6 +151,15 @@ export function AgentDesk() {
     if (!input && !output) return null;
     return t("agent.usage", { input, output });
   };
+
+  // Pull the newest run's trace once so the narration is there on arrival.
+  const newestId = newest?.id;
+  const newestLoaded =
+    !newest || newest.tools.length > 0 || newest.tool_count === 0;
+  useEffect(() => {
+    if (newest && !newestLoaded) loadTrace(newest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newestId, newestLoaded]);
 
   return (
     <div className="stack" style={{ gap: 20 }}>
@@ -125,12 +176,18 @@ export function AgentDesk() {
           className="button"
           onClick={() => void think()}
           disabled={busy}
+          aria-busy={busy}
         >
           {busy ? t("agent.thinking") : t("agent.think")}
         </button>
       </div>
 
       {error && <ErrorNote error={error} />}
+      {busy && (
+        <div className="callout" role="status" aria-live="polite">
+          {t("agent.announceStart")}
+        </div>
+      )}
       {notice && <div className="callout olive">{notice}</div>}
 
       {agent && !agent.is_agent && (
@@ -266,7 +323,10 @@ export function AgentDesk() {
           <div className="timeline">
             {runs.map((run) => {
               const tools = shownTools(run);
+              const turns = byTurn(tools);
               const usage = usageLine(run);
+              const repaired = traceFlag(run.usage ?? {}, "repaired");
+              const forced = traceFlag(run.usage ?? {}, "forced_answer");
               return (
                 <div className="timeline-item" key={run.id}>
                   <div
@@ -287,6 +347,9 @@ export function AgentDesk() {
                           ? t("agent.ok")
                           : run.error_code ?? t("agent.failed")}
                       </Pill>
+                      {repaired && (
+                        <Pill tone="yellow">{t("agent.repaired")}</Pill>
+                      )}
                       <span className="small muted">
                         {label(run.mode)} · {run.model}
                       </span>
@@ -299,9 +362,50 @@ export function AgentDesk() {
                       <p className="agent-reason small">{run.rationale}</p>
                     )}
 
+                    <div className="agent-narration">
+                      <div className="eyebrow">{t("agent.narration")}</div>
+                      {turns.map(([turn, calls]) => (
+                        <div className="agent-turn" key={turn}>
+                          <div className="agent-turn-head small">
+                            {t("agent.turnRead", {
+                              n: turn,
+                              n_tools: calls.length,
+                            })}
+                          </div>
+                          <div className="tool-trace">
+                            {calls.map((call, index) => (
+                              <ToolCallRow
+                                key={`${call.name}-${index}`}
+                                call={call}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                      <div className="agent-turn">
+                        {forced && (
+                          <div className="small muted">{t("agent.turnForced")}</div>
+                        )}
+                        {repaired && (
+                          <div className="small muted">{t("agent.turnRepair")}</div>
+                        )}
+                        <div className="agent-turn-head small">
+                          {t("agent.turnWrite", { n: run.turns })}
+                        </div>
+                      </div>
+                      {tools.length === 0 && run.tool_count > 0 && (
+                        <div className="small muted">{t("agent.traceLoading")}</div>
+                      )}
+                    </div>
+
                     <div className="row small muted" style={{ flexWrap: "wrap", gap: 10 }}>
                       <span>{t("agent.turns", { n: run.turns })}</span>
                       <span>{t("agent.toolsUsed", { n: run.tool_count })}</span>
+                      <span>
+                        {t("agent.elapsed", {
+                          seconds: (run.latency_ms / 1000).toFixed(1),
+                        })}
+                      </span>
                       <span>{t("agent.signals", { n: run.signals.created })}</span>
                       {run.signals.rejected > 0 && (
                         <span>{t("agent.rejected", { n: run.signals.rejected })}</span>
@@ -315,49 +419,24 @@ export function AgentDesk() {
                         {signed(run.realized.pnl_usdt)}
                       </span>
                       {usage && <span className="mono">{usage}</span>}
-                      {run.tool_count > 0 && (
-                        <button
-                          type="button"
-                          className="link-button"
-                          onClick={() => void toggleRun(run)}
-                        >
-                          {openRun === run.id
-                            ? t("agent.hideTrace")
-                            : t("agent.showTrace")}
-                        </button>
-                      )}
                     </div>
-
-                    {openRun === run.id && (
-                      <div className="tool-trace">
-                        {tools.length === 0 ? (
-                          <div className="small muted">{t("agent.traceLoading")}</div>
-                        ) : (
-                          tools.map((call, index) => (
-                            <div className="trace-row" key={`${call.name}-${index}`}>
-                              <Pill tone={call.ok ? "olive" : "danger"} dot>
-                                {TOOL_LABELS[call.name]
-                                  ? t(TOOL_LABELS[call.name])
-                                  : call.name}
-                              </Pill>
-                              <span className="small">
-                                {call.summary || t("agent.noSummary")}
-                              </span>
-                              <span className="mono muted small">
-                                {call.latency_ms} ms
-                              </span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
                   </div>
                 </div>
               );
             })}
           </div>
         )}
+        {runs.length > 0 && (
+          <button
+            className="button ghost small"
+            style={{ marginTop: 12 }}
+            onClick={() => setLimit((current) => current + 20)}
+          >
+            {t("agent.showMore")}
+          </button>
+        )}
       </PaperCard>
+
     </div>
   );
 }

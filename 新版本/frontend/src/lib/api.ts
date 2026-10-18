@@ -31,7 +31,12 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export interface RequestOptions extends RequestInit {
+  /** Cooperative abort after this many milliseconds. */
+  timeoutMs?: number;
+}
+
+async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
   if (init.body && !headers.has("Content-Type")) {
@@ -40,9 +45,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const key = getApiKey();
   if (key) headers.set("X-API-Key", key);
 
+  const { timeoutMs, ...fetchInit } = init;
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer = controller
+    ? window.setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+
   let response: Response;
   try {
-    response = await fetch(`${BASE}${path}`, { ...init, headers });
+    response = await fetch(`${BASE}${path}`, {
+      ...fetchInit,
+      headers,
+      signal: controller?.signal,
+    });
   } catch (error) {
     throw new ApiError(
       0,
@@ -50,6 +65,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       "Cannot reach the control plane. Is `jev serve` running?",
       String(error),
     );
+  } finally {
+    if (timer !== null) window.clearTimeout(timer);
   }
 
   const text = await response.text();
@@ -76,9 +93,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, body?: unknown) =>
+  get: <T>(path: string, options?: RequestOptions) =>
+    request<T>(path, options),
+  post: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     request<T>(path, {
+      ...options,
       method: "POST",
       body: body === undefined ? undefined : JSON.stringify(body),
     }),

@@ -655,3 +655,27 @@ def test_the_authoring_prompt_states_the_policy_contract():
     assert '"additionalProperties":false' in SYSTEM_PROMPT
     for name in StrategyPolicy.model_fields:
         assert f'"{name}"' in SYSTEM_PROMPT, f"prompt omits {name}"
+
+
+def test_journal_keeps_only_the_flags_agent_desk_narrates():
+    """Agent Desk narrates per-turn reads and how the run ended.
+
+    Turn numbers ride on each tool call already; the flags ride on
+    ``__trace__`` so provider usage figures stay untouched.
+    """
+
+    from jev_trading.services.policy_service import (
+        _trace_flags,
+        _with_trace_flags,
+    )
+
+    usage = {"prompt_tokens": 100, "completion_tokens": 20}
+    trace = {"repaired": True, "tool_names": ["get_candles"], "tool_calls": [1, 2]}
+
+    assert _trace_flags(trace) == {"repaired": True}
+    assert _trace_flags(None) == {}
+    merged = _with_trace_flags(usage, _trace_flags(trace))
+    assert merged["prompt_tokens"] == 100
+    assert merged["__trace__"] == {"repaired": True}
+    assert "tool_calls" not in merged["__trace__"]
+    assert _with_trace_flags(usage, {}) == usage
