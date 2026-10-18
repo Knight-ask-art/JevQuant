@@ -31,6 +31,7 @@ from ..domain.risk import RiskDecision
 from .db import Database
 from .models import (
     AccountRow,
+    AgentRunRow,
     ArmingTokenRow,
     AuditEventRow,
     BacktestRunRow,
@@ -348,6 +349,110 @@ class Repository:
             for row in rows:
                 row.status = "EXPIRED"
             return len(rows)
+
+    # ------------------------------------------------------------------
+    # strategy agent journal
+    # ------------------------------------------------------------------
+    async def insert_agent_run(
+        self,
+        *,
+        mode: str,
+        provider: str,
+        model: str,
+        status: str,
+        turns: int = 0,
+        tool_calls: list[dict[str, Any]] | None = None,
+        usage: dict[str, Any] | None = None,
+        latency_ms: int = 0,
+        rationale: str | None = None,
+        cycle_id: str | None = None,
+        policy_id: str | None = None,
+        error_code: str | None = None,
+    ) -> AgentRunRow:
+        async with self.db.session() as session:
+            row = AgentRunRow(
+                cycle_id=cycle_id,
+                policy_id=policy_id,
+                mode=mode,
+                provider=provider,
+                model=model,
+                status=status,
+                turns=turns,
+                tool_calls_json=tool_calls or [],
+                usage_json=usage or {},
+                latency_ms=latency_ms,
+                rationale=rationale,
+                error_code=error_code,
+            )
+            session.add(row)
+            await session.flush()
+            return row
+
+    async def list_agent_runs(self, limit: int = 30) -> list[AgentRunRow]:
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(AgentRunRow)
+                        .order_by(AgentRunRow.created_at.desc())
+                        .limit(limit)
+                    )
+                ).scalars()
+            )
+
+    async def get_agent_run(self, run_id: str) -> AgentRunRow | None:
+        async with self.db.session() as session:
+            return await session.get(AgentRunRow, run_id)
+
+    async def latest_agent_run_for_policy(
+        self, policy_id: str
+    ) -> AgentRunRow | None:
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(AgentRunRow)
+                    .where(AgentRunRow.policy_id == policy_id)
+                    .order_by(AgentRunRow.created_at.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+
+    async def signal_counts_for_policies(
+        self, policy_ids: list[str]
+    ) -> dict[str, dict[str, int]]:
+        """Signal state counts per policy, for the agent's decision journal."""
+
+        if not policy_ids:
+            return {}
+        async with self.db.session() as session:
+            rows = (
+                await session.execute(
+                    select(SignalRow.policy_id, SignalRow.state, func.count())
+                    .where(SignalRow.policy_id.in_(policy_ids))
+                    .group_by(SignalRow.policy_id, SignalRow.state)
+                )
+            ).all()
+        counts: dict[str, dict[str, int]] = {}
+        for policy_id, state, count in rows:
+            counts.setdefault(policy_id, {})[state] = int(count)
+        return counts
+
+    async def closed_positions_for_policies(
+        self, policy_ids: list[str]
+    ) -> list[PositionRow]:
+        if not policy_ids:
+            return []
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(PositionRow).where(
+                            PositionRow.policy_id.in_(policy_ids),
+                            PositionRow.status == PositionStatus.CLOSED.value,
+                        )
+                    )
+                ).scalars()
+            )
 
     # ------------------------------------------------------------------
     # market snapshots

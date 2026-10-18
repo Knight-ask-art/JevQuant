@@ -100,6 +100,9 @@ export function Layout() {
             <NavLink to="/" end>
               {t("nav.cockpit")}
             </NavLink>
+            <NavLink to="/agent" end>
+              {t("nav.agent")}
+            </NavLink>
             <button
               type="button"
               className={`nav-toggle${advancedOpen ? " open" : ""}`}

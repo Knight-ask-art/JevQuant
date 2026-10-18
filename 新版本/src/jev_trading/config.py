@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     opencode_console_api_key: SecretStr | None = None
     opencode_console_model: str | None = None
     opencode_console_protocol: Literal["openai", "anthropic"] = "openai"
+    # Strategy-agent loop bounds. The model may call read-only tools before
+    # writing a policy; these cap how long one authoring turn may take.
+    agent_max_turns: int = Field(default=6, ge=1, le=12)
+    agent_budget_seconds: int = Field(default=90, ge=10, le=600)
 
     opencode_go_enabled: bool = False
     opencode_go_base_url: str | None = None

@@ -7,6 +7,7 @@ Numeric/Decimal columns; raw provider payloads use JSON.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
@@ -63,6 +64,38 @@ class DecimalText(TypeDecorator):
         if value is None:
             return None
         return Decimal(str(value))
+
+
+class JSONText(TypeDecorator):
+    """JSON on PostgreSQL, a JSON string on SQLite.
+
+    SQLAlchemy's generic ``JSON`` does not reliably round-trip nested Python
+    values on SQLite (instances can load as raw strings). Agent traces are
+    lists of dicts, so they get a decorator that is explicit about both.
+    """
+
+    impl = Text()
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "sqlite":
+            return dialect.type_descriptor(Text())
+        return dialect.type_descriptor(JSON())
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if dialect.name == "sqlite":
+            return json.dumps(value, ensure_ascii=False, default=str)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is None or dialect.name != "sqlite":
+            return value
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
 
 
 MONEY = DecimalText()
@@ -161,6 +194,33 @@ class StrategyPolicyRow(Base):
     policy_hash: Mapped[str] = mapped_column(String(80), index=True)
     generated_at: Mapped[datetime] = mapped_column(UTCDateTime)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class AgentRunRow(Base):
+    """One strategy-agent attempt: what it looked at and why it decided.
+
+    The journal is operator-facing and intentionally separate from the audit
+    chain: tool traces can be large and are not part of the hash-linked
+    economic record. The resulting policy still lands in ``strategy_policies``
+    and the audit trail as before.
+    """
+
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    cycle_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    policy_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    mode: Mapped[str] = mapped_column(String(16))
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), default="ok")
+    turns: Mapped[int] = mapped_column(Integer, default=0)
+    tool_calls_json: Mapped[list] = mapped_column(JSONText, default=list)
+    usage_json: Mapped[dict] = mapped_column(JSONText, default=dict)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 

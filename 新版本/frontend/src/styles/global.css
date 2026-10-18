@@ -1229,3 +1229,121 @@ table.data th.num {
   margin-left: auto;
   font-size: 11px;
 }
+
+/* ------------------------------------------------------------------
+   Strategy agent
+   ------------------------------------------------------------------ */
+.agent-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(280px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 980px) {
+  .agent-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.agent-reason {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-left: 2px solid var(--terracotta);
+  background: rgba(199, 101, 72, 0.05);
+  color: var(--ink);
+  font-family: var(--font-serif, "Source Serif 4", Georgia, serif);
+  font-size: 13.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.agent-steps {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.agent-steps li::marker {
+  color: var(--terracotta);
+  font-weight: 600;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip.static {
+  cursor: default;
+}
+
+.tool-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tool-list .chip {
+  cursor: default;
+  font-size: 11.5px;
+  padding: 3px 10px;
+}
+
+.clamp-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px dashed var(--line);
+  padding-top: 10px;
+}
+
+.tool-trace {
+  margin-top: 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 253, 248, 0.7);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trace-row {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px dotted var(--line);
+}
+
+.trace-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.link-button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--terracotta);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  color: var(--ink);
+}

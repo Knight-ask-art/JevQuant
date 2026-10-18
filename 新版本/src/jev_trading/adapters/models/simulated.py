@@ -50,7 +50,11 @@ class SimulatedPolicyGenerator:
         self.compiler = PolicyCompiler(server_limits)
         self.server = server_limits
 
-    async def generate_policy(self, context: PolicyContext) -> PolicyGenerationResult:
+    async def generate_policy(
+        self, context: PolicyContext, *, toolbox: Any | None = None
+    ) -> PolicyGenerationResult:
+        # The rule-based stand-in ignores tools and memory on purpose: it is
+        # deterministic, and its output is always labelled simulated.
         started = time.perf_counter()
         now = datetime.now(UTC)
         symbols: dict[str, Any] = context.market_summary.get("symbols", {})
@@ -146,6 +150,8 @@ class SimulatedPolicyGenerator:
             usage={"input_tokens": 0, "output_tokens": 0},
             simulated=True,
             source="simulated",
+            turns=0,
+            trace={"tools_available": False, "tool_calls": []},
         )
 
     async def health(self) -> dict[str, object]:

@@ -35,6 +35,7 @@ from ..domain.policy import EffectivePolicy
 from ..domain.risk import RiskContext, RiskEngine, compute_risk_snapshot_hash
 from ..storage.models import StrategyPolicyRow
 from ..storage.repository import Repository
+from .agent_tools import AgentToolbox
 from .audit import AuditService
 from .events import EventBroker
 from .market_service import MarketService
@@ -161,7 +162,9 @@ class TradingOrchestrator:
         policy_generated = False
         if not kill and (policy is None or refresh_policy):
             try:
-                policy = await self._generate_policy(mode, snapshots, account)
+                policy = await self._generate_policy(
+                    mode, snapshots, account, cycle_id=cycle_id
+                )
                 policy_row = await self.policy_service.get_active_row()
                 policy_generated = True
             except AppError as exc:
@@ -287,7 +290,12 @@ class TradingOrchestrator:
         return finished_result
 
     async def _generate_policy(
-        self, mode: Mode, snapshots: list[MarketSnapshot], account: AccountSnapshot
+        self,
+        mode: Mode,
+        snapshots: list[MarketSnapshot],
+        account: AccountSnapshot,
+        *,
+        cycle_id: str | None = None,
     ) -> EffectivePolicy:
         now = datetime.now(UTC)
         recent: dict[str, list[dict[str, float]]] = {}
@@ -324,12 +332,23 @@ class TradingOrchestrator:
         purpose = None
         if getattr(self.policy_generator, "provider", "") == "opencode_console":
             purpose = "trade_runtime"
+        toolbox = AgentToolbox(
+            repo=self.repo,
+            market=self.market,
+            account_id=self.account_id,
+            mode=mode.value,
+            symbols=self.settings.allowed_symbols,
+            snapshots=snapshots,
+            now=now,
+        )
         effective, _row = await self.policy_service.generate(
             generator=self.policy_generator,
             mode=mode.value,
             account_state=account_state,
             market_summary=market_summary,
             purpose=purpose,
+            toolbox=toolbox,
+            cycle_id=cycle_id,
         )
         return effective
 

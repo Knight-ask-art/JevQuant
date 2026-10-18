@@ -1,4 +1,9 @@
-"""Strategy policy endpoints: generation, inspection and comparison."""
+"""Strategy policy endpoints: generation, inspection and comparison.
+
+``/agent`` exposes the strategy agent's journal: what it read, which tools it
+called, and how the resulting policy performed. Generation is serialized with
+trading cycles so a manual run never races the auto-loop for the same account.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,8 @@ from pydantic import BaseModel, ConfigDict
 from ..domain.enums import ErrorCode
 from ..domain.errors import AppError
 from ..domain.money import canonical_str
+from ..services.agent_tools import AgentToolbox
+from . import serializers as ser
 from .security import require_operator
 
 router = APIRouter(prefix="/api/v1/strategy", tags=["strategy"])
@@ -33,7 +40,7 @@ async def generate_policy(
     payload: GeneratePolicyRequest | None = None,
     actor: str = Depends(require_operator),
 ) -> dict[str, object]:
-    """Ask the strategy model for a bounded policy and compile it server-side.
+    """Ask the strategy agent for a bounded policy and compile it server-side.
 
     The returned policy is always the *effective* one: the compiler narrows
     whatever the model produced to the server envelope. Raw model output is
@@ -46,51 +53,67 @@ async def generate_policy(
     now = datetime.now(UTC)
     symbols = sorted(container.settings.allowed_symbols)
 
-    snapshots = []
-    try:
-        snapshots = await container.market.snapshots(symbols, now)
-    except AppError:
+    async with container.policy_generation_lock():
         snapshots = []
-    if body.persist_market:
-        for snapshot in snapshots:
-            await container.repo.insert_market_snapshot(snapshot)
+        try:
+            snapshots = await container.market.snapshots(symbols, now)
+        except AppError:
+            snapshots = []
+        if body.persist_market:
+            for snapshot in snapshots:
+                await container.repo.insert_market_snapshot(snapshot)
 
-    marks = {snapshot.symbol: snapshot.mid for snapshot in snapshots}
-    account = await container.repo.account_snapshot(container.account_id, marks, now)
-    market_summary = {
-        "universe": symbols,
-        "timeframes": ["1m", "5m"],
-        "as_of": now.isoformat(),
-        "symbols": {
-            snapshot.symbol: {
-                "snapshot_id": str(snapshot.snapshot_id),
-                "mid": float(snapshot.mid),
-                "spread_bps": float(snapshot.spread_bps),
-                **snapshot.features,
-            }
-            for snapshot in snapshots
-        },
-        "data_source": container.market.source,
-        "simulated": any(snapshot.is_synthetic for snapshot in snapshots),
-    }
-    account_state = {
-        "equity_usdt": float(account.equity_usdt),
-        "available_quote_usdt": float(account.available_quote_usdt),
-        "open_positions": account.open_positions,
-        "daily_realized_pnl_pct": canonical_str(account.daily_realized_pnl_pct),
-    }
+        marks = {snapshot.symbol: snapshot.mid for snapshot in snapshots}
+        account = await container.repo.account_snapshot(container.account_id, marks, now)
+        market_summary = {
+            "universe": symbols,
+            "timeframes": ["1m", "5m"],
+            "as_of": now.isoformat(),
+            "symbols": {
+                snapshot.symbol: {
+                    "snapshot_id": str(snapshot.snapshot_id),
+                    "mid": float(snapshot.mid),
+                    "spread_bps": float(snapshot.spread_bps),
+                    **snapshot.features,
+                }
+                for snapshot in snapshots
+            },
+            "data_source": container.market.source,
+            "simulated": any(snapshot.is_synthetic for snapshot in snapshots),
+        }
+        account_state = {
+            "equity_usdt": float(account.equity_usdt),
+            "available_quote_usdt": float(account.available_quote_usdt),
+            "open_positions": account.open_positions,
+            "daily_realized_pnl_pct": canonical_str(account.daily_realized_pnl_pct),
+        }
 
-    generator = container.policy_generator
-    ensure = getattr(generator, "ensure_purpose", None)
-    if callable(ensure):
-        ensure(body.purpose)
-    effective, row = await container.policy_service.generate(
-        generator=generator,
-        mode=mode.value,
-        account_state=account_state,
-        market_summary=market_summary,
-        purpose=body.purpose,
-    )
+        generator = container.policy_generator
+        ensure = getattr(generator, "ensure_purpose", None)
+        if callable(ensure):
+            ensure(body.purpose)
+
+        toolbox = AgentToolbox(
+            repo=container.repo,
+            market=container.market,
+            account_id=container.account_id,
+            mode=mode.value,
+            symbols=container.settings.allowed_symbols,
+            snapshots=snapshots,
+            now=now,
+        )
+        effective, row = await container.policy_service.generate(
+            generator=generator,
+            mode=mode.value,
+            account_state=account_state,
+            market_summary=market_summary,
+            purpose=body.purpose,
+            toolbox=toolbox,
+        )
+    agent_run = None
+    run = await container.repo.latest_agent_run_for_policy(str(effective.policy_id))
+    if run is not None:
+        agent_run = ser.agent_run(run, include_tools=True)
     return {
         "policy_id": str(effective.policy_id),
         "policy_hash": effective.policy_hash,
@@ -103,7 +126,30 @@ async def generate_policy(
         "raw": row.raw_json,
         "effective": row.effective_json,
         "rationale": (row.raw_json or {}).get("rationale"),
+        "agent": agent_run,
     }
+
+
+@router.get("/agent")
+async def agent_journal(
+    request: Request,
+    limit: int = Query(default=12, ge=1, le=100),
+    actor: str = Depends(require_operator),
+) -> dict[str, object]:
+    """Recent strategy-agent runs. The newest run includes its tool trace."""
+
+    return await _container(request).agent_status(limit=limit)
+
+
+@router.get("/agent/{run_id}")
+async def agent_run_detail(
+    run_id: str, request: Request, actor: str = Depends(require_operator)
+) -> dict[str, object]:
+    container = _container(request)
+    row = await container.repo.get_agent_run(run_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"Agent run {run_id} was not found.")
+    return ser.agent_run(row, include_tools=True)
 
 
 @router.get("/policies/current")

@@ -250,7 +250,9 @@ class SyntheticMarketDataProvider:
         )
         self._candles[symbol] = candles
         series = upsample(candles[-lookback:], interval, now)
-        return series[-int(limit) :]
+        # Match the Binance provider: warmup bars are prepended so the
+        # caller can compute indicators before the visible window.
+        return series[-(int(limit) + max(0, int(warmup))) :]
 
     async def health(self) -> dict[str, object]:
         return {

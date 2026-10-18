@@ -34,7 +34,8 @@ shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 | Hash-linked append-only audit + redaction + verification | ✅ implemented, tested |
 | Live arming handshake (env flags → preflight → one-time token → phrase + TOTP) | ✅ implemented, cannot pass without real credentials |
 | Optional auto-cycle scheduler | ✅ implemented |
-| Hand-drawn editorial React UI (cockpit + 8 advanced pages, EN/中文) | ✅ implemented |
+| Tool-using strategy agent (read-only tools, cross-cycle memory, decision journal) | ✅ implemented, tested |
+| Hand-drawn editorial React UI (cockpit + agent page + 8 advanced pages, EN/中文) | ✅ implemented |
 | Model credentials entered in the UI (write-only, applied live) | ✅ implemented, tested |
 | Runtime auto-cycle toggle (start/pause/interval, no restart) | ✅ implemented, tested |
 | Operator close of a single position (runs the deterministic exit path) | ✅ implemented, tested |
@@ -71,7 +72,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 129 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
+pytest                     # 146 tests: policy, agent, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:
@@ -151,15 +152,15 @@ src/jev_trading/
   domain/       strict contracts: enums, errors, money, policy, market, intent, risk
   adapters/     market (synthetic/binance), models (console/go/jev/simulated), execution
   services/     compiler orchestration, policy, market, modes, audit, events, backtest
-  storage/      SQLAlchemy models (18 tables), repository, DB engine
+  storage/      SQLAlchemy models (21 tables), repository, DB engine
   api/          FastAPI app, auth, routes, serializers, WebSocket
   cli/          `jev` command
 frontend/
-  src/pages/    Overview, Strategy Desk, Jev Signals, Orders & Positions,
-                Backtests, Models & Costs (incl. exchange balances), Risk & Modes,
-                Audit & Settings
+  src/pages/    Cockpit, Agent, Overview, Strategy Desk, Jev Signals,
+                Orders & Positions, Backtests, Models & Costs (incl. exchange
+                balances), Risk & Modes, Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          129 deterministic tests
+tests/          146 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)

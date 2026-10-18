@@ -31,6 +31,7 @@ from ..domain.policy import PolicyCompiler
 from ..domain.risk import RiskEngine
 from ..storage.db import Database
 from ..storage.repository import Repository
+from .agent_tools import TOOL_NAMES as AGENT_TOOL_NAMES
 from .audit import AuditService
 from .balance_sync import BalanceSyncScheduler, BalanceSyncService
 from .events import EventBroker
@@ -162,6 +163,8 @@ class AppContainer:
                 model=settings.opencode_console_model,
                 protocol=settings.opencode_console_protocol,
                 purpose="trade_runtime",
+                max_turns=settings.agent_max_turns,
+                agent_budget_seconds=float(settings.agent_budget_seconds),
             )
         return SimulatedPolicyGenerator(settings.server_limits)
 
@@ -257,6 +260,20 @@ class AppContainer:
     async def settings_lock(self) -> AsyncIterator[None]:
         async with self._settings_lock:
             yield
+
+    @asynccontextmanager
+    async def policy_generation_lock(self) -> AsyncIterator[None]:
+        """Serialize manual authoring with cycles and the ledger.
+
+        The agent can spend up to ``agent_budget_seconds`` thinking; holding
+        the cycle lock keeps a scheduled cycle from reading a half-written
+        policy state while the manual run activates one. The auto-loop treats
+        the conflict as a skipped tick.
+        """
+
+        async with self._cycle_lock:
+            async with self.ledger_lock:
+                yield
 
     async def apply_symbol_universe(self, symbols: list[str], *, actor: str) -> None:
         """Make ``symbols`` the hard envelope for every downstream component.
@@ -685,6 +702,7 @@ class AppContainer:
                 or not self.settings.jev_enabled
                 or not self.settings.opencode_console_enabled
             ),
+            "automation": self.automation_status(),
             "account": {
                 "id": self.account_id,
                 "equity_usdt": canonical_str(account.equity_usdt),
@@ -710,6 +728,84 @@ class AppContainer:
             "execution_backend": self.settings.execution_backend,
             "automation": self.automation_status(),
             "models": self.model_settings(),
+            "agent": await self.agent_status(),
+        }
+
+    # ------------------------------------------------------------------
+    # strategy agent
+    # ------------------------------------------------------------------
+    async def agent_status(self, limit: int = 12) -> dict[str, Any]:
+        """The strategy agent's recent work, newest first.
+
+        The latest run carries the tool trace, so the cockpit can show what
+        the agent read and which of those reads ended in orders.
+        """
+
+        provider = str(getattr(self.policy_generator, "provider", "simulated"))
+        model = str(
+            getattr(
+                self.policy_generator,
+                "model",
+                getattr(self.policy_generator, "model_name", "unknown"),
+            )
+        )
+        tools = sorted(AGENT_TOOL_NAMES)
+        runs = await self.repo.list_agent_runs(limit=limit)
+        policy_ids = [row.policy_id for row in runs if row.policy_id]
+        signal_counts = await self.repo.signal_counts_for_policies(policy_ids)
+        positions = await self.repo.closed_positions_for_policies(policy_ids)
+        pnl_by_policy: dict[str, dict[str, Any]] = {}
+        for position in positions:
+            bucket = pnl_by_policy.setdefault(
+                position.policy_id, {"closed": 0, "realized_pnl_usdt": Decimal("0")}
+            )
+            bucket["closed"] += 1
+            bucket["realized_pnl_usdt"] += position.realized_pnl_usdt
+        items: list[dict[str, Any]] = []
+        for index, row in enumerate(runs):
+            counts = signal_counts.get(row.policy_id or "", {})
+            outcome = pnl_by_policy.get(row.policy_id or "", {})
+            items.append(
+                {
+                    "id": row.id,
+                    "at": row.created_at.isoformat(),
+                    "mode": row.mode,
+                    "provider": row.provider,
+                    "model": row.model,
+                    "status": row.status,
+                    "error_code": row.error_code,
+                    "turns": row.turns,
+                    "latency_ms": row.latency_ms,
+                    "usage": row.usage_json or {},
+                    "rationale": row.rationale,
+                    "tools": row.tool_calls_json or [] if index == 0 else [],
+                    "tool_count": len(row.tool_calls_json or []),
+                    "policy_id": row.policy_id,
+                    "cycle_id": row.cycle_id,
+                    "signals": {
+                        "created": sum(counts.values()),
+                        "positions": counts.get("POSITION_OPEN", 0),
+                        "closed": counts.get("CLOSED", 0),
+                        "rejected": counts.get("REJECTED", 0)
+                        + counts.get("RISK_REJECTED", 0),
+                    },
+                    "realized": {
+                        "closed": outcome.get("closed", 0),
+                        "pnl_usdt": canonical_str(
+                            outcome.get("realized_pnl_usdt", Decimal("0"))
+                        ),
+                    },
+                }
+            )
+        latest = items[0] if items else None
+        return {
+            "provider": provider,
+            "model": model,
+            "is_agent": provider != "simulated"
+            and bool(getattr(self.policy_generator, "supports_tools", False)),
+            "tools": tools,
+            "runs": items,
+            "latest": latest,
         }
 
     async def close_position(self, position_id: str, *, actor: str) -> Any:

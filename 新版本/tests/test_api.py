@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from jev_trading.adapters.models.base import PolicyGenerationResult
 from jev_trading.api.app import create_app
 from jev_trading.config import Settings
 
@@ -49,6 +50,8 @@ def test_health_and_status(open_client):
     assert body["mode"]["mode"] in {"paper", "shadow", "testnet", "live"}
     assert body["synthetic_market"] is True
     assert body["data_source"] == "synthetic"
+    assert body["agent"]["provider"] == "simulated"
+    assert "get_candles" in body["agent"]["tools"]
 
 
 def test_demo_cycle_produces_signals_and_audit(open_client):
@@ -440,20 +443,19 @@ def test_manual_close_endpoint_closes_an_open_position(open_client):
 def test_candles_carry_indicators_aligned_to_the_window(open_client):
     response = open_client.get(
         "/api/v1/market/candles?symbol=BTCUSDT&interval=15m&limit=60"
-        "&indicators=sma20,rsi14"
+        "&indicators=sma20,sma60,rsi14"
     )
     assert response.status_code == 200, response.text
     body = response.json()
     candles = body["candles"]
     assert len(candles) == 60
     sma = body["indicators"]["sma20"]
+    sma60 = body["indicators"]["sma60"]
     rsi = body["indicators"]["rsi14"]
-    # The warm-up happens before the visible window, so the first visible bar
-    # already carries an indicator value (its index inside the window moves
-    # only when the history is shorter than the warm-up).
-    assert all(point["i"] < len(candles) for point in sma + rsi)
-    assert sma[0]["i"] <= 19
-    assert rsi[0]["i"] >= 13
+    # Warm-up bars are fetched *before* the visible window, so every indicator
+    # is already defined on the first visible bar.
+    assert all(point["i"] < len(candles) for point in sma + sma60 + rsi)
+    assert sma[0]["i"] == sma60[0]["i"] == rsi[0]["i"] == 0
     assert all(0 <= point["v"] <= 100 for point in rsi)
 
     # No indicators requested: none returned, no extra work done.
@@ -465,3 +467,94 @@ def test_candles_carry_indicators_aligned_to_the_window(open_client):
     )
     assert bad.status_code == 422
     assert bad.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_agent_journal_records_what_the_strategy_layer_decided(open_client):
+    assert open_client.post("/api/v1/demo/cycle").status_code == 200
+
+    journal = open_client.get("/api/v1/strategy/agent?limit=10")
+    assert journal.status_code == 200, journal.text
+    body = journal.json()
+    assert body["is_agent"] is False  # the deterministic stand-in is running
+    assert body["provider"] == "simulated"
+    assert sorted(body["tools"]) == [
+        "get_account_state",
+        "get_candles",
+        "get_market_overview",
+        "get_open_positions",
+        "get_performance_summary",
+        "get_recent_decisions",
+        "get_recent_trades",
+    ]
+    assert body["runs"], "a cycle must leave a journal entry"
+    latest = body["latest"]
+    assert latest["status"] == "ok"
+    assert latest["policy_id"]
+    assert latest["tools"] == []  # traces are opt-in per run
+    assert latest["tool_count"] == 0
+    assert latest["signals"]["created"] >= 1
+
+
+    # A tool-less provider still records memory: the run carries the policy
+    # rationale so the UI can explain the decision without a tool trace.
+    assert latest["rationale"]
+
+    detail = open_client.get(f"/api/v1/strategy/agent/{latest['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    assert isinstance(detail.json()["tools"], list)
+
+    missing = open_client.get("/api/v1/strategy/agent/does-not-exist")
+    assert missing.status_code == 404
+
+
+def test_policy_generation_returns_its_agent_run(open_client):
+    response = open_client.post("/api/v1/strategy/policies/generate")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["policy_id"]
+    assert body["agent"] is not None
+    assert body["agent"]["policy_id"] == body["policy_id"]
+    assert body["agent"]["status"] == "ok"
+    assert body["agent"]["mode"] == "paper"
+    assert body["agent"]["model"] == "simulated-rule-based"
+    # Generation is serialized with cycles: a second call must not conflict.
+    again = open_client.post("/api/v1/strategy/policies/generate")
+    assert again.status_code == 200
+
+
+def test_a_rejected_policy_is_still_journaled(open_client):
+    """A model answer the compiler refuses must not vanish from the journal."""
+
+    container = open_client.app.state.container
+
+    class UnusableGenerator:
+        provider = "openai"
+        model = "unusable-model"
+
+        async def generate_policy(self, context, **kwargs):
+            return PolicyGenerationResult(
+                raw={"regime": {"label": "not-a-real-regime"}},
+                model=self.model,
+                latency_ms=7,
+                usage={"input_tokens": 11, "output_tokens": 3},
+                simulated=False,
+                source="model",
+                turns=2,
+                trace={"tool_calls": [{"name": "get_candles", "ok": True}]},
+            )
+
+    container.policy_generator = UnusableGenerator()
+    response = open_client.post("/api/v1/strategy/policies/generate")
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "POLICY_INVALID"
+
+    journal = open_client.get("/api/v1/strategy/agent?limit=5").json()
+    run = journal["runs"][0]
+    assert run["status"] == "error"
+    assert run["error_code"] == "POLICY_INVALID"
+    assert run["policy_id"] is None
+    # The attempt still cost two model turns and one tool call: say so.
+    assert run["turns"] == 2
+    assert run["tool_count"] == 1
+    assert run["usage"] == {"input_tokens": 11, "output_tokens": 3}

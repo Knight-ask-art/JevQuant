@@ -72,9 +72,32 @@ redeemed. A failed redemption requires a fresh preflight.
 | GET | `/api/v1/strategy/policies/current` | active row plus compiled description |
 | GET | `/api/v1/strategy/policies?limit=50` | history |
 | GET | `/api/v1/strategy/policies/{policy_id}` | one policy |
+| GET | `/api/v1/strategy/agent?limit=12` | strategy-agent journal, newest first; the newest run carries its tool trace |
+| GET | `/api/v1/strategy/agent/{run_id}` | one run with the full tool trace and token usage |
 
-`generate` returns the **effective** policy, the raw model proposal, and every clamp. A
-purpose denied by the provider is rejected with `PURPOSE_NOT_ALLOWED` (HTTP 403).
+`generate` returns the **effective** policy, the raw model proposal, every clamp, and the
+`agent` run that produced it. A purpose denied by the provider is rejected with
+`PURPOSE_NOT_ALLOWED` (HTTP 403).
+
+### Strategy agent
+
+When a tool-capable model is configured, one authoring turn is an agent loop:
+
+1. The server assembles a memory pack (recent policies, open positions, closed trades,
+   realized performance) and includes it in the prompt.
+2. The model may call read-only tools — `get_candles`, `get_market_overview`,
+   `get_account_state`, `get_open_positions`, `get_recent_decisions`,
+   `get_recent_trades`, `get_performance_summary` — for up to `JEV_AGENT_MAX_TURNS`
+   turns or `JEV_AGENT_BUDGET_SECONDS`.
+3. On the final turn tools are disabled and the model must return the policy JSON.
+
+Tool calls are bounded (16 per turn, 120 candles per call) and read-only: no tool can
+place an order, move money or widen a server limit. Every attempt is written to
+`agent_runs` with its trace, rationale and the signal/PnL outcome of the resulting
+policy. Providers that reject the `tools` field fall back to the single-shot contract;
+the trace records `tool_fallback`.
+
+`GET /api/v1/system/status` also carries a compact `agent` block for the cockpit.
 
 ## Signals and decisions
 

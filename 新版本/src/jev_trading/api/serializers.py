@@ -10,6 +10,7 @@ from typing import Any
 
 from ..domain.money import canonical_str
 from ..storage.models import (
+    AgentRunRow,
     AuditEventRow,
     BacktestRunRow,
     FillRow,
@@ -220,3 +221,27 @@ def backtest(row: BacktestRunRow) -> dict[str, Any]:
         "created_at": row.created_at.isoformat(),
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
     }
+
+
+def agent_run(row: AgentRunRow, *, include_tools: bool = False) -> dict[str, Any]:
+    """One strategy-agent attempt. Tool traces are opt-in (they can be large)."""
+
+    payload: dict[str, Any] = {
+        "id": row.id,
+        "cycle_id": row.cycle_id,
+        "policy_id": row.policy_id,
+        "mode": row.mode,
+        "provider": row.provider,
+        "model": row.model,
+        "status": row.status,
+        "turns": row.turns,
+        "latency_ms": row.latency_ms,
+        "rationale": row.rationale,
+        "error_code": row.error_code,
+        "tool_count": len(row.tool_calls_json or []),
+        "created_at": row.created_at.isoformat(),
+    }
+    if include_tools:
+        payload["tools"] = row.tool_calls_json or []
+        payload["usage"] = row.usage_json or {}
+    return payload

@@ -19,6 +19,10 @@ class PolicyContext(BaseModel):
     account_state: dict[str, Any]
     market_summary: dict[str, Any]
     absolute_server_limits: dict[str, Any]
+    # What the agent remembers from earlier cycles: prior policies, their
+    # rationale, closed trades and realized performance. Populated server-side
+    # so a provider without tool calling still gets continuity.
+    memory: dict[str, Any] = Field(default_factory=dict)
     required_schema_version: str = "strategy-policy/1.0"
 
 
@@ -31,6 +35,10 @@ class PolicyGenerationResult(BaseModel):
     usage: dict[str, Any] = Field(default_factory=dict)
     simulated: bool = False
     source: str = "unknown"
+    # Agent loop observability: how many model turns ran, which read-only
+    # tools were called, and what each one returned (a one-line summary).
+    turns: int = 0
+    trace: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChoiceAnswer(BaseModel):
@@ -78,8 +86,26 @@ class JevResult(BaseModel):
         return float(self.entry_action.confidence)
 
 
+class AgentToolbox(Protocol):
+    """Read-only tools the strategy agent may call before writing a policy.
+
+    Tool results are ``{"summary": str, "data": ...}``. The adapter sends
+    ``data`` to the model and keeps ``summary`` for the decision journal. A
+    toolbox never has execution access; it can only read what the runtime
+    already stores.
+    """
+
+    def specs(self) -> list[dict[str, Any]]: ...
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
+
+    async def memory(self) -> dict[str, Any]: ...
+
+
 class PolicyGenerator(Protocol):
-    async def generate_policy(self, context: PolicyContext) -> PolicyGenerationResult: ...
+    async def generate_policy(
+        self, context: PolicyContext, *, toolbox: AgentToolbox | None = None
+    ) -> PolicyGenerationResult: ...
 
     async def health(self) -> dict[str, object]: ...
 

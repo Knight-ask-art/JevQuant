@@ -24,7 +24,7 @@ from ...domain.errors import (
     PurposeNotAllowedError,
 )
 from ...domain.policy import StrategyPolicy
-from .base import PolicyContext, PolicyGenerationResult
+from .base import AgentToolbox, PolicyContext, PolicyGenerationResult
 
 SYSTEM_PROMPT = """You are the strategy layer of an automated trading system.
 Return exactly one JSON object that validates against schema strategy-policy/1.0.
@@ -37,7 +37,18 @@ Rules:
   outside it are discarded.
 - mode_scope may only contain modes you were told are active.
 - Keep rationale under 400 words.
-- You never place orders and never see exchange credentials."""
+- You never place orders and never see exchange credentials.
+
+Agent protocol (when tools are available):
+- You may call the read-only tools before writing the policy. Call one only
+  when its answer would change a decision: inspect the timeframe you intend
+  to trade, check how recent decisions actually performed, and compare with
+  your own recent rationales.
+- Do not repeat a call whose result you already have. Investigate, then decide.
+- Tools only read state. They cannot place orders, move money, or widen the
+  server limits.
+- When you have enough evidence, stop calling tools and return the policy
+  JSON object. Output JSON only."""
 
 ALLOWED_PURPOSES = {
     "coding_agent",
@@ -45,6 +56,11 @@ ALLOWED_PURPOSES = {
     "trade_runtime",
     "backtest_analysis",
 }
+
+# Total tool output fed back to the model in one authoring run. The per-call
+# cap lives in the toolbox; this bounds the sum so a model that keeps asking
+# cannot overflow a small context window.
+MAX_TOOL_CONTEXT_CHARS = 48_000
 
 
 class ConsoleLLMAdapter:
@@ -62,6 +78,8 @@ class ConsoleLLMAdapter:
         timeout: float = 45.0,
         max_retries: int = 2,
         max_delay_ms: int = 30_000,
+        max_turns: int = 6,
+        agent_budget_seconds: float = 90.0,
     ) -> None:
         if not base_url or not api_key or not model:
             raise DependencyUnavailableError(
@@ -75,7 +93,14 @@ class ConsoleLLMAdapter:
         self.timeout = timeout
         self.max_retries = max_retries
         self.max_delay_ms = max_delay_ms
+        # Agent loop bounds. Six turns is enough for a handful of focused
+        # lookups; the wall-clock budget stops a slow provider from holding
+        # the trading cycle open.
+        self.max_turns = max(1, max_turns)
+        self.agent_budget_seconds = max(5.0, agent_budget_seconds)
         self._client = httpx.AsyncClient(timeout=timeout)
+
+    supports_tools = True
 
     # -- purpose guard ---------------------------------------------------
     def ensure_purpose(self, purpose: str) -> None:
@@ -198,15 +223,42 @@ class ConsoleLLMAdapter:
         return content, dict(data.get("usage") or {})
 
     async def generate_policy(
-        self, context: PolicyContext, *, purpose: str | None = None
+        self,
+        context: PolicyContext,
+        *,
+        purpose: str | None = None,
+        toolbox: AgentToolbox | None = None,
     ) -> PolicyGenerationResult:
         effective_purpose = purpose or self.purpose
         self.ensure_purpose(effective_purpose)
         started = time.perf_counter()
-        text, usage = await self._chat(
-            SYSTEM_PROMPT,
-            json.dumps(context.model_dump(mode="json"), ensure_ascii=False),
-        )
+        user = json.dumps(context.model_dump(mode="json"), ensure_ascii=False)
+        trace: dict[str, Any] = {"tools_available": False, "tool_calls": []}
+        turns = 0
+        if toolbox is not None and self.supports_tools:
+            specs = toolbox.specs()
+            if specs:
+                trace["tools_available"] = True
+                trace["tool_names"] = [spec["name"] for spec in specs]
+                try:
+                    if self.protocol == "anthropic":
+                        text, usage, trace, turns = await self._anthropic_agent(
+                            SYSTEM_PROMPT, user, toolbox
+                        )
+                    else:
+                        text, usage, trace, turns = await self._openai_agent(
+                            SYSTEM_PROMPT, user, toolbox
+                        )
+                except DependencyBadResponseError:
+                    # Some OpenAI-compatible proxies reject the tools field
+                    # outright. Fall back to the single-shot contract rather
+                    # than failing a cycle the provider could otherwise serve.
+                    trace = {"tools_available": False, "tool_calls": []}
+                    trace["tool_fallback"] = "provider rejected tool use"
+                    turns = 0
+        if not turns:
+            text, usage = await self._chat(SYSTEM_PROMPT, user)
+            turns = 1
         latency_ms = int((time.perf_counter() - started) * 1000)
         data = _extract_json(text)
         try:
@@ -216,6 +268,8 @@ class ConsoleLLMAdapter:
                 "Model output does not satisfy strategy-policy/1.0.",
                 details={"error_count": len(exc.errors())},
             ) from exc
+        trace["turns"] = turns
+        trace["latency_ms"] = latency_ms
         return PolicyGenerationResult(
             raw=data,
             model=self.model,
@@ -223,7 +277,244 @@ class ConsoleLLMAdapter:
             usage=usage,
             simulated=False,
             source=self.provider,
+            turns=turns,
+            trace=trace,
         )
+
+    # -- agent loop ------------------------------------------------------
+    async def _openai_agent(
+        self, system: str, user: str, toolbox: AgentToolbox
+    ) -> tuple[str, dict[str, Any], dict[str, Any], int]:
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": spec["name"],
+                    "description": spec["description"],
+                    "parameters": spec["parameters"],
+                },
+            }
+            for spec in toolbox.specs()
+        ]
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        trace: dict[str, Any] = {"tools_available": True, "tool_calls": []}
+        usage: dict[str, Any] = {}
+        deadline = time.monotonic() + self.agent_budget_seconds
+        spent = 0
+        text = ""
+        turns = 0
+
+        for turn in range(1, self.max_turns + 1):
+            turns = turn
+            final_turn = (
+                turn == self.max_turns
+                or time.monotonic() >= deadline
+                or spent >= MAX_TOOL_CONTEXT_CHARS
+            )
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "temperature": 0.2,
+                "messages": messages,
+            }
+            if final_turn:
+                # One writing turn with no further investigation. Dropping the
+                # tools field is accepted by every OpenAI-compatible server;
+                # some reject ``tool_choice: "none"``.
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "No further tool calls are available. Return the "
+                            "strategy-policy JSON object now."
+                        ),
+                    }
+                )
+            else:
+                payload["tools"] = tools
+            data = await self._post(self._endpoint("/v1/chat/completions"), payload)
+            _merge_usage(usage, data.get("usage"))
+            choices = data.get("choices") or []
+            if not choices:
+                raise DependencyBadResponseError("Model response contained no choices.")
+            message = choices[0].get("message") or {}
+            tool_calls = message.get("tool_calls") or []
+            if tool_calls and not final_turn:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.get("content"),
+                        "tool_calls": tool_calls,
+                    }
+                )
+                for call in tool_calls:
+                    function = call.get("function") or {}
+                    name = str(function.get("name") or "")
+                    arguments = _parse_arguments(function.get("arguments"))
+                    if spent >= MAX_TOOL_CONTEXT_CHARS:
+                        result, ok, latency_ms = (
+                            {
+                                "summary": "tool context budget exhausted",
+                                "data": {"error": "tool context budget exhausted"},
+                            },
+                            False,
+                            0,
+                        )
+                    else:
+                        result, ok, latency_ms = await self._call_tool(
+                            toolbox, name, arguments
+                        )
+                    content = _tool_content(result)
+                    spent += len(content)
+                    trace["tool_calls"].append(
+                        {
+                            "turn": turn,
+                            "name": name,
+                            "arguments": arguments,
+                            "ok": ok,
+                            "summary": result.get("summary", ""),
+                            "latency_ms": latency_ms,
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.get("id") or "",
+                            "content": content,
+                        }
+                    )
+                continue
+            content = message.get("content")
+            text = content if isinstance(content, str) else ""
+            break
+
+        if not text.strip():
+            raise PolicyInvalidError("Model returned no policy after the agent loop.")
+        return text, usage, trace, turns
+
+    async def _anthropic_agent(
+        self, system: str, user: str, toolbox: AgentToolbox
+    ) -> tuple[str, dict[str, Any], dict[str, Any], int]:
+        tools = [
+            {
+                "name": spec["name"],
+                "description": spec["description"],
+                "input_schema": spec["parameters"],
+            }
+            for spec in toolbox.specs()
+        ]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
+        trace: dict[str, Any] = {"tools_available": True, "tool_calls": []}
+        usage: dict[str, Any] = {}
+        deadline = time.monotonic() + self.agent_budget_seconds
+        spent = 0
+        text = ""
+        turns = 0
+
+        for turn in range(1, self.max_turns + 1):
+            turns = turn
+            final_turn = (
+                turn == self.max_turns
+                or time.monotonic() >= deadline
+                or spent >= MAX_TOOL_CONTEXT_CHARS
+            )
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": 4096,
+                "temperature": 0.2,
+                "system": system,
+                "messages": messages,
+            }
+            if final_turn:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "No further tool calls are available. Return the "
+                            "strategy-policy JSON object now."
+                        ),
+                    }
+                )
+            else:
+                payload["tools"] = tools
+            data = await self._post(self._endpoint("/v1/messages"), payload)
+            _merge_usage(usage, data.get("usage"))
+            blocks = [
+                block for block in (data.get("content") or []) if isinstance(block, dict)
+            ]
+            tool_uses = [block for block in blocks if block.get("type") == "tool_use"]
+            if tool_uses and not final_turn:
+                messages.append({"role": "assistant", "content": blocks})
+                results: list[dict[str, Any]] = []
+                for block in tool_uses:
+                    name = str(block.get("name") or "")
+                    arguments = (
+                        block.get("input")
+                        if isinstance(block.get("input"), dict)
+                        else {}
+                    )
+                    if spent >= MAX_TOOL_CONTEXT_CHARS:
+                        result, ok, latency_ms = (
+                            {
+                                "summary": "tool context budget exhausted",
+                                "data": {"error": "tool context budget exhausted"},
+                            },
+                            False,
+                            0,
+                        )
+                    else:
+                        result, ok, latency_ms = await self._call_tool(
+                            toolbox, name, arguments
+                        )
+                    content = _tool_content(result)
+                    spent += len(content)
+                    trace["tool_calls"].append(
+                        {
+                            "turn": turn,
+                            "name": name,
+                            "arguments": arguments,
+                            "ok": ok,
+                            "summary": result.get("summary", ""),
+                            "latency_ms": latency_ms,
+                        }
+                    )
+                    results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.get("id") or "",
+                            "content": content,
+                            "is_error": not ok,
+                        }
+                    )
+                messages.append({"role": "user", "content": results})
+                continue
+            text = "".join(
+                block.get("text", "")
+                for block in blocks
+                if block.get("type") == "text"
+            )
+            break
+
+        if not text.strip():
+            raise PolicyInvalidError("Model returned no policy after the agent loop.")
+        return text, usage, trace, turns
+
+    async def _call_tool(
+        self, toolbox: AgentToolbox, name: str, arguments: dict[str, Any]
+    ) -> tuple[dict[str, Any], bool, int]:
+        started = time.perf_counter()
+        try:
+            result = await toolbox.call(name, arguments)
+            ok = True
+        except Exception as exc:  # noqa: BLE001 - tell the model, keep the loop alive
+            result = {
+                "summary": f"{type(exc).__name__}: {exc}",
+                "data": {"error": str(exc), "tool": name},
+            }
+            ok = False
+        return result, ok, int((time.perf_counter() - started) * 1000)
 
     async def list_models(self) -> list[str]:
         headers = self._headers()
@@ -295,6 +586,38 @@ def _extract_json(text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise PolicyInvalidError("Model output JSON was not an object.")
     return parsed
+
+
+def _parse_arguments(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _tool_content(result: dict[str, Any]) -> str:
+    summary = result.get("summary")
+    payload = json.dumps(
+        result.get("data", {}), ensure_ascii=False, default=str, separators=(",", ":")
+    )
+    text = f"{summary}\n{payload}" if summary else payload
+    limit = 16_000
+    return text if len(text) <= limit else text[:limit] + "...[truncated]"
+
+
+def _merge_usage(total: dict[str, Any], usage: Any) -> None:
+    if not isinstance(usage, dict):
+        return
+    for key, value in usage.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            total[key] = total.get(key, 0) + value
+        else:
+            total.setdefault(key, value)
 
 
 def _retry_after_ms(value: str | None) -> int | None:

@@ -58,6 +58,8 @@ export function Cockpit() {
   const account = view?.account;
   const automation = view?.automation;
   const models = view?.models;
+  const agent = view?.agent;
+  const rationale = (view?.policy?.raw as { rationale?: string } | undefined)?.rationale;
   const currentMode = mode?.mode ?? "paper";
   // Paper fills locally; testnet sends signed orders to the exchange. Say
   // which one is doing the work instead of leaving the operator to infer it.
@@ -538,6 +540,36 @@ export function Cockpit() {
         </div>
 
         <div className="stack">
+          <PaperCard
+            eyebrow={t("cockpit.agent")}
+            title={t("cockpit.agentTitle")}
+            actions={
+              <Link className="small" to="/agent">
+                {t("cockpit.agentOpen")}
+              </Link>
+            }
+          >
+            <div className="row" style={{ justifyContent: "space-between", gap: 10 }}>
+              <Pill tone={agent?.is_agent ? "olive" : "terracotta"} dot>
+                {agent?.is_agent
+                  ? t("cockpit.agentLive")
+                  : t("cockpit.agentSimulated")}
+              </Pill>
+              <span className="small muted">
+                {agent?.latest ? timeAgo(agent.latest.at) : t("cockpit.agentNever")}
+              </span>
+            </div>
+            <p className="agent-reason small" style={{ marginTop: 10 }}>
+              {rationale ?? t("cockpit.agentNoDecision")}
+            </p>
+            <div className="row small muted" style={{ flexWrap: "wrap", gap: 12 }}>
+              <span>
+                {t("cockpit.agentTools", { n: agent?.latest?.tool_count ?? 0 })}
+              </span>
+              <span>{t("cockpit.agentRuns", { n: agent?.runs.length ?? 0 })}</span>
+            </div>
+          </PaperCard>
+
           <PaperCard eyebrow={t("cockpit.automation")} title={t("cockpit.automation")}>
             <div className="row" style={{ justifyContent: "space-between" }}>
               <div>

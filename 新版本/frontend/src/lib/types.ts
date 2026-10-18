@@ -82,6 +82,68 @@ export interface AutomationStatus {
   running: boolean;
 }
 
+export interface AgentToolCall {
+  turn: number;
+  name: string;
+  arguments: Record<string, unknown>;
+  ok: boolean;
+  summary: string;
+  latency_ms: number;
+}
+
+export interface AgentRun {
+  id: string;
+  at: string;
+  mode: string;
+  provider: string;
+  model: string;
+  status: string;
+  error_code: string | null;
+  turns: number;
+  latency_ms: number;
+  usage: Record<string, unknown>;
+  rationale: string | null;
+  /** Only the newest run carries its trace; older runs fetch it on demand. */
+  tools: AgentToolCall[];
+  tool_count: number;
+  policy_id: string | null;
+  cycle_id: string | null;
+  signals: {
+    created: number;
+    positions: number;
+    closed: number;
+    rejected: number;
+  };
+  realized: { closed: number; pnl_usdt: string };
+}
+
+export interface AgentStatus {
+  provider: string;
+  model: string;
+  is_agent: boolean;
+  tools: string[];
+  runs: AgentRun[];
+  latest: AgentRun | null;
+}
+
+export interface AgentRunDetail {
+  id: string;
+  cycle_id: string | null;
+  policy_id: string | null;
+  mode: string;
+  provider: string;
+  model: string;
+  status: string;
+  turns: number;
+  latency_ms: number;
+  rationale: string | null;
+  error_code: string | null;
+  tool_count: number;
+  created_at: string;
+  tools: AgentToolCall[];
+  usage: Record<string, unknown>;
+}
+
 export interface SystemStatus {
   service: string;
   app_env: string;
@@ -108,6 +170,7 @@ export interface SystemStatus {
     llm: ModelConnection;
     jev: ModelConnection;
   };
+  agent: AgentStatus;
 }
 
 export type SignalState =

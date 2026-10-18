@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 
 import { Layout } from "./components/Layout";
+import { AgentDesk } from "./pages/AgentDesk";
 import { AuditSettings } from "./pages/AuditSettings";
 import { Backtests } from "./pages/Backtests";
 import { Cockpit } from "./pages/Cockpit";
@@ -16,6 +17,7 @@ export function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<Cockpit />} />
+        <Route path="agent" element={<AgentDesk />} />
         <Route path="overview" element={<Overview />} />
         <Route path="strategy" element={<StrategyDesk />} />
         <Route path="signals" element={<JevSignals />} />
