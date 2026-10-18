@@ -229,13 +229,14 @@ class SyntheticMarketDataProvider:
         )
 
     async def klines(
-        self, symbol: str, interval: str = "1m", limit: int = 120
+        self, symbol: str, interval: str = "1m", limit: int = 120, warmup: int = 0
     ) -> list[Candle]:
         """Replay the simulated minute history, upsampled to ``interval``."""
 
-        lookback = SYNTHETIC_LOOKBACK_MINUTES.get(interval)
-        if lookback is None:
+        looked = SYNTHETIC_LOOKBACK_MINUTES.get(interval)
+        if looked is None:
             raise ValueError(f"unsupported kline interval {interval!r}")
+        lookback = max(looked, int(limit) + max(0, int(warmup)))
         now = (self._sim_clock if self.advance_each_call else datetime.now(UTC)).astimezone(
             UTC
         )

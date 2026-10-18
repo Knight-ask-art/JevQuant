@@ -13,12 +13,12 @@ can report them honestly instead of drawing a fabricated line.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Sequence
+from typing import Mapping, Sequence
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..domain.market import Candle
-from .features import aggregate
+from .features import aggregate, rsi
 
 INTERVALS: dict[str, timedelta] = {
     "1m": timedelta(minutes=1),
@@ -63,6 +63,56 @@ class CandleSeries(BaseModel):
     candles: list[CandleOut]
 
 
+class IndicatorPoint(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    i: int  # index into ``candles``; absent values are simply omitted
+    v: float
+
+
+class CandleSeries(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    interval: str
+    source: str
+    synthetic: bool
+    candles: list[CandleOut]
+    # name -> series, e.g. "sma20", "rsi14". Computed over the full fetched
+    # history so the first visible bar already has a value, then trimmed to
+    # the returned window by index.
+    indicators: dict[str, list[IndicatorPoint]] = Field(default_factory=dict)
+
+
+INDICATOR_NAMES = ("sma20", "sma60", "rsi14")
+
+
+def compute_indicators(
+    candles: Sequence[Candle], names: Sequence[str]
+) -> dict[str, list[float | None]]:
+    """Indicator values aligned to ``candles``; ``None`` where undefined.
+
+    Every value at index ``i`` uses only candles ``0..i``: no lookahead, and
+    nothing for a bar that has not closed yet.
+    """
+
+    closes = [candle.close for candle in candles]
+    series: dict[str, list[float | None]] = {}
+    for name in names:
+        if name not in INDICATOR_NAMES:
+            raise ValueError(f"unsupported indicator {name!r}")
+        values: list[float | None] = []
+        for index in range(len(candles)):
+            if name.startswith("sma"):
+                period = int(name[3:])
+                window = closes[max(0, index - period + 1) : index + 1]
+                values.append(sum(window) / period if len(window) == period else None)
+            elif name == "rsi14":
+                values.append(rsi(closes[: index + 1], 14))
+        series[name] = values
+    return series
+
+
 def validate_interval(interval: str) -> str:
     if interval not in INTERVALS:
         raise ValueError(f"unsupported interval {interval!r}")
@@ -84,7 +134,13 @@ def upsample(candles: Sequence[Candle], interval: str, now: datetime) -> list[Ca
 
 
 def to_series(
-    *, symbol: str, interval: str, source: str, synthetic: bool, candles: Sequence[Candle]
+    *,
+    symbol: str,
+    interval: str,
+    source: str,
+    synthetic: bool,
+    candles: Sequence[Candle],
+    indicators: Mapping[str, Sequence[float | None]] | None = None,
 ) -> CandleSeries:
     return CandleSeries(
         symbol=symbol,
@@ -102,4 +158,12 @@ def to_series(
             )
             for candle in candles
         ],
+        indicators={
+            name: [
+                IndicatorPoint(i=index, v=round(value, 6))
+                for index, value in enumerate(values)
+                if value is not None
+            ]
+            for name, values in (indicators or {}).items()
+        },
     )

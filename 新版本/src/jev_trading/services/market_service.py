@@ -41,8 +41,12 @@ class MarketService:
     ) -> list[MarketSnapshot]:
         return await self.provider.snapshots(symbols, now=now or datetime.now(UTC))
 
-    async def klines(self, symbol: str, interval: str = "1m", limit: int = 120):
-        return await self.provider.klines(symbol, interval=interval, limit=limit)
+    async def klines(
+        self, symbol: str, interval: str = "1m", limit: int = 120, warmup: int = 0
+    ):
+        return await self.provider.klines(
+            symbol, interval=interval, limit=limit, warmup=warmup
+        )
 
     async def spot_candidates(self, limit: int = 40) -> list[dict[str, object]]:
         """Liquid USDT pairs the venue lists, when the provider can supply them."""

@@ -435,3 +435,33 @@ def test_manual_close_endpoint_closes_an_open_position(open_client):
     assert position["id"] not in {item["id"] for item in remaining}
     audit = open_client.get("/api/v1/audit/verify").json()
     assert audit["valid"] is True
+
+
+def test_candles_carry_indicators_aligned_to_the_window(open_client):
+    response = open_client.get(
+        "/api/v1/market/candles?symbol=BTCUSDT&interval=15m&limit=60"
+        "&indicators=sma20,rsi14"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    candles = body["candles"]
+    assert len(candles) == 60
+    sma = body["indicators"]["sma20"]
+    rsi = body["indicators"]["rsi14"]
+    # The warm-up happens before the visible window, so the first visible bar
+    # already carries an indicator value (its index inside the window moves
+    # only when the history is shorter than the warm-up).
+    assert all(point["i"] < len(candles) for point in sma + rsi)
+    assert sma[0]["i"] <= 19
+    assert rsi[0]["i"] >= 13
+    assert all(0 <= point["v"] <= 100 for point in rsi)
+
+    # No indicators requested: none returned, no extra work done.
+    plain = open_client.get("/api/v1/market/candles?symbol=BTCUSDT&limit=20").json()
+    assert plain["indicators"] == {}
+
+    bad = open_client.get(
+        "/api/v1/market/candles?symbol=BTCUSDT&limit=20&indicators=ema9"
+    )
+    assert bad.status_code == 422
+    assert bad.json()["error"]["code"] == "VALIDATION_ERROR"

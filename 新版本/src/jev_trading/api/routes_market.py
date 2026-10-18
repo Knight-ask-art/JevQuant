@@ -21,9 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ..domain.enums import ErrorCode
 from ..domain.errors import AppError
 from ..services.klines import (
+    INDICATOR_NAMES,
     INTERVALS,
     CandleSeries,
     clamp_limit,
+    compute_indicators,
     to_series,
     validate_interval,
 )
@@ -130,6 +132,11 @@ async def candles(
     symbol: str = Query(min_length=5, max_length=20),
     interval: str = Query(default="15m"),
     limit: int = Query(default=120, ge=20, le=500),
+    indicators: str = Query(
+        default="",
+        max_length=64,
+        description="comma-separated: sma20, sma60, rsi14",
+    ),
     actor: str = Depends(require_operator),
 ) -> CandleSeries:
     container = _container(request)
@@ -138,15 +145,39 @@ async def candles(
     except ValueError as exc:
         raise AppError(ErrorCode.VALIDATION_ERROR, str(exc)) from exc
     normalized = symbol.strip().upper()
-    series = await container.market.klines(
-        normalized, interval=interval, limit=clamp_limit(limit)
+    requested_indicators = [
+        item.strip().lower() for item in indicators.split(",") if item.strip()
+    ]
+    for name in requested_indicators:
+        if name not in INDICATOR_NAMES:
+            raise AppError(
+                ErrorCode.VALIDATION_ERROR,
+                f"Unsupported indicator {name!r}.",
+                details={"supported": list(INDICATOR_NAMES)},
+            )
+    wanted = clamp_limit(limit)
+    # Indicators need history before the visible window: 60 periods for the
+    # slowest average, plus headroom for the RSI warm-up.
+    warmup = 60 if requested_indicators else 0
+    candles = await container.market.klines(
+        normalized, interval=interval, limit=wanted, warmup=warmup
     )
+    computed: dict[str, list[float | None]] = {}
+    if requested_indicators and candles:
+        computed = compute_indicators(candles, requested_indicators)
+    # Show the last ``wanted`` bars; indicator values stay aligned by index.
+    offset = max(0, len(candles) - wanted)
+    visible = candles[offset:]
+    trimmed = {
+        name: values[offset:] for name, values in computed.items()
+    }
     return to_series(
         symbol=normalized,
         interval=interval,
         source=container.market.source,
         synthetic=container.settings.synthetic_market,
-        candles=series,
+        candles=visible,
+        indicators=trimmed,
     )
 
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { CandleChart } from "../components/CandleChart";
+import { CandleChart, INDICATOR_COLORS } from "../components/CandleChart";
 import { EquityChart } from "../components/charts";
 import { ModelSettingsModal } from "../components/ModelSettingsModal";
 import { SymbolPicker } from "../components/SymbolPicker";
@@ -81,7 +81,7 @@ export function Cockpit() {
     api
       .get<CandleSeries>(
         `/api/v1/market/candles?symbol=${encodeURIComponent(activeSymbol)}` +
-          `&interval=${chartInterval}&limit=80`,
+          `&interval=${chartInterval}&limit=80&indicators=sma20,sma60,rsi14`,
       )
       .then((result) => {
         if (!cancelled) setSeries(result);
@@ -108,6 +108,12 @@ export function Cockpit() {
       ? ((lastCandle.c - firstCandle.c) / firstCandle.c) * 100
       : null;
   const shown = hover ?? lastCandle;
+  const shownIndex = shown ? candles.indexOf(shown) : -1;
+  const indicatorAt = (name: string): number | null => {
+    const points = series?.indicators?.[name];
+    if (!points || shownIndex < 0) return null;
+    return points.find((point) => point.i === shownIndex)?.v ?? null;
+  };
   const formatCandleTime = (iso: string) => {
     const date = new Date(iso);
     return date.toLocaleString(undefined, {
@@ -350,6 +356,21 @@ export function Cockpit() {
                 )}
               </div>
             )}
+            {shown && (
+              <div className="indicator-legend">
+                {(["sma20", "sma60", "rsi14"] as const).map((name) => {
+                  const value = indicatorAt(name);
+                  return (
+                    <span key={name}>
+                      <i style={{ background: INDICATOR_COLORS[name] }} />
+                      {name.toUpperCase()}
+                      <strong>{value === null ? "—" : num(value, name === "rsi14" ? 1 : 2)}</strong>
+                    </span>
+                  );
+                })}
+                <span className="muted">{t("cockpit.indicatorNote")}</span>
+              </div>
+            )}
             {chartError ? (
               <div className="callout danger">
                 {t("cockpit.chartUnavailable", { error: chartError.message })}
@@ -361,6 +382,8 @@ export function Cockpit() {
             ) : (
               <CandleChart
                 candles={candles}
+                indicators={series?.indicators}
+                height={340}
                 ariaLabel={`${activeSymbol} ${chartInterval}`}
                 formatPrice={(value) => num(value, value < 1 ? 6 : 2)}
                 onHover={setHover}

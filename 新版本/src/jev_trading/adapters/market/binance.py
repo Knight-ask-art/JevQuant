@@ -214,15 +214,20 @@ class BinanceMarketDataProvider:
         ]
 
     async def klines(
-        self, symbol: str, interval: str = "1m", limit: int = 120
+        self, symbol: str, interval: str = "1m", limit: int = 120, warmup: int = 0
     ) -> list[Candle]:
-        """Closed candles for charting. The last, still-forming bar is dropped."""
+        """Closed candles for charting. The last, still-forming bar is dropped.
+
+        ``warmup`` extra bars are prepended so a caller can compute an
+        indicator over history and then show only the last ``limit`` bars.
+        """
 
         if interval not in INTERVALS:
             raise DependencyBadResponseError(f"unsupported kline interval {interval!r}")
+        wanted = int(limit) + max(0, int(warmup))
         rows = await self._request(
             "/api/v3/klines",
-            {"symbol": symbol, "interval": interval, "limit": min(int(limit) + 1, 1000)},
+            {"symbol": symbol, "interval": interval, "limit": min(wanted + 1, 1000)},
         )
         if not isinstance(rows, list):
             raise DependencyBadResponseError("klines response was not a list.")
@@ -248,7 +253,7 @@ class BinanceMarketDataProvider:
                 raise DependencyBadResponseError(
                     f"klines row malformed for {symbol}"
                 ) from exc
-        return candles[-int(limit) :]
+        return candles[-wanted:]
 
     async def health(self) -> dict[str, object]:
         try:

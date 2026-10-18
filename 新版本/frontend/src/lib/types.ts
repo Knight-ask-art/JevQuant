@@ -270,6 +270,7 @@ export interface CandleSeries {
   source: string;
   synthetic: boolean;
   candles: Candle[];
+  indicators: Record<string, IndicatorPoint[]>;
 }
 
 export interface UniverseCandidate {
@@ -289,4 +290,9 @@ export interface UniverseView {
   marks: Record<string, string>;
   source: string;
   synthetic: boolean;
+}
+
+export interface IndicatorPoint {
+  i: number;
+  v: number;
 }

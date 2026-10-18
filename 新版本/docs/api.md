@@ -152,7 +152,7 @@ Verification returns `{"valid": true, "count": n, "head": "sha256:..."}` or
 |---|---|---|---|
 | GET | `/api/v1/market/universe` | — | traded symbols, venue candidates (real data only), last marks |
 | PUT | `/api/v1/market/universe` | `{"symbols": ["BTCUSDT", "ETHUSDT"]}` | hard envelope; exchange rules are read first and symbols without them are rejected |
-| GET | `/api/v1/market/candles` | `?symbol=BTCUSDT&interval=15m&limit=120` | closed candles only; `1m`, `5m`, `15m`, `1h`, `4h` |
+| GET | `/api/v1/market/candles` | `?symbol=BTCUSDT&interval=15m&limit=120&indicators=sma20,sma60,rsi14` | closed candles only; `1m`, `5m`, `15m`, `1h`, `4h`; indicator values are indexed against the returned window and computed with no lookahead |
 
 The universe is persisted in `system_state` and applied to the live settings and the
 policy compiler, so a symbol outside it is discarded before the LLM, Jev, risk or

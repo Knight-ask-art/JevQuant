@@ -4,6 +4,7 @@ import {
   ColorType,
   CrosshairMode,
   HistogramSeries,
+  LineSeries,
   LineStyle,
   createChart,
   type IChartApi,
@@ -13,10 +14,11 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 
-import type { Candle } from "../lib/types";
+import type { Candle, IndicatorPoint } from "../lib/types";
 
 export interface CandleChartProps {
   candles: Candle[];
+  indicators?: Record<string, IndicatorPoint[]>;
   height?: number;
   ariaLabel?: string;
   upColor?: string;
@@ -33,6 +35,12 @@ const MUTED = "#95897d";
 const LINE = "#dfd5c8";
 const SERIF = '"Source Serif 4", Georgia, serif';
 
+export const INDICATOR_COLORS: Record<string, string> = {
+  sma20: "#c76548",
+  sma60: "#517264",
+  rsi14: "#665e57",
+};
+
 function toTime(iso: string): UTCTimestamp {
   return Math.floor(new Date(iso).getTime() / 1000) as UTCTimestamp;
 }
@@ -41,12 +49,14 @@ function toTime(iso: string): UTCTimestamp {
  * TradingView lightweight-charts wrapper.
  *
  * The chart owns zoom, crosshair, time axis and the last-price line; React
- * owns the container and the data. Data is replaced through the ref rather
- * than `fitContent`, so panning is not reset on every update.
+ * owns the container and the data. Moving averages share the price pane, RSI
+ * gets its own pane fixed to 0..100 with 30/70 guides. Data is replaced
+ * through the refs rather than `fitContent`, so panning survives updates.
  */
 export function CandleChart({
   candles,
-  height = 300,
+  indicators,
+  height = 340,
   ariaLabel,
   upColor = "#517264",
   downColor = "#a84c46",
@@ -57,6 +67,7 @@ export function CandleChart({
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const lineRefs = useRef<Record<string, ISeriesApi<"Line">>>({});
   const byTime = useRef<Map<number, Candle>>(new Map());
   const hoverRef = useRef(onHover);
   hoverRef.current = onHover;
@@ -76,6 +87,7 @@ export function CandleChart({
         fontSize: 11,
         // The TradingView attribution logo (Apache-2.0 NOTICE requirement)
         // stays visible by default; do not turn it off.
+        panes: { separatorColor: LINE, separatorHoverColor: "rgba(52, 48, 44, 0.12)" },
       },
       grid: {
         vertLines: { color: "rgba(223, 213, 200, 0.55)", style: LineStyle.Dotted },
@@ -121,6 +133,45 @@ export function CandleChart({
     volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
     candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.26 } });
 
+    const sma20 = chart.addSeries(LineSeries, {
+      color: INDICATOR_COLORS.sma20,
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    const sma60 = chart.addSeries(LineSeries, {
+      color: INDICATOR_COLORS.sma60,
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    const rsiSeries = chart.addSeries(
+      LineSeries,
+      {
+        color: INDICATOR_COLORS.rsi14,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        crosshairMarkerVisible: false,
+        autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }),
+      },
+      1,
+    );
+    for (const level of [70, 30]) {
+      rsiSeries.createPriceLine({
+        price: level,
+        color: LINE,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        axisLabelVisible: false,
+        title: "",
+      });
+    }
+    chart.panes()[0].setHeight(Math.max(180, height - 96));
+    chart.panes()[1].setHeight(96);
+
     const handler = (param: MouseEventParams<Time>) => {
       const emit = hoverRef.current;
       if (!emit) return;
@@ -135,6 +186,7 @@ export function CandleChart({
     chartRef.current = chart;
     candleRef.current = candleSeries;
     volumeRef.current = volumeSeries;
+    lineRefs.current = { sma20, sma60, rsi14: rsiSeries };
 
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
@@ -149,20 +201,19 @@ export function CandleChart({
       chartRef.current = null;
       candleRef.current = null;
       volumeRef.current = null;
+      lineRefs.current = {};
     };
   }, [height, upColor, downColor]);
-
-  useEffect(() => {
-    chartRef.current?.applyOptions({ height });
-  }, [height]);
 
   useEffect(() => {
     const candleSeries = candleRef.current;
     const volumeSeries = volumeRef.current;
     if (!candleSeries || !volumeSeries) return;
     const map = new Map<number, Candle>();
+    const times: number[] = [];
     for (const bar of candles) {
       const time = toTime(bar.t);
+      times.push(time);
       if (!map.has(time)) map.set(time, bar);
     }
     // Upsampled bars share the first member's open time; the chart needs a
@@ -184,8 +235,19 @@ export function CandleChart({
         color: bar.c >= bar.o ? "rgba(81, 114, 100, 0.38)" : "rgba(168, 76, 70, 0.38)",
       })),
     );
+    for (const [name, line] of Object.entries(lineRefs.current)) {
+      const points = indicators?.[name] ?? [];
+      line.setData(
+        points
+          .filter((point) => point.i >= 0 && point.i < times.length)
+          .map((point) => ({
+            time: times[point.i] as UTCTimestamp,
+            value: point.v,
+          })),
+      );
+    }
     byTime.current = map;
-  }, [candles]);
+  }, [candles, indicators]);
 
   return (
     <div
