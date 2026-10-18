@@ -19,7 +19,7 @@ export function LiveArmingModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onArmed: () => void;
+  onArmed: () => boolean | void;
 }) {
   const { t } = useI18n();
   const [checks, setChecks] = useState<Check[]>([]);
@@ -67,7 +67,7 @@ export function LiveArmingModal({
         totp_code: totp,
       });
       setArmedAt(new Date().toISOString());
-      onArmed();
+      if (onArmed() !== false) onClose();
     } catch (caught) {
       // A token is single-use; any failure requires a fresh preflight.
       setError(String(caught));

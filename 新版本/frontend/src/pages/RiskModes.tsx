@@ -323,8 +323,12 @@ export function RiskModes() {
         open={armingOpen}
         onClose={() => setArmingOpen(false)}
         onArmed={() => {
+          // Keep the dialog up briefly so the operator reads the outcome
+          // before returning to the cockpit, which is the live screen.
           void status.reload();
           void reloadStatus();
+          window.setTimeout(() => setArmingOpen(false), 2200);
+          return false;
         }}
       />
     </div>

@@ -42,6 +42,22 @@ async def dispatch_intent(
     return await container.orchestrator.dispatch_approved_intent(payload.intent_id)
 
 
+@router.post("/positions/{position_id}/close")
+async def close_position(
+    request: Request,
+    position_id: str,
+    actor: str = Depends(require_operator),
+) -> dict[str, object]:
+    """Close one open position now, regardless of stop-loss or take-profit.
+
+    Risk still approves the CLOSE intent and the venue that holds the
+    position submits it. The kill switch stops new entries but not this.
+    """
+
+    container = _container(request)
+    return await container.close_position(position_id, actor=actor)
+
+
 @router.get("/health")
 async def execution_health(
     request: Request, actor: str = Depends(require_operator)

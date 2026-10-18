@@ -42,6 +42,7 @@ export function Cockpit() {
   const universe = useApi<UniverseView>("/api/v1/market/universe", 30000);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [symbolsOpen, setSymbolsOpen] = useState(false);
   const [symbol, setSymbol] = useState<string | null>(null);
@@ -135,6 +136,41 @@ export function Cockpit() {
     return act("cycle", () => api.post("/api/v1/demo/cycle"));
   }
 
+  async function closePosition(positionId: string, symbol: string) {
+    if (!window.confirm(t("cockpit.closeConfirm", { symbol }))) return;
+    setBusy(`close:${positionId}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.post<{
+        closed: boolean;
+        notes: string[];
+      }>(`/api/v1/execution/positions/${positionId}/close`);
+      if (result.closed) {
+        setNotice(t("cockpit.closeDone", { symbol }));
+      } else {
+        setNotice(
+          result.notes.length
+            ? result.notes.join(" · ")
+            : t("cockpit.closeWorkingNote", { symbol }),
+        );
+      }
+      setChartSeq((value) => value + 1);
+      await Promise.all([status.reload(), pnl.reload(), orders.reload()]);
+    } catch (caught) {
+      const failure = caught as ApiError;
+      setError(
+        new ApiError(
+          failure.status,
+          failure.code,
+          t("cockpit.closeFailed", { error: failure.message }),
+        ),
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function setAutomation(enabled: boolean, intervalSeconds?: number) {
     return act("automation", () =>
       api.put("/api/v1/settings/automation", {
@@ -168,6 +204,7 @@ export function Cockpit() {
       </div>
 
       {error && <ErrorNote error={error} />}
+      {notice && <div className="callout olive">{notice}</div>}
 
       <div className="mode-switch">
         {(["paper", "testnet"] as const).map((value) => (
@@ -350,6 +387,7 @@ export function Cockpit() {
                       <th className="num">{t("common.mark")}</th>
                       <th className="num">{t("common.unrealized")}</th>
                       <th>{t("common.opened")}</th>
+                      <th />
                     </tr>
                   </thead>
                   <tbody>
@@ -363,6 +401,24 @@ export function Cockpit() {
                         <td className="num">{money(position.mark_price)}</td>
                         <td className="num">{signed(position.unrealized_pnl_usdt)}</td>
                         <td className="muted">{timeAgo(position.opened_at)}</td>
+                        <td className="num">
+                          {position.exit_requested_at ? (
+                            <Pill tone="yellow">{t("cockpit.closeWorking")}</Pill>
+                          ) : (
+                            <button
+                              type="button"
+                              className="button danger small"
+                              disabled={busy !== null}
+                              onClick={() =>
+                                closePosition(position.id, position.symbol)
+                              }
+                            >
+                              {busy === `close:${position.id}`
+                                ? t("cockpit.closing")
+                                : t("cockpit.close")}
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

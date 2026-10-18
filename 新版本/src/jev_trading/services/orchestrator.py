@@ -103,6 +103,30 @@ class TradingOrchestrator:
         self.broker = broker
         self.account_id = account_id
 
+    async def request_close(self, position_id: str, *, actor: str) -> Any:
+        """Mark an open position for an immediate close. Returns the row."""
+
+        position = await self.repo.request_close(
+            position_id, reason="manual", actor=actor
+        )
+        if position is None:
+            raise AppError(
+                ErrorCode.NOT_FOUND,
+                "That position is not open.",
+                details={"position_id": position_id},
+            )
+        await self.audit.record(
+            "position.close_requested",
+            "position",
+            position_id,
+            {"actor": actor, "symbol": position.symbol},
+        )
+        await self.broker.publish(
+            "system.events",
+            {"event": "position.close_requested", "position_id": position_id},
+        )
+        return position
+
     async def run_cycle(self, *, refresh_policy: bool = False) -> CycleResult:
         cycle_id = str(uuid4())
         started = datetime.now(UTC)
@@ -1084,6 +1108,26 @@ class TradingOrchestrator:
             return "time_limit"
         return None
 
+    async def _exit_system_snapshot(self) -> SystemSnapshot:
+        """The dependencies an exit reads, probed only while positions are open."""
+
+        mode = await self.modes.current_mode()
+        execution_healthy = False
+        adapter = self.execution_for_mode.get(mode)
+        if adapter is not None:
+            execution_healthy = bool((await adapter.health()).get("healthy"))
+        try:
+            feed_healthy = bool((await self.market.health()).get("healthy"))
+        except Exception:  # noqa: BLE001
+            feed_healthy = False
+        return await self.modes.system_snapshot(
+            feed_healthy=feed_healthy,
+            execution_healthy=execution_healthy,
+            # The compiler's policy-fresh flag decides whether *entries* are
+            # allowed; an exit must never be blocked by a stale strategy.
+            policy_fresh=True,
+        )
+
     async def _manage_exits(
         self,
         *,
@@ -1157,7 +1201,7 @@ class TradingOrchestrator:
                 notes.append(f"{position.symbol}: exit deferred by kill switch on {position_mode.value}")
                 continue
 
-            reason = self._exit_reason(position, snapshot, now)
+            reason = self._exit_reason(position, snapshot, now) or position.exit_requested_reason
             if reason is None:
                 continue
             idempotency_suffix = f"{int(now.timestamp() // 60)}"

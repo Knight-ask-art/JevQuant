@@ -473,3 +473,51 @@ async def test_dispatch_marks_unknown_receipt_as_reconciliation(repo, server_lim
     assert (await repo.get_signal(signal.id)).state == (
         SignalState.RECONCILIATION_REQUIRED.value
     )
+
+
+async def test_manual_close_exits_without_a_stop_being_hit(repo, server_limits):
+    account, policy, ctx, engine, signal, position, paper = await open_position(
+        repo, server_limits
+    )
+    async with repo.db.session() as session:
+        row = await session.get(PositionRow, position.id)
+        row.opened_at = NOW  # well inside the holding limit
+
+    container = ActiveContainer()
+    container.execution_for_mode = {Mode.PAPER: paper}
+    orchestrator = make_orchestrator(repo, container, account.id)
+    orchestrator.market = ChainedMarket([ctx.symbol_rules])
+
+    stamped = await orchestrator.request_close(position.id, actor="operator:test")
+    assert stamped.exit_requested_reason == "manual"
+    assert stamped.exit_requested_at is not None
+
+    snapshot = ctx.market.model_copy(
+        update={
+            "bid": ctx.market.bid * Decimal("0.999"),
+            "ask": ctx.market.ask * Decimal("0.999"),
+        }
+    )
+    exits, _notes = await orchestrator._manage_exits(
+        policy=policy, snapshot_map={snapshot.symbol: snapshot}, system=system_snapshot()
+    )
+    assert exits == 1
+    assert (await repo.get_signal(signal.id)).state == SignalState.CLOSED.value
+    assert await repo.get_open_positions(account.id) == []
+
+
+async def test_manual_close_request_on_a_closed_position_is_not_found(repo, server_limits):
+    from jev_trading.domain.errors import AppError
+
+    account, _policy, _ctx, _engine, _signal, position, _paper = await open_position(
+        repo, server_limits
+    )
+    container = ActiveContainer()
+    orchestrator = make_orchestrator(repo, container, account.id)
+    assert await repo.get_open_positions(account.id)
+    async with repo.db.session() as session:
+        row = await session.get(PositionRow, position.id)
+        row.status = "CLOSED"
+    with pytest.raises(AppError) as raised:
+        await orchestrator.request_close(position.id, actor="operator:test")
+    assert raised.value.http_status == 404

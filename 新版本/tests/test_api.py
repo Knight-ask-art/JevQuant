@@ -404,3 +404,34 @@ def test_candles_survive_a_restart_with_the_stored_universe(tmp_path):
         assert listing["symbols"] == ["SOLUSDT"]
         candles = api.get("/api/v1/market/candles?symbol=BTCUSDT&interval=5m&limit=30")
         assert candles.status_code == 200
+
+
+def test_manual_close_is_404_for_an_unknown_position(open_client):
+    response = open_client.post("/api/v1/execution/positions/does-not-exist/close")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_manual_close_endpoint_closes_an_open_position(open_client):
+    # Run cycles until an entry fills, then close it through the operator route.
+    for _ in range(30):
+        open_client.post("/api/v1/demo/cycle")
+        status = open_client.get("/api/v1/system/status").json()
+        if status["positions"]:
+            break
+    positions = open_client.get("/api/v1/positions").json()["items"]
+    if not positions:
+        pytest.skip("no entry filled within 30 simulated cycles")
+
+    position = positions[0]
+    response = open_client.post(f"/api/v1/execution/positions/{position['id']}/close")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["symbol"] == position["symbol"]
+    assert body["closed"] is True
+    assert body["exits"] == 1
+
+    remaining = open_client.get("/api/v1/positions?status=OPEN").json()["items"]
+    assert position["id"] not in {item["id"] for item in remaining}
+    audit = open_client.get("/api/v1/audit/verify").json()
+    assert audit["valid"] is True

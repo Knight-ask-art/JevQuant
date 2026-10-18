@@ -59,6 +59,7 @@ Secrets are never returned by any endpoint.
 | POST | `/api/v1/mode/disarm` | `{"reason"}` | stops new entries; keeps mode for exits |
 | POST | `/api/v1/kill-switch` | `{"reason"}` | stops new entries; keeps mode for exits |
 | POST | `/api/v1/kill-switch/reset` | — | clears the switch |
+| POST | `/api/v1/execution/positions/{id}/close` | — | close one open position now; risk still approves the CLOSE intent and the holding venue submits it; the kill switch does not block it |
 
 The arming token is single-use, short-lived and held only in memory by the client until
 redeemed. A failed redemption requires a fresh preflight.

@@ -344,6 +344,10 @@ class PositionRow(Base):
     # same adapter even after a restart or a mode change.
     mode: Mapped[str] = mapped_column(String(16), default="paper")
     is_simulated: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Set when an operator asks for an immediate close. The exit manager reads
+    # it as an exit reason, so a failed attempt stays visible until it succeeds.
+    exit_requested_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    exit_requested_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class PnlSnapshotRow(Base):

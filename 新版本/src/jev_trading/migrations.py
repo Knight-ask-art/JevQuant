@@ -105,6 +105,13 @@ async def up_0003_fills_external_id(conn: AsyncConnection) -> None:
         )
 
 
+async def up_0004_positions_exit_request(conn: AsyncConnection) -> None:
+    """An operator can request an immediate close of one position."""
+
+    await _add_column(conn, "positions", "exit_requested_at", "TIMESTAMP WITH TIME ZONE", null=True)
+    await _add_column(conn, "positions", "exit_requested_reason", "VARCHAR(32)", null=True)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_baseline", "record the pre-migration schema", up_0001_baseline),
     Migration("0002_positions_mode", "positions carry their execution route", up_0002_positions_mode),
@@ -112,6 +119,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         "0003_fills_external_id",
         "fills carry the venue trade id (idempotent reconciliation)",
         up_0003_fills_external_id,
+    ),
+    Migration(
+        "0004_positions_exit_request",
+        "positions record an operator-requested close",
+        up_0004_positions_exit_request,
     ),
 )
 

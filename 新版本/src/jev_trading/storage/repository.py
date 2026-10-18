@@ -146,6 +146,25 @@ class Repository:
             )
             return list(result.scalars())
 
+    async def request_close(
+        self, position_id: str, *, reason: str, actor: str
+    ) -> PositionRow | None:
+        """Record an operator close request on an open position.
+
+        Returns ``None`` when the position is missing or already closed, so
+        the caller can answer with NOT_FOUND rather than queueing an exit for
+        something that does not exist. The exit manager consumes the request.
+        """
+
+        async with self.db.session() as session:
+            row = await session.get(PositionRow, position_id)
+            if row is None or row.status != PositionStatus.OPEN.value:
+                return None
+            row.exit_requested_at = utcnow()
+            row.exit_requested_reason = reason
+            await session.flush()
+            return row
+
     async def settled_position(self, position_id: str) -> PositionRow:
         """A position row freshly read from the store (never a stale identity)."""
 

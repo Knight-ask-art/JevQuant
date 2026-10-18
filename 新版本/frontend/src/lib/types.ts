@@ -42,6 +42,8 @@ export interface PositionView {
   opened_at: string;
   is_simulated: boolean;
   realized_pnl_usdt?: string;
+  mode?: string;
+  exit_requested_at?: string | null;
 }
 
 export interface PolicyView {

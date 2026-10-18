@@ -37,6 +37,7 @@ shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 | Hand-drawn editorial React UI (cockpit + 8 advanced pages, EN/中文) | ✅ implemented |
 | Model credentials entered in the UI (write-only, applied live) | ✅ implemented, tested |
 | Runtime auto-cycle toggle (start/pause/interval, no restart) | ✅ implemented, tested |
+| Operator close of a single position (runs the deterministic exit path) | ✅ implemented, tested |
 | Deterministic synthetic backtest replay | ✅ implemented, explicitly labelled synthetic |
 | Real OHLCV / Freqtrade replay | ❌ not implemented |
 | Real fill-ledger rebuild for Hummingbot | ❌ follow-up (unknown states are reconciled, not invented) |
@@ -69,7 +70,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 124 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
+pytest                     # 128 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:
@@ -157,7 +158,7 @@ frontend/
                 Backtests, Models & Costs (incl. exchange balances), Risk & Modes,
                 Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          124 deterministic tests
+tests/          128 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)

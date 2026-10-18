@@ -26,6 +26,7 @@ from ..migrations import migrate
 from ..domain.enums import ErrorCode, Mode
 from ..domain.errors import AppError
 from ..domain.money import canonical_str
+from ..domain.market import Candle, MarketSnapshot
 from ..domain.policy import PolicyCompiler
 from ..domain.risk import RiskEngine
 from ..storage.db import Database
@@ -33,6 +34,7 @@ from ..storage.repository import Repository
 from .audit import AuditService
 from .balance_sync import BalanceSyncScheduler, BalanceSyncService
 from .events import EventBroker
+from .features import build_features
 from .market_service import MarketService
 from .modes import ModeManager
 from .orchestrator import TradingOrchestrator
@@ -661,6 +663,13 @@ class AppContainer:
                     "take_profit_bps": canonical_str(position.take_profit_bps),
                     "opened_at": position.opened_at.isoformat(),
                     "max_holding_seconds": position.max_holding_seconds,
+                    "mode": position.mode,
+                    "is_simulated": position.is_simulated,
+                    "exit_requested_at": (
+                        position.exit_requested_at.isoformat()
+                        if position.exit_requested_at is not None
+                        else None
+                    ),
                 }
             )
         return {
@@ -702,6 +711,127 @@ class AppContainer:
             "automation": self.automation_status(),
             "models": self.model_settings(),
         }
+
+    async def close_position(self, position_id: str, *, actor: str) -> Any:
+        """Operator-initiated close of one open position.
+
+        Serialized with cycles and reconciles because all three read and
+        write positions. Runs the deterministic exit path for that one
+        position; the kill switch never blocks an exit.
+
+        Testnet positions are held on a real exchange account. When the market
+        route is not testnet, the mark comes from the testnet venue's own
+        public book; the paper feed never prices a position paper does not hold.
+        """
+
+        orchestrator = self.orchestrator
+        if orchestrator is None:
+            raise RuntimeError("container has not been started")
+        started = datetime.now(UTC)
+        async with self._cycle_lock:
+            async with self.ledger_lock:
+                requested = await orchestrator.request_close(position_id, actor=actor)
+                snapshots: list[Any] = []
+                position_mode = Mode(getattr(requested, "mode", None) or Mode.PAPER.value)
+                try:
+                    if position_mode is Mode.TESTNET:
+                        snapshots = await self._testnet_account_snapshots(
+                            requested.symbol
+                        )
+                    else:
+                        snapshots = await self.market.snapshots([requested.symbol])
+                except AppError:
+                    snapshots = []
+                for snapshot in snapshots:
+                    await self.repo.insert_market_snapshot(snapshot)
+                system = await orchestrator._exit_system_snapshot()
+                exits, notes = await orchestrator._manage_exits(
+                    policy=None,
+                    snapshot_map={snap.symbol: snap for snap in snapshots},
+                    system=system,
+                )
+        mode = await self.modes.current_mode()
+        positions = await self.repo.get_open_positions(self.account_id)
+        still_open = any(position.id == position_id for position in positions)
+        await self.audit.record(
+            "position.manual_close",
+            "position",
+            position_id,
+            {"actor": actor, "symbol": requested.symbol, "exits": exits},
+        )
+        return {
+            "position_id": position_id,
+            "symbol": requested.symbol,
+            "closed": not still_open,
+            "exits": exits,
+            "open_positions": len(positions),
+            "mode": mode.value,
+            "notes": notes,
+            "finished_at": datetime.now(UTC).isoformat(),
+            "started_at": started.isoformat(),
+        }
+
+    async def _testnet_account_snapshots(self, symbol: str) -> list[Any]:
+        """A mark for a testnet-held position when the active route is paper.
+
+        The paper feed is not an exchange, so it cannot price a position the
+        testnet account holds. Read the testnet venue's own ticker book
+        (signed, testnet host) and derive the indicators from its klines.
+        Returns an empty list when testnet credentials are absent; the exit
+        path then reports the feed as unavailable instead of guessing.
+        """
+
+        account = BinanceAccountClient(
+            base_url=self.settings.binance_testnet_base_url,
+            api_key=(
+                self.settings.binance_testnet_api_key.get_secret_value()
+                if self.settings.binance_testnet_api_key
+                else None
+            ),
+            api_secret=(
+                self.settings.binance_testnet_api_secret.get_secret_value()
+                if self.settings.binance_testnet_api_secret
+                else None
+            ),
+        )
+        try:
+            book = await account._get("/api/v3/ticker/bookTicker", {"symbol": symbol})
+            rows = await account._get(
+                "/api/v3/klines", {"symbol": symbol, "interval": "1m", "limit": 240}
+            )
+        finally:
+            await account.close()
+        now = datetime.now(UTC)
+        candles = []
+        for row in rows if isinstance(rows, list) else []:
+            close_time = datetime.fromtimestamp(int(row[6]) / 1000, tz=UTC)
+            if close_time > now:
+                continue
+            candles.append(
+                Candle(
+                    open_time=datetime.fromtimestamp(int(row[0]) / 1000, tz=UTC),
+                    close_time=close_time,
+                    open=float(row[1]),
+                    high=float(row[2]),
+                    low=float(row[3]),
+                    close=float(row[4]),
+                    volume=float(row[5]),
+                )
+            )
+        bid = Decimal(str(book["bidPrice"]))
+        ask = Decimal(str(book["askPrice"]))
+        return [
+            MarketSnapshot(
+                symbol=symbol,
+                as_of=now,
+                source="binance_testnet",
+                bid=bid,
+                ask=ask,
+                candle_close_at=candles[-1].close_time if candles else now,
+                features=build_features(candles) if candles else {},
+                is_synthetic=False,
+            )
+        ]
 
     async def run_cycle(self, *, refresh_policy: bool = False, wait: bool = True):
         orchestrator = self.orchestrator
