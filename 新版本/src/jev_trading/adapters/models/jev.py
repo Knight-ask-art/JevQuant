@@ -50,7 +50,7 @@ class JevAdapter:
         base_url: str,
         api_key: str,
         model: str = "jev-1.13",
-        path: str = "/v1/inference",
+        path: str = "/v1/decisions",
         timeout: float = 15.0,
         max_retries: int = 1,
     ) -> None:

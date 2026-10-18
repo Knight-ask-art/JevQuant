@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     jev_base_url: str | None = None
     jev_api_key: SecretStr | None = None
     jev_model: str = "jev-1.13"
-    jev_path: str = "/v1/inference"
+    jev_path: str = "/v1/decisions"
 
     hummingbot_base_url: str | None = None
     hummingbot_api_key: SecretStr | None = None
