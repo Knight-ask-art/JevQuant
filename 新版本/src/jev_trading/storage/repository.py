@@ -736,6 +736,11 @@ class Repository:
                 is_simulated=intent.mode is not Mode.LIVE,
             )
             session.add(order)
+            # Fills carry a foreign key to the order. Without a relationship
+            # between the mappers SQLAlchemy does not order the two inserts,
+            # and PostgreSQL rejects the fill before the order exists. Flush
+            # the order explicitly so the ledger works on both backends.
+            await session.flush()
             for fill in fills:
                 session.add(
                     FillRow(

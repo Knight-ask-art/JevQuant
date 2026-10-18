@@ -14,6 +14,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import event, select
 
 from conftest import compiled_policy, make_context, make_intent, system_snapshot
 from jev_trading.adapters.execution.binance_testnet import (
@@ -31,7 +32,7 @@ from jev_trading.domain.enums import (
 from jev_trading.domain.money import ZERO
 from jev_trading.domain.risk import RiskEngine, compute_risk_snapshot_hash
 from jev_trading.storage.db import Database
-from jev_trading.storage.models import OrderRow, PositionRow
+from jev_trading.storage.models import FillRow, OrderRow, PositionRow
 from jev_trading.storage.repository import ExecutionFill, Repository
 
 
@@ -322,3 +323,48 @@ async def test_unknown_trade_schema_leaves_the_position_for_a_human(repo, server
     assert (await repo.get_signal(signal.id)).state == SignalState.EXIT_PENDING.value
     before = await ledger_totals(repo, account.id)
     assert await ledger_totals(repo, account.id) == before
+
+
+async def test_fills_are_written_after_their_order_under_foreign_keys(
+    tmp_path, server_limits
+):
+    """PostgreSQL enforces fills.order_id; the insert order must respect it.
+
+    SQLite ignores foreign keys by default, so the suite only saw this on a
+    real Postgres-backed testnet fill. Turn the pragma on and record an entry
+    with a fill: the repository must flush the order before the fill row.
+    """
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'fk.db'}")
+
+    @event.listens_for(db.engine.sync_engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    await db.create_all()
+    try:
+        repo = Repository(db)
+        _account, _policy, _signal, position, _close, _cash = (
+            await open_testnet_position(repo, server_limits, entry_fee=Decimal("0.01"))
+        )
+        assert position is not None
+        assert position.entry_order_id is not None
+        order = await repo.get_order(position.entry_order_id)
+        assert order is not None and order.exchange_order_id == "1001"
+        async with repo.db.session() as session:
+            fills = (
+                (
+                    await session.execute(
+                        select(FillRow).where(
+                            FillRow.order_id == position.entry_order_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(fills) == 1
+    finally:
+        await db.dispose()
