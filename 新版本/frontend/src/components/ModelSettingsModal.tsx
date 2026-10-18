@@ -36,7 +36,7 @@ export function ModelSettingsModal({
   const [llmClear, setLlmClear] = useState(false);
   const [jevBaseUrl, setJevBaseUrl] = useState("");
   const [jevModel, setJevModel] = useState("");
-  const [jevPath, setJevPath] = useState("/v1/inference");
+  const [jevPath, setJevPath] = useState("/v1/decisions");
   const [jevKey, setJevKey] = useState("");
   const [jevClear, setJevClear] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -53,7 +53,7 @@ export function ModelSettingsModal({
     setLlmClear(false);
     setJevBaseUrl(models?.jev.base_url ?? "");
     setJevModel(models?.jev.model ?? "");
-    setJevPath(models?.jev.path ?? "/v1/inference");
+    setJevPath(models?.jev.path ?? "/v1/decisions");
     setJevKey("");
     setJevClear(false);
     setError(null);
