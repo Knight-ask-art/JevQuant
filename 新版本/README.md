@@ -7,12 +7,13 @@ strategy policy, a deterministic server-side compiler, typed Jev questions, a ri
 that is the only component allowed to approve an order, and a single execution contract
 shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 
-> **Status: local paper reference implementation.** The full paper pipeline, control
-> plane, audit chain and notebook UI run today against a deterministic synthetic market
-> and simulated model adapters. The Binance public/testnet/live and Hummingbot adapters
-> have **never made a real exchange request** from this environment — `api.binance.com`
-> answers HTTP 451 here, and per the design that is reported rather than circumvented.
-> Do not treat any number in the UI as performance evidence. See
+> **Status: paper reference implementation, plus a supervised Binance Spot Testnet run.**
+> The full pipeline, control plane, audit chain and UI run against a deterministic
+> synthetic market and simulated model adapters locally. The Binance Testnet adapter has
+> also been exercised end-to-end against `testnet.binance.vision` — signed orders, real
+> fills, balance sync and drift reconciliation. Production `api.binance.com` still answers
+> HTTP 451 from this location, and the live/Hummingbot paths have never made a real
+> exchange request. Do not treat any number in the UI as performance evidence. See
 > [Honest limitations](#honest-limitations).
 
 ---
@@ -26,7 +27,7 @@ shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 | Deterministic risk engine (Decimal only, exit-feasibility pre-check) | ✅ implemented, tested |
 | Paper adapter with filters, fees, slippage, deterministic partial fills | ✅ implemented, tested |
 | Shadow adapter (records intent, never opens a position) | ✅ implemented |
-| Binance Testnet adapter (HMAC signing, `newClientOrderId`, reconciliation) | ⚠️ implemented, unexercised |
+| Binance Testnet adapter (HMAC signing, `newClientOrderId`, reconciliation) | ✅ exercised against Binance Spot Testnet |
 | Hummingbot V2 adapter (PositionExecutor mapping) | ⚠️ implemented, unexercised |
 | Binance key-permission preflight (`enableReading`, spot trading, withdrawals off, IP restrict) | ⚠️ implemented, unexercised |
 | FastAPI control plane + WebSocket event stream | ✅ implemented |
@@ -66,7 +67,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 113 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
+pytest                     # 116 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:
@@ -154,7 +155,7 @@ frontend/
                 Backtests, Models & Costs (incl. exchange balances), Risk & Modes,
                 Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          104 deterministic tests
+tests/          116 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)
@@ -201,8 +202,10 @@ contradict `JEV_APP_ENV=prod`.
 
 ## Honest limitations
 
-- **No real exchange traffic has occurred.** Testnet/Hummingbot adapters are Mock- and
-  contract-tested only. Their first real use must be an explicitly supervised testnet run.
+- **Real exchange traffic is limited to Binance Spot Testnet.** The testnet adapter has
+  placed signed orders and recorded venue fills; the live/Hummingbot adapters remain Mock-
+  and contract-tested only, and production `api.binance.com` is still HTTP 451 from this
+  environment.
 - **Synthetic market, simulated models.** `SimulatedPolicyGenerator` and
   `SimulatedJevEvaluator` exist to exercise the pipeline. They are labelled everywhere.
 - **Backtests are synthetic replays.** The engine is deterministic and discloses its
