@@ -145,6 +145,20 @@ Symbols outside `JEV_ALLOWED_SYMBOLS` are rejected.
 Verification returns `{"valid": true, "count": n, "head": "sha256:..."}` or
 `{"valid": false, "count": n, "broken_seq": k}`.
 
+## Runtime settings
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| GET | `/api/v1/settings/models` | — | configured flags, base URL, model; never the key |
+| PUT | `/api/v1/settings/models` | `{"llm": {...}, "jev": {...}}` | write-only; an omitted or empty `api_key` keeps the saved secret, `clear_api_key` removes it |
+| GET | `/api/v1/settings/automation` | — | `{enabled, interval_seconds, next_run_at, running}` |
+| PUT | `/api/v1/settings/automation` | `{"enabled": true, "interval_seconds": 300}` | 10–3600 s; takes effect without a restart |
+
+Credentials are persisted in `system_state` and re-applied on startup. The model PUT
+response includes a 5-second-bounded health probe per provider; a failed probe still
+saves the configuration and reports the error. Secrets are never logged, audited or
+returned by any endpoint.
+
 ## Connections
 
 | Method | Path | Notes |

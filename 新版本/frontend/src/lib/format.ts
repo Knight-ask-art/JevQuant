@@ -108,6 +108,9 @@ const ZH_LABELS: Record<string, string> = {
   binance_live: "Binance 实盘",
   hummingbot: "Hummingbot",
   synthetic: "合成",
+  simulated: "模拟",
+  opencode_console: "OpenCode Console",
+  opencode_go: "OpenCode Go",
   binance: "Binance",
   // sides, types
   buy: "买入",

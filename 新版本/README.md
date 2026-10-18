@@ -34,7 +34,9 @@ shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 | Hash-linked append-only audit + redaction + verification | ✅ implemented, tested |
 | Live arming handshake (env flags → preflight → one-time token → phrase + TOTP) | ✅ implemented, cannot pass without real credentials |
 | Optional auto-cycle scheduler | ✅ implemented |
-| Hand-drawn editorial React UI (8 pages, EN/中文) | ✅ implemented |
+| Hand-drawn editorial React UI (cockpit + 8 advanced pages, EN/中文) | ✅ implemented |
+| Model credentials entered in the UI (write-only, applied live) | ✅ implemented, tested |
+| Runtime auto-cycle toggle (start/pause/interval, no restart) | ✅ implemented, tested |
 | Deterministic synthetic backtest replay | ✅ implemented, explicitly labelled synthetic |
 | Real OHLCV / Freqtrade replay | ❌ not implemented |
 | Real fill-ledger rebuild for Hummingbot | ❌ follow-up (unknown states are reconciled, not invented) |
@@ -67,7 +69,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 116 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
+pytest                     # 120 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:
@@ -155,7 +157,7 @@ frontend/
                 Backtests, Models & Costs (incl. exchange balances), Risk & Modes,
                 Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          116 deterministic tests
+tests/          120 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)
@@ -218,6 +220,10 @@ contradict `JEV_APP_ENV=prod`.
   are the locally projected figure, not a periodic pull of the venue account.
 - **The synthetic demo clock advances per cycle**, while policy expiry uses real wall
   clock. This is a demo property, not a production clock design.
+- **UI-entered model keys live in the database.** They are write-only over the API and
+  never returned, logged or audited, but they are stored as plain text in
+  `system_state`; PostgreSQL's own access controls are the boundary. Venue keys remain
+  environment-only.
 - **Single-process deployment.** PostgreSQL + Redis Streams are supported by configuration;
   the split worker topology in the design is not yet packaged.
 

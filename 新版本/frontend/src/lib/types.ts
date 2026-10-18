@@ -62,6 +62,24 @@ export interface PolicyView {
   }>;
 }
 
+export interface ModelConnection {
+  provider: string;
+  configured: boolean;
+  api_key_configured: boolean;
+  base_url: string | null;
+  model: string | null;
+  simulated: boolean;
+  protocol?: string;
+  path?: string;
+}
+
+export interface AutomationStatus {
+  enabled: boolean;
+  interval_seconds: number;
+  next_run_at: string | null;
+  running: boolean;
+}
+
 export interface SystemStatus {
   service: string;
   app_env: string;
@@ -83,6 +101,11 @@ export interface SystemStatus {
     allowed_symbols: string[];
   };
   execution_backend: string;
+  automation: AutomationStatus;
+  models: {
+    llm: ModelConnection;
+    jev: ModelConnection;
+  };
 }
 
 export type SignalState =

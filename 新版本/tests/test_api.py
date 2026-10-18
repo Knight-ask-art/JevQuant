@@ -230,3 +230,106 @@ def test_websocket_exposes_open_event(tmp_path):
         with api.websocket_connect(f"/ws/events?api_key={ADMIN}") as socket:
             event = socket.receive_json()
             assert event["payload"]["event"] == "stream.open"
+
+
+def test_model_settings_are_write_only_and_kept_on_later_saves(open_client):
+    response = open_client.put(
+        "/api/v1/settings/models",
+        json={
+            "llm": {
+                "base_url": "http://127.0.0.1:9",
+                "api_key": "secret-llm-key",
+                "model": "test-model",
+                "protocol": "openai",
+            },
+            "jev": {
+                "base_url": "http://127.0.0.1:9",
+                "api_key": "secret-jev-key",
+                "model": "jev-test",
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["models"]["llm"]["configured"] is True
+    assert body["models"]["llm"]["api_key_configured"] is True
+    assert body["models"]["jev"]["configured"] is True
+    # The secret goes in and never comes back out.
+    assert "secret-llm-key" not in response.text
+    assert "secret-jev-key" not in response.text
+    assert "api_key" not in body["models"]["llm"]
+
+    # An omitted api_key keeps the stored secret, because the client cannot
+    # echo what it never received.
+    again = open_client.put(
+        "/api/v1/settings/models",
+        json={"llm": {"base_url": "http://127.0.0.1:9", "model": "test-model-2"}},
+    )
+    assert again.status_code == 200
+    assert again.json()["models"]["llm"]["api_key_configured"] is True
+    assert again.json()["models"]["llm"]["model"] == "test-model-2"
+    assert "secret-llm-key" not in again.text
+
+    config = open_client.get("/api/v1/system/config").json()["config"]
+    assert config["opencode_console_configured"] is True
+    assert config["jev_configured"] is True
+
+
+def test_model_settings_reject_non_http_urls_and_can_be_cleared(open_client):
+    bad = open_client.put(
+        "/api/v1/settings/models", json={"llm": {"base_url": "ftp://models.local"}}
+    )
+    assert bad.status_code == 422
+
+    open_client.put(
+        "/api/v1/settings/models",
+        json={"jev": {"base_url": "http://127.0.0.1:9", "api_key": "k", "model": "m"}},
+    )
+    cleared = open_client.put(
+        "/api/v1/settings/models", json={"jev": {"clear_api_key": True}}
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["models"]["jev"]["api_key_configured"] is False
+    assert cleared.json()["models"]["jev"]["configured"] is False
+
+
+def test_model_settings_survive_a_restart(tmp_path):
+    settings = make_settings(tmp_path)
+    with TestClient(create_app(settings)) as api:
+        assert api.put(
+            "/api/v1/settings/models",
+            json={
+                "llm": {
+                    "base_url": "http://127.0.0.1:9",
+                    "api_key": "persisted-key",
+                    "model": "persisted-model",
+                }
+            },
+        ).status_code == 200
+    with TestClient(create_app(make_settings(tmp_path))) as api:
+        restored = api.get("/api/v1/settings/models").json()
+        assert restored["llm"]["configured"] is True
+        assert restored["llm"]["model"] == "persisted-model"
+        assert "persisted-key" not in str(restored)
+
+
+def test_automation_can_be_switched_without_a_restart(open_client):
+    enabled = open_client.put(
+        "/api/v1/settings/automation",
+        json={"enabled": True, "interval_seconds": 600},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    assert enabled.json()["next_run_at"]
+
+    status = open_client.get("/api/v1/system/status").json()
+    assert status["automation"]["enabled"] is True
+    assert status["automation"]["interval_seconds"] == 600
+
+    disabled = open_client.put(
+        "/api/v1/settings/automation",
+        json={"enabled": False, "interval_seconds": 600},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+    assert disabled.json()["next_run_at"] is None

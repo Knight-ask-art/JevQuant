@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { api, eventStreamUrl } from "../lib/api";
 import { isHealthy, label, timeAgo } from "../lib/format";
@@ -8,8 +8,8 @@ import { LanguageSwitch, useI18n } from "../i18n";
 import type { SystemStatus } from "../lib/types";
 import { Pill } from "./ui";
 
-const NAV = [
-  ["/", "nav.overview"],
+const ADVANCED = [
+  ["/overview", "nav.overview"],
   ["/strategy", "nav.strategy"],
   ["/signals", "nav.signals"],
   ["/orders", "nav.orders"],
@@ -25,6 +25,15 @@ function dependencyTone(healthy: boolean): string {
 
 export function Layout() {
   const { t } = useI18n();
+  const location = useLocation();
+  const [advancedOpen, setAdvancedOpen] = useState(
+    () =>
+      window.localStorage.getItem("jev.nav.advanced") === "1" ||
+      ADVANCED.some(([to]) => location.pathname === to),
+  );
+  useEffect(() => {
+    window.localStorage.setItem("jev.nav.advanced", advancedOpen ? "1" : "0");
+  }, [advancedOpen]);
   const status = useApi<SystemStatus>("/api/v1/system/status", 8000);
   const [killError, setKillError] = useState<string | null>(null);
   const [lastEvent, setLastEvent] = useState<string>("");
@@ -88,11 +97,24 @@ export function Layout() {
           </div>
 
           <nav className="nav">
-            {NAV.map(([to, key]) => (
-              <NavLink key={to} to={to} end={to === "/"}>
-                {t(key)}
-              </NavLink>
-            ))}
+            <NavLink to="/" end>
+              {t("nav.cockpit")}
+            </NavLink>
+            <button
+              type="button"
+              className={`nav-toggle${advancedOpen ? " open" : ""}`}
+              onClick={() => setAdvancedOpen((value) => !value)}
+              aria-expanded={advancedOpen}
+            >
+              <span>{t("nav.advanced")}</span>
+              <span aria-hidden="true">{advancedOpen ? "−" : "+"}</span>
+            </button>
+            {advancedOpen &&
+              ADVANCED.map(([to, key]) => (
+                <NavLink key={to} to={to} end>
+                  {t(key)}
+                </NavLink>
+              ))}
           </nav>
 
           <div className="sidebar-foot">

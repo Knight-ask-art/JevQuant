@@ -14,6 +14,7 @@ from typing import AsyncIterator
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -26,6 +27,7 @@ from .routes_backtest import router as backtest_router
 from .routes_connections import router as connections_router
 from .routes_execution import router as execution_router
 from .routes_mode import router as mode_router
+from .routes_settings import router as settings_router
 from .routes_strategy import router as strategy_router
 from .routes_system import router as system_router
 from .ws import router as ws_router
@@ -117,7 +119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "retryable": False,
                     "retry_after_ms": None,
                     "trace_id": trace_id,
-                    "details": {"errors": exc.errors()[:10]},
+                    "details": {"errors": jsonable_encoder(exc.errors()[:10])},
                 }
             },
             headers={"X-Trace-Id": trace_id},
@@ -133,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(system_router)
     app.include_router(mode_router)
+    app.include_router(settings_router)
     app.include_router(strategy_router)
     app.include_router(activity_router)
     app.include_router(execution_router)

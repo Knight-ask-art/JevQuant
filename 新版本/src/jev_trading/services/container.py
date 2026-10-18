@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+
+from pydantic import SecretStr
 
 from ..adapters.binance_account import BinanceAccountClient
 from ..adapters.execution.binance_testnet import BinanceTestnetExecutionAdapter
@@ -132,6 +134,12 @@ class AppContainer:
         self.ledger_lock = asyncio.Lock()
         self.balance_sync: BalanceSyncService | None = None
         self._balance_task: asyncio.Task[None] | None = None
+        # Runtime automation. The interval is mutable so the UI can switch the
+        # scheduler on or off without restarting the process.
+        self._auto_interval = settings.auto_cycle_seconds
+        self._automation_enabled = settings.auto_cycle_seconds > 0
+        self._next_cycle_at: datetime | None = None
+        self._automation_lock = asyncio.Lock()
 
     def _build_policy_generator(self):
         settings = self.settings
@@ -174,6 +182,9 @@ class AppContainer:
             )
         await self.broker.start()
         await self.modes.initialize()
+        # Credentials entered through the UI outlive a container restart, so
+        # load them before the orchestrator is wired to the adapters.
+        await self._load_runtime_settings()
         account = await self.repo.get_or_create_account(
             "main", self.settings.trading_mode, self.settings.paper_starting_equity
         )
@@ -226,24 +237,277 @@ class AppContainer:
                 self.balance_sync, interval_seconds=self.settings.balance_sync_seconds
             )
             self._balance_task = asyncio.create_task(scheduler.loop())
-        if self.settings.auto_cycle_seconds > 0:
-            self._cycle_task = asyncio.create_task(self._auto_cycle_loop())
         return self
 
+    # ------------------------------------------------------------------
+    # runtime configuration (persisted in system_state, never echoed back)
+    # ------------------------------------------------------------------
+    async def _load_runtime_settings(self) -> None:
+        stored = await self.repo.get_state("runtime_credentials")
+        if isinstance(stored, dict):
+            self._apply_credentials(stored)
+        automation = await self.repo.get_state("automation")
+        if isinstance(automation, dict) and automation.get("enabled"):
+            interval = int(automation.get("interval_seconds") or 300)
+            self._start_auto_loop(interval)
+        elif self.settings.auto_cycle_seconds > 0:
+            self._start_auto_loop(self.settings.auto_cycle_seconds)
+
+    def model_settings(self) -> dict[str, Any]:
+        """Non-secret view of the model connections."""
+
+        settings = self.settings
+        generator_provider = getattr(self.policy_generator, "provider", "simulated")
+        return {
+            "llm": {
+                "provider": generator_provider,
+                "configured": bool(
+                    settings.opencode_console_enabled
+                    and settings.opencode_console_base_url
+                    and settings.opencode_console_api_key
+                    and settings.opencode_console_model
+                ),
+                "api_key_configured": bool(settings.opencode_console_api_key),
+                "base_url": settings.opencode_console_base_url,
+                "model": settings.opencode_console_model,
+                "protocol": settings.opencode_console_protocol,
+                "simulated": generator_provider == "simulated",
+            },
+            "jev": {
+                "provider": (
+                    "simulated" if isinstance(self.jev, SimulatedJevEvaluator) else "jev"
+                ),
+                "configured": bool(
+                    settings.jev_enabled and settings.jev_base_url and settings.jev_api_key
+                ),
+                "api_key_configured": bool(settings.jev_api_key),
+                "base_url": settings.jev_base_url,
+                "model": getattr(self.jev, "model_name", "jev-simulated-1.13"),
+                "path": settings.jev_path,
+                "simulated": isinstance(self.jev, SimulatedJevEvaluator),
+            },
+        }
+
+    def _merge_provider(
+        self,
+        current: dict[str, Any],
+        payload: dict[str, Any],
+        *,
+        existing_key: SecretStr | None,
+    ) -> dict[str, Any]:
+        """Merge a write-only credential payload with what is already stored.
+
+        An omitted or empty ``api_key`` keeps the stored secret: the UI never
+        receives it back, so it cannot echo it on the next save.
+        """
+
+        base_url = payload["base_url"] if "base_url" in payload else current.get("base_url")
+        model = payload["model"] if "model" in payload else current.get("model")
+        if payload.get("clear_api_key"):
+            api_key = None
+        else:
+            supplied = payload.get("api_key")
+            api_key = (
+                supplied
+                if supplied
+                else (existing_key.get_secret_value() if existing_key else None)
+            )
+        enabled = payload.get("enabled")
+        if enabled is None:
+            enabled = bool(base_url and model and api_key)
+        merged = {
+            "enabled": bool(enabled),
+            "base_url": base_url or None,
+            "api_key": api_key or None,
+            "model": model or None,
+        }
+        if "protocol" in payload:
+            merged["protocol"] = payload["protocol"]
+        if "path" in payload:
+            merged["path"] = payload["path"]
+        return merged
+
+    def _apply_credentials(self, stored: dict[str, Any]) -> None:
+        """Apply persisted credentials and rebuild both model adapters."""
+        settings = self.settings
+        llm = stored.get("llm")
+        if isinstance(llm, dict):
+            settings.opencode_console_enabled = bool(llm.get("enabled"))
+            settings.opencode_console_base_url = llm.get("base_url") or None
+            key = llm.get("api_key")
+            settings.opencode_console_api_key = SecretStr(key) if key else None
+            settings.opencode_console_model = llm.get("model") or None
+            settings.opencode_console_protocol = llm.get("protocol") or "openai"
+        jev = stored.get("jev")
+        if isinstance(jev, dict):
+            settings.jev_enabled = bool(jev.get("enabled"))
+            settings.jev_base_url = jev.get("base_url") or None
+            key = jev.get("api_key")
+            settings.jev_api_key = SecretStr(key) if key else None
+            settings.jev_model = jev.get("model") or settings.jev_model
+            settings.jev_path = jev.get("path") or settings.jev_path
+
+        previous_generator = self.policy_generator
+        previous_jev = self.jev
+        self.policy_generator = self._build_policy_generator()
+        self.jev = self._build_jev()
+        if self.orchestrator is not None:
+            self.orchestrator.policy_generator = self.policy_generator
+            self.orchestrator.jev = self.jev
+        retired = []
+        for adapter in (previous_generator, previous_jev):
+            if adapter is not self.policy_generator and adapter is not self.jev:
+                retired.append(adapter)
+        for adapter in retired:
+            close = getattr(adapter, "close", None)
+            if close is not None:
+                self._schedule_close(close)
+
+    @staticmethod
+    def _schedule_close(close) -> None:
+        try:
+            asyncio.get_running_loop().create_task(close())
+        except RuntimeError:  # no running loop (unit tests)
+            pass
+
+    async def update_model_settings(
+        self, *, llm: dict[str, Any] | None, jev: dict[str, Any] | None, actor: str
+    ) -> dict[str, Any]:
+        stored = await self.repo.get_state("runtime_credentials", {})
+        if not isinstance(stored, dict):
+            stored = {}
+        current = self.model_settings()
+        if llm is not None:
+            existing_llm = stored.get("llm")
+            current_key = (
+                SecretStr(existing_llm["api_key"])
+                if isinstance(existing_llm, dict) and existing_llm.get("api_key")
+                else self.settings.opencode_console_api_key
+            )
+            merged = self._merge_provider(current["llm"], llm, existing_key=current_key)
+            merged.setdefault("protocol", current["llm"].get("protocol") or "openai")
+            stored["llm"] = merged
+        if jev is not None:
+            existing_jev = stored.get("jev")
+            current_key = (
+                SecretStr(existing_jev["api_key"])
+                if isinstance(existing_jev, dict) and existing_jev.get("api_key")
+                else self.settings.jev_api_key
+            )
+            merged = self._merge_provider(current["jev"], jev, existing_key=current_key)
+            merged.setdefault("path", current["jev"].get("path") or "/v1/inference")
+            stored["jev"] = merged
+        # Swap adapters while no cycle can be reading them.
+        async with self._cycle_lock:
+            async with self.ledger_lock:
+                self._apply_credentials(stored)
+        await self.repo.set_state("runtime_credentials", stored)
+        await self.audit.record(
+            "settings.models_updated",
+            "settings",
+            None,
+            {
+                "llm_configured": self.model_settings()["llm"]["configured"],
+                "jev_configured": self.model_settings()["jev"]["configured"],
+                "actor": actor,
+            },
+        )
+        return {
+            "models": self.model_settings(),
+            "health": {
+                "llm": await self._bounded_health(self.policy_generator),
+                "jev": await self._bounded_health(self.jev),
+            },
+        }
+
+    @staticmethod
+    async def _bounded_health(adapter, timeout: float = 5.0) -> dict[str, Any]:
+        """Probe a freshly built adapter without letting the UI hang."""
+
+        try:
+            return await asyncio.wait_for(adapter.health(), timeout=timeout)
+        except TimeoutError:
+            return {"healthy": False, "error": "timeout"}
+        except Exception as exc:  # noqa: BLE001
+            return {"healthy": False, "error": type(exc).__name__}
+
+    # ------------------------------------------------------------------
+    # runtime automation
+    # ------------------------------------------------------------------
+    def automation_status(self) -> dict[str, Any]:
+        return {
+            "enabled": self._automation_enabled,
+            "interval_seconds": self._auto_interval,
+            "next_run_at": (
+                self._next_cycle_at.isoformat()
+                if self._automation_enabled and self._next_cycle_at is not None
+                else None
+            ),
+            "running": self._cycle_task is not None and not self._cycle_task.done(),
+        }
+
+    async def set_automation(
+        self, *, enabled: bool, interval_seconds: int, actor: str
+    ) -> dict[str, Any]:
+        async with self._automation_lock:
+            if enabled:
+                self._start_auto_loop(interval_seconds)
+            else:
+                await self._stop_auto_loop()
+            await self.repo.set_state(
+                "automation",
+                {
+                    "enabled": self._automation_enabled,
+                    "interval_seconds": self._auto_interval,
+                },
+            )
+        await self.audit.record(
+            "settings.automation_updated",
+            "settings",
+            None,
+            {
+                "enabled": self._automation_enabled,
+                "interval_seconds": self._auto_interval,
+                "actor": actor,
+            },
+        )
+        return self.automation_status()
+
+    def _start_auto_loop(self, interval_seconds: int) -> None:
+        interval = max(10, int(interval_seconds))
+        if self._cycle_task is not None and not self._cycle_task.done():
+            self._cycle_task.cancel()
+        self._auto_interval = interval
+        self._automation_enabled = True
+        self._next_cycle_at = datetime.now(UTC) + timedelta(seconds=interval)
+        self._cycle_task = asyncio.create_task(self._auto_cycle_loop())
+
+    async def _stop_auto_loop(self) -> None:
+        self._automation_enabled = False
+        self._next_cycle_at = None
+        task = self._cycle_task
+        self._cycle_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
     async def _auto_cycle_loop(self) -> None:
-        """Run cycles on a fixed wall-clock cadence.
+        """Run cycles on a cadence the operator can change at runtime.
 
         A failed cycle is audited and the loop continues: one provider outage
         must not silently stop the scheduler. New entries are blocked by the
         orchestrator's fail-closed checks while a dependency is unhealthy.
         """
-
-        interval = max(1, self.settings.auto_cycle_seconds)
         while True:
             try:
+                interval = max(10, self._auto_interval)
                 await asyncio.sleep(interval)
-                # Never queue cycles up behind each other: a slow cycle lets
-                # the next interval fire, and the scheduler should skip it.
+                if not self._automation_enabled:
+                    return
+                self._next_cycle_at = None
                 result = await self.run_cycle(wait=False)
                 logger.info(
                     "auto cycle %s mode=%s signals=%s executed=%s",
@@ -254,17 +518,27 @@ class AppContainer:
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except AppError as exc:
+                # A manual cycle already holds the lock; skip this tick rather
+                # than recording a scheduler failure.
+                if exc.code is not ErrorCode.CONFLICT:
+                    logger.exception("auto cycle failed")
+            except Exception:  # noqa: BLE001
                 logger.exception("auto cycle failed")
                 try:
                     await self.audit.record(
                         "cycle.scheduler_error",
                         "cycle",
                         None,
-                        {"error": type(exc).__name__},
+                        {"error": "unexpected"},
                     )
                 except Exception:  # noqa: BLE001
                     pass
+            finally:
+                if self._automation_enabled:
+                    self._next_cycle_at = datetime.now(UTC) + timedelta(
+                        seconds=max(10, self._auto_interval)
+                    )
 
     async def dependencies(self) -> dict[str, Any]:
         mode = await self.modes.current_mode()
@@ -367,6 +641,8 @@ class AppContainer:
                 "allowed_symbols": list(self.settings.allowed_symbols),
             },
             "execution_backend": self.settings.execution_backend,
+            "automation": self.automation_status(),
+            "models": self.model_settings(),
         }
 
     async def run_cycle(self, *, refresh_policy: bool = False, wait: bool = True):
