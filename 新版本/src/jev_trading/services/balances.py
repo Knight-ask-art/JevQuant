@@ -112,14 +112,27 @@ def ledger_base_quantities(
 
 
 def compare(
-    view: BalanceView, *, ledger_quote: Decimal, ledger_base: dict[str, Decimal]
+    view: BalanceView,
+    *,
+    ledger_quote: Decimal,
+    ledger_base: dict[str, Decimal],
+    tracked_assets: set[str] | None = None,
 ) -> BalanceDrift:
-    """Compare one venue view with the ledger projection at the same instant."""
+    """Compare one venue view with the ledger projection at the same instant.
+
+    ``tracked_assets`` limits base comparison to the assets the ledger can
+    actually hold (the allowed symbol universe). Faucet or airdrop tokens the
+    bot never trades are not ledger discrepancies and must not flood the drift
+    report; the venue view itself is still recorded.
+    """
 
     quantum = _amount_quantum(view.total_quote + ledger_quote)
     difference = (view.total_quote - ledger_quote).quantize(quantum)
     base_mismatch: dict[str, dict[str, str]] = {}
-    for asset in sorted(set(view.base_quantity) | set(ledger_base)):
+    assets = set(view.base_quantity) | set(ledger_base)
+    if tracked_assets is not None:
+        assets &= tracked_assets
+    for asset in sorted(assets):
         venue_qty = view.base_quantity.get(asset, Decimal("0"))
         ledger_qty = ledger_base.get(asset, Decimal("0"))
         step = view.base_tolerance.get(asset, Decimal("0"))

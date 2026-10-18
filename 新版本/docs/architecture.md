@@ -173,7 +173,10 @@ broken sequence number.
 Testnet and live routes expose `fetch_balances()`; `BalanceSyncService` stores the
 venue view in `balance_snapshots`, audits `balance.synced` / `balance.drift` and never
 edits the ledger. Tolerances: 0.01 USDT on the quote balance, the asset step size on
-base quantities. A route that cannot be read (unconfigured, transport error) is
+base quantities. Base comparison is limited to the allowed symbol universe:
+faucet or airdrop tokens the ledger cannot hold are recorded in the venue view but
+never reported as ledger drift. A route that cannot be read (unconfigured, transport
+error) is
 skipped and audited as `balance.sync_failed`, never assumed. The scheduler runs on
 `JEV_BALANCE_SYNC_SECONDS`; `POST /api/v1/execution/balances/sync` runs it on demand.
 

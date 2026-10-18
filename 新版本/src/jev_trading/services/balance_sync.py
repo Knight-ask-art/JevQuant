@@ -118,7 +118,12 @@ class BalanceSyncService:
 
             route_positions = [p for p in positions if p.mode == route.value]
             ledger_base = ledger_base_quantities(route_positions, self.base_assets)
-            drift = compare(view, ledger_quote=ledger_quote, ledger_base=ledger_base)
+            drift = compare(
+                view,
+                ledger_quote=ledger_quote,
+                ledger_base=ledger_base,
+                tracked_assets=set(self.base_assets.values()),
+            )
             await self.repo.insert_balance_snapshot(
                 balance_row(view, ledger_quote, created_at=now)
             )

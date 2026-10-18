@@ -66,7 +66,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 111 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
+pytest                     # 113 tests: policy, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:

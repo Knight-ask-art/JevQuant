@@ -343,6 +343,40 @@ async def test_no_adapter_and_no_fetch_method_are_skipped(repo):
     assert "live" in report.skipped
 
 
+def test_untracked_faucet_assets_are_ignored():
+    drift = compare(
+        view(
+            base_quantity={"BTC": Decimal("1"), "FAUCET": Decimal("18446")},
+            base_tolerance={"BTC": Decimal("0"), "FAUCET": Decimal("0")},
+        ),
+        ledger_quote=Decimal("1000"),
+        ledger_base={},
+        tracked_assets={"BTC", "ETH"},
+    )
+    # BTC can be held by the ledger; the faucet token cannot and is noise.
+    assert "FAUCET" not in drift.base_mismatch
+    assert drift.base_mismatch["BTC"]["difference"] == "1"
+    assert drift.within_tolerance is False
+
+
+async def test_sync_reports_only_the_traded_universe(repo):
+    account = await account_with_cash(repo, "1000")
+    adapter = FakeAdapter(
+        view=view(
+            base_quantity={"FAUCET": Decimal("5"), "BTC": Decimal("0.01")},
+            base_tolerance={"FAUCET": Decimal("0"), "BTC": Decimal("0")},
+        ),
+        reconcile_result=ReconciliationResult(healthy=True),
+    )
+    service, _recorder = make_service(repo, {Mode.TESTNET: adapter})
+    service.account_id = account.id
+
+    report = await service.sync()
+
+    assert "FAUCET" not in report.drifts[0].base_mismatch
+    assert "BTC" in report.drifts[0].base_mismatch
+
+
 def test_base_difference_beyond_step_is_reported_with_its_amounts():
     drift = compare(
         view(
