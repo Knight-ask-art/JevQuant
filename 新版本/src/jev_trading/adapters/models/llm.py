@@ -48,7 +48,7 @@ def _policy_schema_text() -> str:
 
 POLICY_SCHEMA_TEXT = _policy_schema_text()
 
-SYSTEM_PROMPT = ("""You are the strategy layer of an automated trading system.
+_POLICY_RULES = ("""You are the strategy layer of an automated trading system.
 Return exactly one JSON object that validates against schema strategy-policy/1.0.
 
 Rules:
@@ -85,6 +85,18 @@ you choose; generated_at is now and expires_at is now plus the TTL you want.
     + POLICY_SCHEMA_TEXT
 )
 
+# What a response must look like. It goes first in every request so the
+# context that changes between cycles (limits, market, memory) follows it:
+# a shared prefix is what prompt caching can reuse, and the market summary
+# alone is several thousand tokens.
+RESPONSE_CONTRACT = (
+    _POLICY_RULES
+    + "\n\nProvider note: this model may emit reasoning text before its "
+    "answer. The final answer must still be exactly the JSON object."
+)
+
+SYSTEM_PROMPT = _POLICY_RULES
+
 ALLOWED_PURPOSES = {
     "coding_agent",
     "strategy_authoring",
@@ -96,6 +108,10 @@ ALLOWED_PURPOSES = {
 # cap lives in the toolbox; this bounds the sum so a model that keeps asking
 # cannot overflow a small context window.
 MAX_TOOL_CONTEXT_CHARS = 48_000
+
+# One tool answer. Everything a tool returns is re-sent with every later
+# turn, so an oversized first result is paid for again on each turn.
+TOOL_RESULT_CHARS = 4_000
 
 
 class ConsoleLLMAdapter:
@@ -299,10 +315,25 @@ class ConsoleLLMAdapter:
         try:
             StrategyPolicy.model_validate(data)
         except ValidationError as exc:
-            raise PolicyInvalidError(
-                "Model output does not satisfy strategy-policy/1.0.",
-                details={"error_count": len(exc.errors())},
-            ) from exc
+            # Repair once, from the validator itself: a wrong field name or a
+            # missing key otherwise costs the whole authoring run (~20k tokens
+            # of investigation discarded) and the next cycle starts over.
+            repaired, usage = await self._repair_policy(
+                user, text, exc, usage, trace
+            )
+            data = _extract_json(repaired)
+            try:
+                StrategyPolicy.model_validate(data)
+            except ValidationError as second:
+                raise PolicyInvalidError(
+                    "Model output does not satisfy strategy-policy/1.0.",
+                    details={
+                        "error_count": len(second.errors()),
+                        "first_error_count": len(exc.errors()),
+                        "repaired": True,
+                    },
+                ) from second
+            trace["repaired"] = True
         trace["turns"] = turns
         trace["latency_ms"] = latency_ms
         return PolicyGenerationResult(
@@ -331,8 +362,10 @@ class ConsoleLLMAdapter:
             }
             for spec in toolbox.specs()
         ]
+        # Response contract first, then the volatile context: every request in
+        # the loop shares this prefix so the provider can serve it from cache.
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system},
+            {"role": "system", "content": RESPONSE_CONTRACT},
             {"role": "user", "content": user},
         ]
         trace: dict[str, Any] = {"tools_available": True, "tool_calls": []}
@@ -426,6 +459,25 @@ class ConsoleLLMAdapter:
             break
 
         if not text.strip():
+            # Reasoning models sometimes spend the whole first pass thinking and
+            # return no answer. Demand the JSON directly before giving up.
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Return the strategy-policy JSON object now. "
+                        "JSON only, no reasoning, no prose."
+                    ),
+                }
+            )
+            data = await self._post(self._endpoint("/v1/chat/completions"), payload)
+            _merge_usage(usage, data.get("usage"))
+            choices = data.get("choices") or []
+            message = (choices[0].get("message") or {}) if choices else {}
+            content = message.get("content")
+            text = content if isinstance(content, str) else ""
+            trace["forced_answer"] = True
+        if not text.strip():
             raise PolicyInvalidError("Model returned no policy after the agent loop.")
         return text, usage, trace, turns
 
@@ -440,7 +492,10 @@ class ConsoleLLMAdapter:
             }
             for spec in toolbox.specs()
         ]
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": RESPONSE_CONTRACT},
+            {"role": "user", "content": user},
+        ]
         trace: dict[str, Any] = {"tools_available": True, "tool_calls": []}
         usage: dict[str, Any] = {}
         deadline = time.monotonic() + self.agent_budget_seconds
@@ -535,6 +590,75 @@ class ConsoleLLMAdapter:
         if not text.strip():
             raise PolicyInvalidError("Model returned no policy after the agent loop.")
         return text, usage, trace, turns
+
+    async def _repair_policy(
+        self,
+        user: str,
+        text: str,
+        error: ValidationError,
+        usage: dict[str, Any],
+        trace: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        """Ask the model to fix only what the validator rejected."""
+
+        problems = [
+            f"{'.'.join(str(part) for part in item['loc']) or 'root'}: {item['msg']}"
+            for item in error.errors()[:12]
+        ]
+        if self.protocol == "anthropic":
+            messages = [
+                {"role": "user", "content": RESPONSE_CONTRACT},
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": text},
+                {
+                    "role": "user",
+                    "content": (
+                        "That policy failed server validation:\n"
+                        + "\n".join(f"- {problem}" for problem in problems)
+                        + "\nReturn the corrected JSON object only."
+                    ),
+                },
+            ]
+            payload = {
+                "model": self.model,
+                "max_tokens": 4096,
+                "temperature": 0.2,
+                "system": RESPONSE_CONTRACT,
+                "messages": messages[1:],
+            }
+            data = await self._post(self._endpoint("/v1/messages"), payload)
+            blocks = data.get("content") or []
+            repaired = "".join(
+                block.get("text", "")
+                for block in blocks
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        else:
+            messages = [
+                {"role": "system", "content": RESPONSE_CONTRACT},
+                {"role": "user", "content": user},
+                {"role": "assistant", "content": text},
+                {
+                    "role": "user",
+                    "content": (
+                        "That policy failed server validation:\n"
+                        + "\n".join(f"- {problem}" for problem in problems)
+                        + "\nReturn the corrected JSON object only."
+                    ),
+                },
+            ]
+            data = await self._post(
+                self._endpoint("/v1/chat/completions"),
+                {"model": self.model, "temperature": 0.2, "messages": messages},
+            )
+            choices = data.get("choices") or []
+            message = (choices[0].get("message") or {}) if choices else {}
+            content = message.get("content")
+            repaired = content if isinstance(content, str) else ""
+        _merge_usage(usage, data.get("usage"))
+        trace["repair_attempt"] = True
+        trace["repair_problems"] = problems
+        return repaired, usage
 
     async def _call_tool(
         self, toolbox: AgentToolbox, name: str, arguments: dict[str, Any]
@@ -641,8 +765,11 @@ def _tool_content(result: dict[str, Any]) -> str:
         result.get("data", {}), ensure_ascii=False, default=str, separators=(",", ":")
     )
     text = f"{summary}\n{payload}" if summary else payload
-    limit = 16_000
-    return text if len(text) <= limit else text[:limit] + "...[truncated]"
+    return (
+        text
+        if len(text) <= TOOL_RESULT_CHARS
+        else text[:TOOL_RESULT_CHARS] + "...[truncated]"
+    )
 
 
 def _merge_usage(total: dict[str, Any], usage: Any) -> None:

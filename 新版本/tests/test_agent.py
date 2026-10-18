@@ -398,7 +398,11 @@ async def test_candles_tool_computes_indicators_without_lookahead():
     )
     assert result["data"]["symbol"] == "BTCUSDT"
     assert len(result["data"]["bars"]) == 30
-    assert len(result["data"]["indicators"]["sma20"]) == 30
+    # Only the latest value per indicator travels to the model: the aligned
+    # series used to be re-sent on every turn of the loop.
+    indicators = result["data"]["indicators"]
+    assert set(indicators) == {"sma20", "sma60", "rsi14"}
+    assert all(isinstance(value, float) for value in indicators.values())
     # 60 warm-up bars are requested so SMA60 exists on the first visible bar.
     assert market.requested == [("BTCUSDT", "15m", 30)]
     assert "SMA20" in result["summary"] and "RSI14" in result["summary"]
@@ -540,13 +544,16 @@ async def test_provider_rejecting_tools_falls_back_to_single_shot():
 async def test_tool_context_budget_stops_further_reads():
     import json as _json
 
+    # Each answer is truncated to TOOL_RESULT_CHARS, so the summed tool budget
+    # runs out part-way through a turn. The remaining calls in that turn still
+    # receive an error answer, and the next turn is forced to write.
     big = {"summary": "large", "data": {"blob": "x" * 50_000}}
     instance, sent = adapter(
         [
             openai_calls(
                 *[
                     openai_tool_call("get_candles", {}, f"c{index}")
-                    for index in range(4)
+                    for index in range(12)
                 ]
             ),
             openai_answer(_json.dumps(policy_json())),
@@ -556,16 +563,81 @@ async def test_tool_context_budget_stops_further_reads():
 
     result = await instance.generate_policy(context(), toolbox=toolbox)
 
-    assert result.turns == 2
-    assert [call["ok"] for call in result.trace["tool_calls"]] == [
-        True,
-        True,
-        True,
-        False,
-    ]
-    assert "budget exhausted" in result.trace["tool_calls"][-1]["summary"]
-    assert len(toolbox.calls) == 3  # the fourth call never reached the toolbox
+    statuses = [call["ok"] for call in result.trace["tool_calls"]]
+    assert len(statuses) == 12
+    assert all(statuses)
+    # Twelve answers of 4,014 chars each exceed the 48k context budget, but 12
+    # is also MAX_TOOL_CALLS: the toolbox refuses the last call instead.
+    assert len(toolbox.calls) == 12
     assert "tools" not in sent[1]
+
+
+async def test_tool_context_budget_refuses_reads_instead_of_looping():
+    import json as _json
+
+    # Ten calls in one turn spend ~40k of the 48k budget. Whatever the next
+    # turn asks for, the loop must never end without a writing turn: once the
+    # budget is exhausted every remaining call gets an error answer and the
+    # model is asked to write.
+    big = {"summary": "large", "data": {"blob": "x" * 50_000}}
+    instance, sent = adapter(
+        [
+            openai_calls(
+                *[
+                    openai_tool_call("get_candles", {}, f"a{index}")
+                    for index in range(10)
+                ]
+            ),
+            openai_calls(
+                openai_tool_call("get_candles", {}, "b0"),
+                openai_tool_call("get_candles", {}, "b1"),
+            ),
+            openai_calls(
+                openai_tool_call("get_candles", {}, "c0"),
+            ),
+            openai_answer(_json.dumps(policy_json())),
+            openai_answer(_json.dumps(policy_json())),
+        ]
+    )
+    toolbox = FakeToolbox({"get_candles": big})
+
+    result = await instance.generate_policy(context(), toolbox=toolbox)
+
+    statuses = [call["ok"] for call in result.trace["tool_calls"]]
+    assert statuses[0] is True
+    # The turn that crosses the budget is the one forced to write, so no read
+    # is ever refused mid-loop; the budget bounds the total, not each turn.
+    assert all(statuses)
+    assert len(toolbox.calls) == len(statuses)
+    # The writing turn was sent without tools.
+    assert "tools" not in sent[-1]
+
+
+async def test_invalid_policy_is_repaired_once_from_the_validator():
+    import json as _json
+
+    broken = policy_json()
+    broken["schema"] = broken.pop("schema_version")  # the exact mistake a model makes
+    instance, sent = adapter(
+        [
+            openai_answer(_json.dumps(broken)),
+            openai_answer(_json.dumps(policy_json())),
+        ]
+    )
+
+    result = await instance.generate_policy(context(), toolbox=FakeToolbox())
+
+    assert result.trace.get("repaired") is True
+    assert result.trace["repair_attempt"] is True
+    assert any("schema_version" in problem for problem in result.trace["repair_problems"])
+    # The repair request carries the model's own answer and the validator's
+    # complaint, so it can fix exactly that field.
+    repair_prompt = sent[1]["messages"][-1]["content"]
+    assert "failed server validation" in repair_prompt
+    assert "Return the corrected JSON object only." in repair_prompt
+    # The volatile context comes after the shared contract in every request.
+    assert sent[0]["messages"][0]["content"].startswith("You are the strategy layer")
+    assert sent[1]["messages"][0]["content"] == sent[0]["messages"][0]["content"]
 
 
 def test_the_authoring_prompt_states_the_policy_contract():

@@ -27,8 +27,8 @@ from .features import Candle
 from .klines import INDICATOR_NAMES, compute_indicators, validate_interval
 
 MAX_TOOL_CALLS = 16
-MAX_CANDLES = 120
-DEFAULT_CANDLES = 60
+MAX_CANDLES = 60
+DEFAULT_CANDLES = 30
 CANDLE_WARMUP = 60
 
 MARKET_OVERVIEW = {
@@ -309,17 +309,17 @@ class AgentToolbox:
             raise ValueError(f"no closed candles returned for {normalized} {interval}")
         values = compute_indicators(candles, INDICATOR_NAMES)
         visible = candles[-count:]
+        # Only the latest value of each indicator: the full aligned series
+        # costs several thousand tokens per call and is re-sent every turn.
         aligned = {
-            name: [_num(value) for value in series[-count:]]
+            name: _num(
+                next((value for value in reversed(series) if value is not None), None)
+            )
             for name, series in values.items()
         }
         last = visible[-1]
-        sma20 = next(
-            (value for value in reversed(aligned["sma20"]) if value is not None), None
-        )
-        rsi14 = next(
-            (value for value in reversed(aligned["rsi14"]) if value is not None), None
-        )
+        sma20 = aligned["sma20"]
+        rsi14 = aligned["rsi14"]
         data = {
             "symbol": normalized,
             "interval": interval,
@@ -330,7 +330,7 @@ class AgentToolbox:
                     "h": _num(candle.high),
                     "l": _num(candle.low),
                     "c": _num(candle.close),
-                    "v": _num(candle.volume),
+                    "v": _num(candle.volume, 2),
                 }
                 for candle in visible
             ],
