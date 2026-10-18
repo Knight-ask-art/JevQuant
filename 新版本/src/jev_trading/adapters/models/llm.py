@@ -26,7 +26,29 @@ from ...domain.errors import (
 from ...domain.policy import StrategyPolicy
 from .base import AgentToolbox, PolicyContext, PolicyGenerationResult
 
-SYSTEM_PROMPT = """You are the strategy layer of an automated trading system.
+def _policy_schema_text() -> str:
+    """The exact JSON Schema the authoring prompt embeds.
+
+    Generated from ``StrategyPolicy`` so the prompt cannot drift from the
+    server-side validator. Pydantic's ``title`` keys only restate the field
+    names, so they are dropped to keep the prompt small.
+    """
+
+    schema = StrategyPolicy.model_json_schema()
+
+    def strip(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {key: strip(value) for key, value in node.items() if key != "title"}
+        if isinstance(node, list):
+            return [strip(item) for item in node]
+        return node
+
+    return json.dumps(strip(schema), ensure_ascii=False, separators=(",", ":"))
+
+
+POLICY_SCHEMA_TEXT = _policy_schema_text()
+
+SYSTEM_PROMPT = ("""You are the strategy layer of an automated trading system.
 Return exactly one JSON object that validates against schema strategy-policy/1.0.
 
 Rules:
@@ -48,7 +70,15 @@ Agent protocol (when tools are available):
 - Tools only read state. They cannot place orders, move money, or widen the
   server limits.
 - When you have enough evidence, stop calling tools and return the policy
-  JSON object. Output JSON only."""
+  JSON object. Output JSON only.
+
+Field contract. The JSON Schema below is generated from the server validator.
+Every listed field is required, unknown fields are rejected, and enum values
+must match exactly. Dates are ISO-8601 with a timezone; policy_id is a UUID
+you choose; generated_at is now and expires_at is now plus the TTL you want.
+"""
+    + POLICY_SCHEMA_TEXT
+)
 
 ALLOWED_PURPOSES = {
     "coding_agent",

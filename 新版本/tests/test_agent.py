@@ -520,3 +520,20 @@ async def test_tool_context_budget_stops_further_reads():
     assert "budget exhausted" in result.trace["tool_calls"][-1]["summary"]
     assert len(toolbox.calls) == 3  # the fourth call never reached the toolbox
     assert "tools" not in sent[1]
+
+
+def test_the_authoring_prompt_states_the_policy_contract():
+    """A model cannot guess twelve exact field names; the prompt must say them.
+
+    The schema is generated from ``StrategyPolicy``, so this test fails the
+    moment a field is added without the prompt picking it up.
+    """
+
+    from jev_trading.adapters.models.llm import SYSTEM_PROMPT
+    from jev_trading.domain.policy import SCHEMA_VERSION, StrategyPolicy
+
+    assert SCHEMA_VERSION in SYSTEM_PROMPT
+    assert "Field contract" in SYSTEM_PROMPT
+    assert '"additionalProperties":false' in SYSTEM_PROMPT
+    for name in StrategyPolicy.model_fields:
+        assert f'"{name}"' in SYSTEM_PROMPT, f"prompt omits {name}"
