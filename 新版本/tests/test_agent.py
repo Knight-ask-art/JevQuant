@@ -43,6 +43,7 @@ class FakeRepo:
         self.agent_runs: list[dict[str, Any]] = []
         self.policies: list[Any] = []
         self.positions: list[Any] = []
+        self.signals: list[Any] = []
         self.marks: dict[str, Decimal] = {}
 
     async def get_state(self, key: str, default: Any = None) -> Any:
@@ -73,6 +74,9 @@ class FakeRepo:
 
     async def list_policies(self, limit: int = 50):
         return list(self.policies[:limit])
+
+    async def list_signals(self, limit: int = 100, state=None):
+        return list(self.signals[:limit])
 
     async def insert_agent_run(self, **kwargs):
         self.agent_runs.append(kwargs)
@@ -415,12 +419,54 @@ async def test_tool_budget_is_enforced():
         await box.call("get_account_state", {})
 
 
+async def test_evaluations_tool_reports_what_jev_actually_answered():
+    """Thresholds should be calibrated from Jev, not guessed."""
+
+    from types import SimpleNamespace
+
+    repo = FakeRepo()
+    repo.signals = [
+        SimpleNamespace(
+            symbol="ETHUSDT",
+            state="REJECTED",
+            created_at=NOW,
+            score_json={
+                "entry_choice": "reject",
+                "entry_probability": 0.49,
+                "policy_fit": 0.31,
+                "quality_score": 1.46,
+                "simulated": False,
+            },
+        ),
+        SimpleNamespace(
+            symbol="BTCUSDT",
+            state="REJECTED",
+            created_at=NOW,
+            score_json={
+                "entry_choice": "buy",
+                "entry_probability": 0.71,
+                "policy_fit": 0.55,
+                "quality_score": 2.4,
+                "simulated": False,
+            },
+        ),
+        SimpleNamespace(symbol="BTCUSDT", state="CANDIDATE", created_at=NOW, score_json={}),
+    ]
+    result = await toolbox(repo=repo).call("get_recent_evaluations", {"limit": 10})
+    data = result["data"]
+    assert [item["choice"] for item in data["evaluations"]] == ["reject", "buy"]
+    assert data["best"] == {"quality_score": 2.4, "policy_fit": 0.55}
+    assert data["choices"] == {"reject": 1, "buy": 1}
+    assert "best quality 2.4" in result["summary"]
+
+
 async def test_memory_pack_always_has_its_keys():
     memory = await toolbox().memory()
     assert set(memory) >= {
         "as_of",
         "mode",
         "recent_decisions",
+        "recent_evaluations",
         "open_positions",
         "recent_trades",
         "performance",

@@ -58,6 +58,11 @@ Rules:
   trade and may include a strict subset, each with its own limits; symbols
   outside it are discarded.
 - mode_scope may only contain modes you were told are active.
+- Calibrate jev_gate against what Jev actually returns: call
+  get_recent_evaluations before choosing minimums. quality_score is a graded
+  level that in practice sits far below 5, and policy_fit is a probability.
+  A minimum above the observed values rejects every setup, so pick thresholds
+  a genuinely good setup can clear.
 - Keep rationale under 400 words.
 - You never place orders and never see exchange credentials.
 

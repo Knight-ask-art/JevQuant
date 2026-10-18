@@ -484,6 +484,7 @@ def test_agent_journal_records_what_the_strategy_layer_decided(open_client):
         "get_open_positions",
         "get_performance_summary",
         "get_recent_decisions",
+        "get_recent_evaluations",
         "get_recent_trades",
     ]
     assert body["runs"], "a cycle must leave a journal entry"

@@ -16,6 +16,7 @@ show *what the agent looked at* without replaying full payloads.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Sequence
@@ -119,6 +120,28 @@ GET_RECENT_TRADES = {
     },
 }
 
+GET_RECENT_EVALUATIONS = {
+    "name": "get_recent_evaluations",
+    "description": (
+        "Recent Jev evaluations for the traded symbols: the answer it gave, "
+        "how probable it thought that answer, policy fit and quality. Use it "
+        "to calibrate jev_gate thresholds — a minimum above what Jev actually "
+        "returns blocks every entry, however good the setup."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 40,
+                "default": 15,
+            }
+        },
+        "additionalProperties": False,
+    },
+}
+
 GET_PERFORMANCE = {
     "name": "get_performance_summary",
     "description": (
@@ -134,6 +157,7 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
     GET_ACCOUNT_STATE,
     GET_OPEN_POSITIONS,
     GET_RECENT_DECISIONS,
+    GET_RECENT_EVALUATIONS,
     GET_RECENT_TRADES,
     GET_PERFORMANCE,
 )
@@ -203,6 +227,10 @@ class AgentToolbox:
         }
         for key, loader in (
             ("recent_decisions", lambda: self._tool_get_recent_decisions(limit=4)),
+            (
+                "recent_evaluations",
+                lambda: self._tool_get_recent_evaluations(limit=10),
+            ),
             ("open_positions", self._tool_get_open_positions),
             ("recent_trades", lambda: self._tool_get_recent_trades(limit=6)),
             ("performance", self._tool_get_performance_summary),
@@ -441,6 +469,64 @@ class AgentToolbox:
             f"{wins} winning"
         )
         return {"summary": summary, "data": {"trades": items}}
+
+    async def _tool_get_recent_evaluations(
+        self, limit: int = 15
+    ) -> dict[str, Any]:
+        count = _clamp_int(limit, 15, 1, 40)
+        rows = await self.repo.list_signals(limit=max(count * 3, 60))
+        evaluations: list[dict[str, Any]] = []
+        for row in rows:
+            score = row.score_json or {}
+            if not isinstance(score, dict) or "entry_choice" not in score:
+                continue
+            evaluations.append(
+                {
+                    "symbol": row.symbol,
+                    "at": _iso(row.created_at),
+                    "state": row.state,
+                    "choice": score.get("entry_choice"),
+                    "probability": _num(score.get("entry_probability")),
+                    "policy_fit": _num(score.get("policy_fit")),
+                    "quality_score": _num(score.get("quality_score")),
+                    "simulated": bool(score.get("simulated")),
+                }
+            )
+            if len(evaluations) >= count:
+                break
+        if not evaluations:
+            return {
+                "summary": "no Jev evaluations recorded yet",
+                "data": {"evaluations": [], "choices": {}, "best": None},
+            }
+        choices = Counter(str(item["choice"]) for item in evaluations)
+        qualities = [
+            item["quality_score"]
+            for item in evaluations
+            if item["quality_score"] is not None
+        ]
+        fits = [
+            item["policy_fit"]
+            for item in evaluations
+            if item["policy_fit"] is not None
+        ]
+        best = {
+            "quality_score": max(qualities) if qualities else None,
+            "policy_fit": max(fits) if fits else None,
+        }
+        counts = ", ".join(f"{name} {n}" for name, n in choices.most_common())
+        summary = (
+            f"{len(evaluations)} recent evaluations: {counts}; "
+            f"best quality {best['quality_score']}, best fit {best['policy_fit']}"
+        )
+        return {
+            "summary": summary,
+            "data": {
+                "evaluations": evaluations,
+                "choices": dict(choices),
+                "best": best,
+            },
+        }
 
     async def _tool_get_performance_summary(self) -> dict[str, Any]:
         rows = await self._closed_positions(200)
