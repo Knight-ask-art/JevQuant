@@ -20,9 +20,11 @@
   --danger: #a84c46;
   --danger-fade: #f6e2df;
 
-  --serif: "Source Serif 4", "Iowan Old Style", Georgia, serif;
-  --sans: "Inter", "IBM Plex Sans", system-ui, sans-serif;
-  --hand: "Kalam", "Segoe Print", cursive;
+  --serif: "Source Serif 4", "Iowan Old Style", "Noto Serif SC", "Songti SC",
+    "SimSun", Georgia, serif;
+  --sans: "Inter", "IBM Plex Sans", "Noto Sans SC", "PingFang SC",
+    "Microsoft YaHei", system-ui, sans-serif;
+  --hand: "Kalam", "Segoe Print", "Kaiti SC", "KaiTi", cursive;
 
   --radius-sm: 6px;
   --radius-md: 10px;

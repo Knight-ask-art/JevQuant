@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { ErrorNote, PaperCard, Pill, ScribbleUnderline } from "../components/ui";
 import { useApi } from "../hooks/useApi";
+import { useI18n } from "../i18n";
 import { ApiError, api } from "../lib/api";
 import { clock, countdown, label, shortId } from "../lib/format";
 import type { PolicyView } from "../lib/types";
@@ -23,6 +24,7 @@ function asArray(value: unknown): Array<Record<string, unknown>> {
 }
 
 export function StrategyDesk() {
+  const { t } = useI18n();
   const current = useApi<CurrentPolicy>("/api/v1/strategy/policies/current", 15000);
   const [purpose, setPurpose] = useState<"trade_runtime" | "strategy_authoring">(
     "trade_runtime",
@@ -53,7 +55,10 @@ export function StrategyDesk() {
         { purpose },
       );
       setNotice(
-        `Policy ${shortId(result.policy_id)} compiled${result.simulated ? " (simulated author)" : ""}.`,
+        t("strategy.notice", {
+          id: shortId(result.policy_id),
+          simulated: result.simulated ? t("strategy.noticeSimulated") : "",
+        }),
       );
       await current.reload();
     } catch (caught) {
@@ -67,33 +72,30 @@ export function StrategyDesk() {
     <div className="stack" style={{ gap: 20 }}>
       <div className="page-head">
         <div>
-          <div className="page-kicker">Strategy Desk</div>
-          <h1>The strategy notebook</h1>
+          <div className="page-kicker">{t("strategy.kicker")}</div>
+          <h1>{t("strategy.title")}</h1>
           <ScribbleUnderline width={300} />
-          <p className="page-lede">
-            The model writes a proposal. The compiler rewrites it against the hard server
-            envelope, field by field. Only the compiled policy reaches Jev, risk and execution.
-          </p>
+          <p className="page-lede">{t("strategy.lede")}</p>
         </div>
         <div className="row">
           <div className="segmented">
             <button
               className={purpose === "trade_runtime" ? "active" : ""}
               onClick={() => setPurpose("trade_runtime")}
-              title="OpenCode Console path for runtime strategy"
+              title={t("strategy.consoleTitle")}
             >
-              Console · runtime
+              {t("strategy.consoleRuntime")}
             </button>
             <button
               className={purpose === "strategy_authoring" ? "active" : ""}
               onClick={() => setPurpose("strategy_authoring")}
-              title="Authoring path; OpenCode Go permits this purpose"
+              title={t("strategy.goTitle")}
             >
-              Go · authoring
+              {t("strategy.goAuthoring")}
             </button>
           </div>
           <button className="button" onClick={() => void generate()} disabled={busy}>
-            {busy ? "Drafting…" : "Generate policy"}
+            {busy ? t("strategy.drafting") : t("strategy.generatePolicy")}
           </button>
         </div>
       </div>
@@ -104,10 +106,9 @@ export function StrategyDesk() {
       {!policy ? (
         <PaperCard>
           <div className="empty">
-            <div className="hand">The desk is empty.</div>
+            <div className="hand">{t("strategy.emptyTitle")}</div>
             <p className="small" style={{ marginTop: 6 }}>
-              Generate a policy or run a cycle; the orchestrator asks the configured author
-              automatically when no fresh policy exists.
+              {t("strategy.emptyHint")}
             </p>
           </div>
         </PaperCard>
@@ -115,75 +116,81 @@ export function StrategyDesk() {
         <>
           <div className="grid grid-3">
             <PaperCard tint="paper">
-              <div className="eyebrow">Regime</div>
+              <div className="eyebrow">{t("strategy.regime")}</div>
               <h2 style={{ marginTop: 6 }}>{label(String(regime.label ?? "unknown"))}</h2>
               <p className="stat-note">
-                confidence {Number(regime.confidence ?? 0).toFixed(2)}
+                {t("strategy.confidence", {
+                  value: Number(regime.confidence ?? 0).toFixed(2),
+                })}
               </p>
               <p className="small muted" style={{ marginTop: 8 }}>
                 {String(regime.notes ?? "")}
               </p>
             </PaperCard>
             <PaperCard>
-              <div className="eyebrow">Freshness</div>
+              <div className="eyebrow">{t("strategy.freshness")}</div>
               <h2 style={{ marginTop: 6 }}>{countdown(policy.expires_at)}</h2>
-              <p className="stat-note">generated {clock(policy.generated_at)}</p>
+              <p className="stat-note">
+                {t("strategy.generated", { time: clock(policy.generated_at) })}
+              </p>
               <div className="row" style={{ marginTop: 10 }}>
-                <Pill tone="yellow">{policy.status}</Pill>
+                <Pill tone="yellow">{label(policy.status)}</Pill>
                 <Pill tone={policy.simulated ? "terracotta" : "olive"}>
-                  {policy.simulated ? "simulated" : policy.source}
+                  {policy.simulated ? t("common.simulated") : policy.source}
                 </Pill>
               </div>
             </PaperCard>
             <PaperCard>
-              <div className="eyebrow">Identity</div>
+              <div className="eyebrow">{t("strategy.identity")}</div>
               <h2 style={{ marginTop: 6 }} className="mono">
                 {shortId(policy.policy_id, 13)}
               </h2>
               <p className="stat-note mono">{shortId(policy.policy_hash, 24)}</p>
               <p className="small muted" style={{ marginTop: 8 }}>
-                scope · {policy.mode_scope?.join(", ")}
+                {t("strategy.scope", { value: policy.mode_scope?.join(", ") })}
               </p>
             </PaperCard>
           </div>
 
           <PaperCard
-            eyebrow="Rationale"
-            title="Why this policy"
+            eyebrow={t("strategy.rationale")}
+            title={t("strategy.whyThisPolicy")}
             actions={
               <div className="tabs" style={{ border: "none", margin: 0 }}>
                 <button
                   className={tab === "notebook" ? "active" : ""}
                   onClick={() => setTab("notebook")}
                 >
-                  Proposals
+                  {t("strategy.proposals")}
                 </button>
                 <button
                   className={tab === "compiled" ? "active" : ""}
                   onClick={() => setTab("compiled")}
                 >
-                  Compiled
+                  {t("strategy.compiled")}
                 </button>
               </div>
             }
           >
             <p style={{ color: "var(--ink-soft)", maxWidth: 820 }}>
-              {String(raw.rationale ?? "No rationale was returned.")}
+              {String(raw.rationale ?? t("strategy.noRationale"))}
             </p>
             <hr className="divider" />
             <div className="eyebrow" style={{ marginBottom: 8 }}>
-              Universe · {tab === "notebook" ? "model proposal" : "after server envelope"}
+              {tab === "notebook"
+                ? t("strategy.universeModel")
+                : t("strategy.universeServer")}
             </div>
             <div className="table-wrap">
               <table className="data">
                 <thead>
                   <tr>
-                    <th>Symbol</th>
-                    <th>Sides</th>
-                    <th className="num">Max notional</th>
-                    <th className="num">Max spread (bps)</th>
-                    <th className="num">Max slippage (bps)</th>
-                    <th className="num">Cooldown (s)</th>
+                    <th>{t("common.symbol")}</th>
+                    <th>{t("strategy.sides")}</th>
+                    <th className="num">{t("strategy.maxNotional")}</th>
+                    <th className="num">{t("strategy.maxSpread")}</th>
+                    <th className="num">{t("strategy.maxSlippage")}</th>
+                    <th className="num">{t("strategy.cooldown")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -193,9 +200,9 @@ export function StrategyDesk() {
                         <strong>{String(item.symbol)}</strong>
                       </td>
                       <td className="mono">
-                        {(Array.isArray(item.allowed_sides) ? item.allowed_sides : []).join(
-                          ", ",
-                        )}
+                        {(Array.isArray(item.allowed_sides) ? item.allowed_sides : [])
+                          .map((side) => label(String(side)))
+                          .join(", ")}
                       </td>
                       <td className="num">{String(item.max_position_notional_usdt)}</td>
                       <td className="num">{String(item.max_spread_bps)}</td>
@@ -209,39 +216,39 @@ export function StrategyDesk() {
 
             <div className="grid grid-3" style={{ marginTop: 18 }}>
               <div>
-                <div className="eyebrow">Portfolio</div>
+                <div className="eyebrow">{t("strategy.portfolio")}</div>
                 <div className="kv" style={{ marginTop: 6 }}>
-                  <dt>Gross cap</dt>
+                  <dt>{t("strategy.grossCap")}</dt>
                   <dd>{String(portfolio.max_gross_exposure_pct)}%</dd>
-                  <dt>Max positions</dt>
+                  <dt>{t("strategy.maxPositions")}</dt>
                   <dd>{String(portfolio.max_positions)}</dd>
-                  <dt>Daily loss</dt>
+                  <dt>{t("strategy.dailyLoss")}</dt>
                   <dd>{String(portfolio.max_daily_loss_pct)}%</dd>
-                  <dt>Drawdown</dt>
+                  <dt>{t("strategy.drawdown")}</dt>
                   <dd>{String(portfolio.max_drawdown_pct)}%</dd>
                 </div>
               </div>
               <div>
-                <div className="eyebrow">Jev gate</div>
+                <div className="eyebrow">{t("strategy.jevGate")}</div>
                 <div className="kv" style={{ marginTop: 6 }}>
-                  <dt>Choice</dt>
-                  <dd>{String(gate.entry_choice)}</dd>
-                  <dt>Min probability</dt>
+                  <dt>{t("strategy.choice")}</dt>
+                  <dd>{label(String(gate.entry_choice))}</dd>
+                  <dt>{t("strategy.minProbability")}</dt>
                   <dd>{String(gate.min_choice_probability)}</dd>
-                  <dt>Min fit</dt>
+                  <dt>{t("strategy.minFit")}</dt>
                   <dd>{String(gate.min_policy_fit)}</dd>
-                  <dt>Min quality</dt>
+                  <dt>{t("strategy.minQuality")}</dt>
                   <dd>{String(gate.min_quality_score)}</dd>
                 </div>
               </div>
               <div>
-                <div className="eyebrow">Deterministic exits</div>
+                <div className="eyebrow">{t("strategy.exits")}</div>
                 <div className="kv" style={{ marginTop: 6 }}>
-                  <dt>Stop loss</dt>
+                  <dt>{t("strategy.stopLoss")}</dt>
                   <dd>{String(exits.stop_loss_bps)} bps</dd>
-                  <dt>Take profit</dt>
+                  <dt>{t("strategy.takeProfit")}</dt>
                   <dd>{String(exits.take_profit_bps)} bps</dd>
-                  <dt>Max holding</dt>
+                  <dt>{t("strategy.maxHolding")}</dt>
                   <dd>{String(exits.max_holding_seconds)} s</dd>
                 </div>
               </div>
@@ -250,7 +257,7 @@ export function StrategyDesk() {
             {invalidation.length > 0 && (
               <>
                 <hr className="divider" />
-                <div className="eyebrow">Invalidation notes</div>
+                <div className="eyebrow">{t("strategy.invalidationNotes")}</div>
                 <ul className="small" style={{ margin: "6px 0 0", paddingLeft: 18 }}>
                   {invalidation.map((item, index) => (
                     <li key={index}>{String(item)}</li>
@@ -261,18 +268,22 @@ export function StrategyDesk() {
           </PaperCard>
 
           <PaperCard
-            eyebrow="Compiler diff"
-            title={`${policy.clamps.length} clamp${policy.clamps.length === 1 ? "" : "s"} applied`}
+            eyebrow={t("strategy.compilerDiff")}
+            title={
+              policy.clamps.length === 1
+                ? t("strategy.oneClamp")
+                : t("strategy.clampsCount", { n: policy.clamps.length })
+            }
           >
             {policy.clamps.length ? (
               <div className="table-wrap">
                 <table className="data">
                   <thead>
                     <tr>
-                      <th>Field</th>
-                      <th>Requested</th>
-                      <th>Effective</th>
-                      <th>Reason</th>
+                      <th>{t("strategy.field")}</th>
+                      <th>{t("strategy.requested")}</th>
+                      <th>{t("strategy.effective")}</th>
+                      <th>{t("strategy.reason")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -292,11 +303,10 @@ export function StrategyDesk() {
                 </table>
               </div>
             ) : (
-              <p className="hand">The model stayed inside the envelope. No clamps.</p>
+              <p className="hand">{t("strategy.noClamps")}</p>
             )}
             <div className="callout" style={{ marginTop: 16 }}>
-              The compiler can only narrow. A model that proposes a wider notional, spread,
-              slippage, cooldown or TTL is corrected here — never trusted downstream.
+              {t("strategy.compilerNarrowing")}
             </div>
           </PaperCard>
         </>

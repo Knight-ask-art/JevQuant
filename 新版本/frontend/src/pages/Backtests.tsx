@@ -3,13 +3,15 @@ import { useState } from "react";
 import { EquityChart } from "../components/charts";
 import { EmptyState, ErrorNote, Field, PaperCard, Pill, ScribbleUnderline } from "../components/ui";
 import { useApi } from "../hooks/useApi";
+import { useI18n } from "../i18n";
 import { ApiError, api } from "../lib/api";
-import { clock, money, pct, signed } from "../lib/format";
+import { clock, label, money, pct, signed } from "../lib/format";
 import type { BacktestReport, BacktestRun, SystemStatus } from "../lib/types";
 
 const DEFAULT_SYMBOLS = ["BTCUSDT"];
 
 export function Backtests() {
+  const { t } = useI18n();
   const status = useApi<SystemStatus>("/api/v1/system/status", 20000);
   const runs = useApi<{ items: BacktestRun[] }>("/api/v1/backtests?limit=30", 15000);
   const [symbols, setSymbols] = useState<string[]>(DEFAULT_SYMBOLS);
@@ -64,26 +66,22 @@ export function Backtests() {
     <div className="stack" style={{ gap: 20 }}>
       <div className="page-head">
         <div>
-          <div className="page-kicker">Backtests</div>
-          <h1>Replay, with the assumptions in ink</h1>
+          <div className="page-kicker">{t("backtest.kicker")}</div>
+          <h1>{t("backtest.title")}</h1>
           <ScribbleUnderline width={400} />
-          <p className="page-lede">
-            This engine replays a fixed, disclosed rule set over generated candles. It is
-            plumbing evidence — fees, sizing, stops, drawdown — not a performance claim. Real
-            OHLCV/Freqtrade replay plugs into the same run record.
-          </p>
+          <p className="page-lede">{t("backtest.lede")}</p>
         </div>
-        <Pill tone="terracotta">synthetic candles</Pill>
+        <Pill tone="terracotta">{t("backtest.syntheticCandles")}</Pill>
       </div>
 
       {error && <ErrorNote error={error} />}
 
       <div className="two-col">
         <div className="stack">
-          <PaperCard eyebrow="Parameters" title="New replay">
+          <PaperCard eyebrow={t("backtest.parameters")} title={t("backtest.newReplay")}>
             <div className="stack">
               <div className="field">
-                <span>Universe</span>
+                <span>{t("backtest.universe")}</span>
                 <div className="row">
                   {universe.map((symbol) => (
                     <button
@@ -97,7 +95,7 @@ export function Backtests() {
                 </div>
               </div>
               <div className="grid grid-3">
-                <Field label="Bar minutes">
+                <Field label={t("backtest.barMinutes")}>
                   <input
                     className="input"
                     type="number"
@@ -107,7 +105,7 @@ export function Backtests() {
                     onChange={(event) => setMinutes(Number(event.target.value))}
                   />
                 </Field>
-                <Field label="Candles / symbol">
+                <Field label={t("backtest.candlesPerSymbol")}>
                   <input
                     className="input"
                     type="number"
@@ -117,7 +115,7 @@ export function Backtests() {
                     onChange={(event) => setCandles(Number(event.target.value))}
                   />
                 </Field>
-                <Field label="Seed">
+                <Field label={t("backtest.seed")}>
                   <input
                     className="input"
                     type="number"
@@ -125,28 +123,28 @@ export function Backtests() {
                     onChange={(event) => setSeed(Number(event.target.value))}
                   />
                 </Field>
-                <Field label="Stop loss (bps)">
+                <Field label={t("backtest.stopLossBps")}>
                   <input
                     className="input"
                     value={stopBps}
                     onChange={(event) => setStopBps(event.target.value)}
                   />
                 </Field>
-                <Field label="Take profit (bps)">
+                <Field label={t("backtest.takeProfitBps")}>
                   <input
                     className="input"
                     value={takeBps}
                     onChange={(event) => setTakeBps(event.target.value)}
                   />
                 </Field>
-                <Field label="Fee (bps)">
+                <Field label={t("backtest.feeBps")}>
                   <input
                     className="input"
                     value={feeBps}
                     onChange={(event) => setFeeBps(event.target.value)}
                   />
                 </Field>
-                <Field label="Slippage (bps)">
+                <Field label={t("backtest.slippageBps")}>
                   <input
                     className="input"
                     value={slippageBps}
@@ -160,24 +158,24 @@ export function Backtests() {
                   onClick={() => void runBacktest()}
                   disabled={busy || symbols.length === 0}
                 >
-                  {busy ? "Replaying…" : "Run replay"}
+                  {busy ? t("backtest.replaying") : t("backtest.runReplay")}
                 </button>
               </div>
             </div>
           </PaperCard>
 
-          <PaperCard eyebrow="History" title="Runs">
+          <PaperCard eyebrow={t("backtest.history")} title={t("backtest.runs")}>
             {runs.data?.items?.length ? (
               <div className="table-wrap">
                 <table className="data">
                   <thead>
                     <tr>
-                      <th>Run</th>
-                      <th>Status</th>
-                      <th>Symbols</th>
-                      <th className="num">Trades</th>
-                      <th className="num">Net PnL</th>
-                      <th>Created</th>
+                      <th>{t("backtest.run")}</th>
+                      <th>{t("common.status")}</th>
+                      <th>{t("backtest.symbols")}</th>
+                      <th className="num">{t("backtest.trades")}</th>
+                      <th className="num">{t("backtest.netPnl")}</th>
+                      <th>{t("common.created")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -196,7 +194,7 @@ export function Backtests() {
                           <td className="mono">{run.id.slice(0, 7)}</td>
                           <td>
                             <Pill tone={run.status === "COMPLETED" ? "olive" : "yellow"}>
-                              {run.status}
+                              {label(run.status)}
                             </Pill>
                           </td>
                           <td className="mono small">
@@ -216,7 +214,7 @@ export function Backtests() {
                 </table>
               </div>
             ) : (
-              <EmptyState title="No runs yet." hint="Run a replay to create the first record." />
+              <EmptyState title={t("backtest.noRuns")} hint={t("backtest.noRunsHint")} />
             )}
           </PaperCard>
         </div>
@@ -225,35 +223,44 @@ export function Backtests() {
           {!selected ? (
             <PaperCard>
               <EmptyState
-                title="No run selected"
-                hint="Summary, equity curves and the assumption list appear here."
+                title={t("backtest.noRunSelected")}
+                hint={t("backtest.noRunSelectedHint")}
               />
             </PaperCard>
           ) : !hasReport ? (
             <PaperCard>
               <div className="callout">
-                This run has no report ({selected.status}
-                {selected.error_code ? ` · ${selected.error_code}` : ""}).
+                {t("backtest.noReport", {
+                  status: label(selected.status),
+                  code: selected.error_code ? ` · ${selected.error_code}` : "",
+                })}
               </div>
             </PaperCard>
           ) : (
             <>
-              <PaperCard eyebrow="Summary" title={`${report!.summary.trades} trades`}>
+              <PaperCard
+                eyebrow={t("backtest.summary")}
+                title={
+                  report!.summary.trades === 1
+                    ? t("common.oneTrade")
+                    : t("common.tradesCount", { n: report!.summary.trades })
+                }
+              >
                 <div className="grid grid-2">
                   <div>
-                    <div className="stat-label">Net PnL</div>
+                    <div className="stat-label">{t("backtest.netPnl")}</div>
                     <div className="stat-value">{signed(report!.summary.net_pnl_usdt)}</div>
                   </div>
                   <div>
-                    <div className="stat-label">Win rate</div>
+                    <div className="stat-label">{t("backtest.winRate")}</div>
                     <div className="stat-value">{pct(report!.summary.win_rate_pct, 1)}</div>
                   </div>
                   <div>
-                    <div className="stat-label">Max drawdown</div>
+                    <div className="stat-label">{t("backtest.maxDrawdown")}</div>
                     <div className="stat-value">{pct(report!.summary.max_drawdown_pct, 2)}</div>
                   </div>
                   <div>
-                    <div className="stat-label">Wins / losses</div>
+                    <div className="stat-label">{t("backtest.winsLosses")}</div>
                     <div className="stat-value">
                       {report!.summary.wins} / {report!.summary.losses}
                     </div>
@@ -261,7 +268,7 @@ export function Backtests() {
                 </div>
                 <div className="row" style={{ marginTop: 12 }}>
                   <Pill tone="olive">{report!.engine}</Pill>
-                  <Pill tone="terracotta">synthetic</Pill>
+                  <Pill tone="terracotta">{t("backtest.synthetic")}</Pill>
                 </div>
               </PaperCard>
 
@@ -273,19 +280,27 @@ export function Backtests() {
                 >
                   <EquityChart points={result.equity_curve} height={170} />
                   <div className="row" style={{ marginTop: 8 }}>
-                    <span className="small muted">{result.trades} trades</span>
                     <span className="small muted">
-                      win {pct(result.win_rate_pct, 1)}
+                      {result.trades === 1
+                        ? t("common.oneTrade")
+                        : t("common.tradesCount", { n: result.trades })}
                     </span>
                     <span className="small muted">
-                      max DD {pct(result.max_drawdown_pct, 2)}
+                      {t("backtest.win", { value: pct(result.win_rate_pct, 1) })}
                     </span>
-                    <span className="small muted">ending {money(result.ending_equity_usdt)}</span>
+                    <span className="small muted">
+                      {t("backtest.maxDD", { value: pct(result.max_drawdown_pct, 2) })}
+                    </span>
+                    <span className="small muted">
+                      {t("backtest.ending", {
+                        value: money(result.ending_equity_usdt),
+                      })}
+                    </span>
                   </div>
                 </PaperCard>
               ))}
 
-              <PaperCard eyebrow="Honesty" title="Assumptions">
+              <PaperCard eyebrow={t("backtest.honesty")} title={t("backtest.assumptions")}>
                 <ol className="small" style={{ margin: 0, paddingLeft: 18 }}>
                   {report!.assumptions.map((assumption, index) => (
                     <li key={index} style={{ marginBottom: 6 }}>

@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { EmptyState, ErrorNote, Field, PaperCard, Pill, ScribbleUnderline } from "../components/ui";
 import { useApi } from "../hooks/useApi";
+import { useI18n } from "../i18n";
 import { ApiError, api, getApiKey, setApiKey } from "../lib/api";
 import { clock, label, shortId } from "../lib/format";
 import type { AuditEvent } from "../lib/types";
@@ -14,6 +15,7 @@ interface VerifyResult {
 }
 
 export function AuditSettings() {
+  const { t } = useI18n();
   const audit = useApi<{ items: AuditEvent[] }>("/api/v1/audit?limit=120", 15000);
   const config = useApi<{
     config: Record<string, unknown>;
@@ -41,7 +43,7 @@ export function AuditSettings() {
 
   function saveKey() {
     setApiKey(key.trim());
-    setSaved(key.trim() ? "API key stored in this browser only." : "API key cleared.");
+    setSaved(key.trim() ? t("audit.keyStored") : t("audit.keyCleared"));
   }
 
   const rows = (audit.data?.items ?? []).filter((event) =>
@@ -52,17 +54,14 @@ export function AuditSettings() {
     <div className="stack" style={{ gap: 20 }}>
       <div className="page-head">
         <div>
-          <div className="page-kicker">Audit &amp; Settings</div>
-          <h1>The paper trail</h1>
+          <div className="page-kicker">{t("audit.kicker")}</div>
+          <h1>{t("audit.title")}</h1>
           <ScribbleUnderline width={250} />
-          <p className="page-lede">
-            Every state change is appended to a hash-linked chain. Credentials are never
-            logged or returned; the API exposes only a redacted configuration summary.
-          </p>
+          <p className="page-lede">{t("audit.lede")}</p>
         </div>
         <div className="row">
           <button className="button" onClick={() => void runVerify()} disabled={busy}>
-            {busy ? "Walking chain…" : "Verify audit chain"}
+            {busy ? t("audit.walking") : t("audit.verify")}
           </button>
         </div>
       </div>
@@ -73,14 +72,19 @@ export function AuditSettings() {
         <div className={`callout ${verify.valid ? "olive" : "danger"}`}>
           {verify.valid ? (
             <>
-              <strong>Chain valid.</strong> {verify.count} events · head{" "}
-              <span className="mono">{shortId(verify.head, 22)}</span>
+              <strong>{t("audit.chainValid")}</strong>{" "}
+              {t("audit.chainValidBody", {
+                count: verify.count,
+                head: shortId(verify.head, 22),
+              })}
             </>
           ) : (
             <>
-              <strong>Chain broken.</strong> First bad sequence{" "}
-              <span className="mono">{verify.broken_seq}</span> after {verify.count} events.
-              Treat this as an incident: stop new entries and investigate.
+              <strong>{t("audit.chainBroken")}</strong>{" "}
+              {t("audit.chainBrokenBody", {
+                seq: verify.broken_seq ?? "—",
+                count: verify.count,
+              })}
             </>
           )}
         </div>
@@ -88,13 +92,17 @@ export function AuditSettings() {
 
       <div className="two-col">
         <PaperCard
-          eyebrow="Append-only"
-          title={`${rows.length} audit events`}
+          eyebrow={t("audit.appendOnly")}
+          title={
+            rows.length === 1
+              ? t("common.oneAuditEvent")
+              : t("common.auditEvents", { n: rows.length })
+          }
           actions={
             <input
               className="input"
               style={{ width: 200 }}
-              placeholder="filter event type"
+              placeholder={t("audit.filterPlaceholder")}
               value={typeFilter}
               onChange={(event) => setTypeFilter(event.target.value)}
             />
@@ -106,11 +114,11 @@ export function AuditSettings() {
               <table className="data">
                 <thead>
                   <tr>
-                    <th>Seq</th>
-                    <th>Event</th>
-                    <th>Entity</th>
-                    <th>Hash</th>
-                    <th>At</th>
+                    <th>{t("audit.seq")}</th>
+                    <th>{t("audit.event")}</th>
+                    <th>{t("audit.entity")}</th>
+                    <th>{t("audit.hash")}</th>
+                    <th>{t("audit.at")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -121,7 +129,7 @@ export function AuditSettings() {
                         <strong>{event.event_type}</strong>
                         {event.entity_id && (
                           <div className="muted small mono">
-                            {event.entity_type} · {shortId(event.entity_id)}
+                            {label(event.entity_type)} · {shortId(event.entity_id)}
                           </div>
                         )}
                       </td>
@@ -134,19 +142,16 @@ export function AuditSettings() {
               </table>
             </div>
           ) : (
-            <EmptyState title="No audit events." hint="Start a cycle or change a mode." />
+            <EmptyState title={t("audit.noEvents")} hint={t("audit.noEventsHint")} />
           )}
         </PaperCard>
 
         <div className="stack">
-          <PaperCard eyebrow="Operator identity" title="API key">
+          <PaperCard eyebrow={t("audit.operatorIdentity")} title={t("audit.apiKey")}>
             <p className="small" style={{ marginBottom: 10, color: "var(--ink-soft)" }}>
-              When auth is enabled, the control plane requires{" "}
-              <span className="mono">X-API-Key</span>. The key stays in this browser's local
-              storage and is sent as a header; it is never persisted server-side by this UI.
-              WebSocket auth uses a query parameter because browsers cannot set WS headers.
+              {t("audit.apiKeyBody")}
             </p>
-            <Field label="Operator API key" hint="Leave empty for local auth-disabled mode">
+            <Field label={t("audit.operatorKey")} hint={t("audit.operatorKeyHint")}>
               <input
                 className="input"
                 type="password"
@@ -157,23 +162,27 @@ export function AuditSettings() {
             </Field>
             <div className="row" style={{ marginTop: 10 }}>
               <button className="button small" onClick={saveKey}>
-                Save key
+                {t("audit.saveKey")}
               </button>
               <button
                 className="button ghost small"
                 onClick={() => {
                   setKey("");
                   setApiKey("");
-                  setSaved("API key cleared.");
+                  setSaved(t("audit.keyCleared"));
                 }}
               >
-                Clear
+                {t("audit.clear")}
               </button>
             </div>
-            {saved && <p className="hand" style={{ marginTop: 8 }}>{saved}</p>}
+            {saved && (
+              <p className="hand" style={{ marginTop: 8 }}>
+                {saved}
+              </p>
+            )}
           </PaperCard>
 
-          <PaperCard eyebrow="Redacted config" title="Runtime settings">
+          <PaperCard eyebrow={t("audit.redactedConfig")} title={t("audit.runtimeSettings")}>
             <div className="kv">
               {Object.entries(config.data?.config ?? {}).map(([name, value]) => (
                 <FragmentRow key={name} name={name} value={value} />
@@ -181,18 +190,15 @@ export function AuditSettings() {
             </div>
           </PaperCard>
 
-          <PaperCard eyebrow="Guarantees" title="What this page can promise">
+          <PaperCard eyebrow={t("audit.guarantees")} title={t("audit.whatPromises")}>
             <div className="note-list">
-              <span className="ok">Secrets are redacted before audit persistence.</span>
-              <span className="ok">The audit chain is re-walked on demand.</span>
-              <span className="ok">Tampering breaks verification at the touched sequence.</span>
-              <span className="warn">
-                A valid chain is integrity evidence, not proof of correct trading decisions.
-              </span>
+              <span className="ok">{t("audit.secretsRedacted")}</span>
+              <span className="ok">{t("audit.chainRewalked")}</span>
+              <span className="ok">{t("audit.tampering")}</span>
+              <span className="warn">{t("audit.integrityNotProof")}</span>
             </div>
             <div className="callout" style={{ marginTop: 12 }}>
-              <Pill tone="yellow">read-only</Pill> This page does not mutate trading state
-              except by storing the operator key in your browser.
+              <Pill tone="yellow">{t("audit.readOnly")}</Pill> {t("audit.readOnlyBody")}
             </div>
           </PaperCard>
         </div>

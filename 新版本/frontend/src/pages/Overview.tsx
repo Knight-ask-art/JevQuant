@@ -12,6 +12,7 @@ import {
   Stat,
 } from "../components/ui";
 import { useApi } from "../hooks/useApi";
+import { useI18n } from "../i18n";
 import { ApiError, api } from "../lib/api";
 import {
   clock,
@@ -28,6 +29,7 @@ import {
 import type { CycleResult, PnlPoint, SignalView, SystemStatus } from "../lib/types";
 
 export function Overview() {
+  const { t } = useI18n();
   const status = useApi<SystemStatus>("/api/v1/system/status", 8000);
   const signals = useApi<{ items: SignalView[] }>("/api/v1/signals?limit=6", 8000);
   const pnl = useApi<{ items: PnlPoint[] }>("/api/v1/pnl?limit=120", 15000);
@@ -69,21 +71,21 @@ export function Overview() {
     <div className="stack" style={{ gap: 20 }}>
       <div className="page-head">
         <div>
-          <div className="page-kicker">Overview · {clock(view?.server_time)}</div>
-          <h1>Today, the system thinks…</h1>
+          <div className="page-kicker">
+            {t("overview.kicker", { time: clock(view?.server_time) })}
+          </div>
+          <h1>{t("overview.title")}</h1>
           <ScribbleUnderline width={340} />
-          <p className="page-lede">
-            An LLM proposes a bounded strategy; a deterministic compiler narrows it; Jev
-            evaluates typed opportunities; an independent risk engine decides. Nothing here is
-            a performance claim when data is synthetic.
-          </p>
+          <p className="page-lede">{t("overview.lede")}</p>
         </div>
         <div className="row">
           <Pill tone={view?.synthetic_market ? "terracotta" : "olive"}>
-            {view?.synthetic_market ? "synthetic market" : "live market data"}
+            {view?.synthetic_market
+              ? t("overview.syntheticMarket")
+              : t("overview.liveMarket")}
           </Pill>
           <button className="button" onClick={() => void runCycle()} disabled={busy}>
-            {busy ? "Running…" : "Run one cycle"}
+            {busy ? t("common.running") : t("common.runCycle")}
           </button>
         </div>
       </div>
@@ -91,35 +93,46 @@ export function Overview() {
       {error && <ErrorNote error={error} />}
       {cycle && (
         <div className="callout olive">
-          Cycle {shortId(cycle.cycle_id)} finished: {cycle.signals_created} signals,{" "}
-          {cycle.signals_eligible} eligible, {cycle.approved} approved, {cycle.rejected}{" "}
-          rejected, {cycle.executed} executed, {cycle.exits} exits
+          {t("overview.cycleSummary", {
+            id: shortId(cycle.cycle_id),
+            created: cycle.signals_created,
+            eligible: cycle.signals_eligible,
+            approved: cycle.approved,
+            rejected: cycle.rejected,
+            executed: cycle.executed,
+            exits: cycle.exits,
+          })}
           {cycle.entries_blocked_reason
-            ? ` · entries blocked: ${label(cycle.entries_blocked_reason)}`
+            ? t("overview.entriesBlocked", {
+                reason: label(cycle.entries_blocked_reason),
+              })
             : ""}
-          .
         </div>
       )}
 
       <div className="grid grid-4">
         <PaperCard>
           <Stat
-            label="Equity"
+            label={t("overview.equity")}
             value={money(account?.equity_usdt)}
-            note="USDT · paper ledger"
+            note={t("overview.equityNote", {
+              mode: label(view?.mode.mode ?? "paper"),
+            })}
             tone="olive"
           />
         </PaperCard>
         <PaperCard>
           <Stat
-            label="Available quote"
+            label={t("overview.availableQuote")}
             value={money(account?.available_quote_usdt)}
-            note={`gross ${money(account?.gross_exposure_usdt)}`}
+            note={t("overview.grossNote", {
+              value: money(account?.gross_exposure_usdt),
+            })}
           />
         </PaperCard>
         <PaperCard>
           <Stat
-            label="Daily realized"
+            label={t("overview.dailyRealized")}
             value={signed(account?.daily_realized_pnl_usdt)}
             note={pct(account?.daily_realized_pnl_pct)}
             tone={Number(account?.daily_realized_pnl_usdt ?? 0) < 0 ? "danger" : "olive"}
@@ -127,9 +140,11 @@ export function Overview() {
         </PaperCard>
         <PaperCard>
           <Stat
-            label="Drawdown"
+            label={t("overview.drawdown")}
             value={pct(account?.drawdown_pct)}
-            note={`cap ${pct(limits?.max_drawdown_pct, 1)}`}
+            note={t("overview.drawdownCap", {
+              value: pct(limits?.max_drawdown_pct, 1),
+            })}
             tone={Number(account?.drawdown_pct ?? 0) > 3 ? "danger" : undefined}
           />
         </PaperCard>
@@ -138,16 +153,16 @@ export function Overview() {
       <div className="two-col">
         <div className="stack">
           <PaperCard
-            eyebrow="Jev opportunities"
-            title="Typed signals, newest first"
+            eyebrow={t("overview.jevOpportunities")}
+            title={t("overview.typedSignals")}
             actions={
               <Link className="small" to="/signals">
-                Open signal desk →
+                {t("overview.openSignalDesk")}
               </Link>
             }
           >
             {signals.loading && !signals.data ? (
-              <div className="loading">Fetching signals…</div>
+              <div className="loading">{t("common.fetchingSignals")}</div>
             ) : signals.data?.items?.length ? (
               <div className="stack">
                 {signals.data.items.map((signal) => {
@@ -181,7 +196,8 @@ export function Overview() {
                           </Pill>
                         </div>
                         <div className="muted small">
-                          {choice} · {timeAgo(signal.created_at)} · {shortId(signal.id)}
+                          {label(choice)} · {timeAgo(signal.created_at)} ·{" "}
+                          {shortId(signal.id)}
                         </div>
                       </div>
                       <ProbabilitySketch
@@ -196,29 +212,33 @@ export function Overview() {
               </div>
             ) : (
               <EmptyState
-                title="No signals written yet."
-                hint="Run a cycle to let Jev evaluate the allowed universe."
+                title={t("overview.noSignals")}
+                hint={t("overview.noSignalsHint")}
                 action={
-                  <button className="button small" onClick={() => void runCycle()} disabled={busy}>
-                    Run one cycle
+                  <button
+                    className="button small"
+                    onClick={() => void runCycle()}
+                    disabled={busy}
+                  >
+                    {t("common.runCycle")}
                   </button>
                 }
               />
             )}
           </PaperCard>
 
-          <PaperCard eyebrow="Positions" title="Open exposure">
+          <PaperCard eyebrow={t("overview.positions")} title={t("overview.openExposure")}>
             {view?.positions?.length ? (
               <div className="table-wrap">
                 <table className="data">
                   <thead>
                     <tr>
-                      <th>Symbol</th>
-                      <th className="num">Qty</th>
-                      <th className="num">Entry</th>
-                      <th className="num">Mark</th>
-                      <th className="num">Unrealized</th>
-                      <th>Opened</th>
+                      <th>{t("common.symbol")}</th>
+                      <th className="num">{t("common.qty")}</th>
+                      <th className="num">{t("common.entry")}</th>
+                      <th className="num">{t("common.mark")}</th>
+                      <th className="num">{t("common.unrealized")}</th>
+                      <th>{t("common.opened")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -238,14 +258,14 @@ export function Overview() {
                 </table>
               </div>
             ) : (
-              <EmptyState title="Flat. No open positions." hint="Risk never pyramids on spot." />
+              <EmptyState title={t("overview.flat")} hint={t("overview.flatHint")} />
             )}
           </PaperCard>
         </div>
 
         <div className="stack">
           <PaperCard
-            eyebrow="Active strategy"
+            eyebrow={t("overview.activeStrategy")}
             title={
               policy
                 ? label(
@@ -254,51 +274,55 @@ export function Overview() {
                         "policy",
                     ),
                   )
-                : "No active policy"
+                : t("overview.noActivePolicy")
             }
           >
             {policy ? (
               <div className="stack">
                 <div className="row">
                   <Pill tone={policy.simulated ? "terracotta" : "olive"}>
-                    {policy.simulated ? "simulated author" : policy.source}
+                    {policy.simulated ? t("overview.simulatedAuthor") : policy.source}
                   </Pill>
-                  <Pill tone="yellow">expires in {countdown(policy.expires_at)}</Pill>
+                  <Pill tone="yellow">
+                    {t("overview.expiresIn", { time: countdown(policy.expires_at) })}
+                  </Pill>
                 </div>
                 <p className="small" style={{ color: "var(--ink-soft)" }}>
                   {String((policy.raw as { rationale?: string })?.rationale ?? "")}
                 </p>
                 <div className="kv">
-                  <dt>Policy hash</dt>
+                  <dt>{t("overview.policyHash")}</dt>
                   <dd className="mono">{shortId(policy.policy_hash, 18)}</dd>
-                  <dt>Clamps applied</dt>
+                  <dt>{t("overview.clampsApplied")}</dt>
                   <dd>{policy.clamps.length}</dd>
-                  <dt>Scope</dt>
+                  <dt>{t("overview.scope")}</dt>
                   <dd>{policy.mode_scope?.join(", ")}</dd>
                 </div>
                 <Link className="small" to="/strategy">
-                  Inspect the notebook →
+                  {t("overview.inspectNotebook")}
                 </Link>
               </div>
             ) : (
               <div className="stack">
-                <p className="hand">No policy on the desk yet.</p>
+                <p className="hand">{t("overview.noPolicy")}</p>
                 <Link className="small" to="/strategy">
-                  Generate one →
+                  {t("overview.generateOne")}
                 </Link>
               </div>
             )}
           </PaperCard>
 
-          <PaperCard eyebrow="Risk envelope" title="Hard server limits">
+          <PaperCard eyebrow={t("overview.riskEnvelope")} title={t("overview.hardLimits")}>
             {limits ? (
               <div className="stack">
                 <div>
                   <div className="row" style={{ justifyContent: "space-between" }}>
-                    <span className="small">Gross exposure</span>
+                    <span className="small">{t("overview.grossExposure")}</span>
                     <span className="small mono">
                       {money(account?.gross_exposure_usdt)} /{" "}
-                      {pct(limits.max_gross_exposure_pct, 0)} of equity
+                      {t("overview.ofEquity", {
+                        value: pct(limits.max_gross_exposure_pct, 0),
+                      })}
                     </span>
                   </div>
                   <Meter
@@ -312,7 +336,7 @@ export function Overview() {
                 </div>
                 <div>
                   <div className="row" style={{ justifyContent: "space-between" }}>
-                    <span className="small">Open positions</span>
+                    <span className="small">{t("overview.openPositions")}</span>
                     <span className="small mono">
                       {account?.open_positions ?? 0} / {limits.max_positions}
                     </span>
@@ -328,20 +352,20 @@ export function Overview() {
                   />
                 </div>
                 <div className="kv">
-                  <dt>Max position</dt>
+                  <dt>{t("overview.maxPosition")}</dt>
                   <dd className="mono">{limits.max_position_notional_usdt} USDT</dd>
-                  <dt>Daily loss cap</dt>
+                  <dt>{t("overview.dailyLossCap")}</dt>
                   <dd className="mono">{limits.max_daily_loss_pct}%</dd>
-                  <dt>Universe</dt>
+                  <dt>{t("overview.universe")}</dt>
                   <dd className="mono">{limits.allowed_symbols.join(" · ")}</dd>
                 </div>
               </div>
             ) : (
-              <div className="loading">Fetching limits…</div>
+              <div className="loading">{t("common.fetchingLimits")}</div>
             )}
           </PaperCard>
 
-          <PaperCard eyebrow="Peer review" title="Dependency margin notes">
+          <PaperCard eyebrow={t("overview.peerReview")} title={t("overview.dependencyNotes")}>
             <div className="note-list">
               {Object.entries(view?.dependencies ?? {}).map(([name, health]) => (
                 <span key={name} className={isHealthy(health) ? "ok" : "bad"}>
@@ -357,7 +381,7 @@ export function Overview() {
         </div>
       </div>
 
-      <PaperCard eyebrow="Ledger" title="Equity snapshots">
+      <PaperCard eyebrow={t("overview.ledger")} title={t("overview.equitySnapshots")}>
         <EquityChart
           points={(pnl.data?.items ?? [])
             .slice()

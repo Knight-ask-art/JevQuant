@@ -1,5 +1,6 @@
+import { useI18n } from "../i18n";
 import type { SignalEvent } from "../lib/types";
-import { clock, label } from "../lib/format";
+import { clock, label, num } from "../lib/format";
 
 function scale(values: number[], width: number, height: number, pad = 6) {
   if (!values.length) return { path: "", points: [] as Array<[number, number]> };
@@ -28,10 +29,16 @@ export function Sparkline({
   height?: number;
   color?: string;
 }) {
+  const { t } = useI18n();
   const { path } = scale(values, width, height);
   if (!path) return null;
   return (
-    <svg className="sketch-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="sparkline">
+    <svg
+      className="sketch-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label={t("chart.sparkline")}
+    >
       <path
         d={path}
         fill="none"
@@ -52,12 +59,13 @@ export function EquityChart({
   points: Array<{ at: string; equity_usdt: string }>;
   height?: number;
 }) {
+  const { t } = useI18n();
   const width = 760;
   const values = points.map((point) => Number(point.equity_usdt)).filter(Number.isFinite);
   if (values.length < 2) {
     return (
       <div className="empty hand" style={{ padding: 20 }}>
-        Not enough snapshots yet — run a few cycles.
+        {t("chart.notEnough")}
       </div>
     );
   }
@@ -67,7 +75,12 @@ export function EquityChart({
   const last = values[values.length - 1];
   const tone = last >= first ? "var(--olive)" : "var(--danger)";
   return (
-    <svg className="sketch-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="equity curve">
+    <svg
+      className="sketch-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label={t("chart.equityCurve")}
+    >
       <g stroke="var(--line)" strokeDasharray="2 4" strokeWidth="1">
         {[0.25, 0.5, 0.75].map((fraction) => (
           <line key={fraction} x1="10" x2={width - 10} y1={height * fraction} y2={height * fraction} />
@@ -77,13 +90,13 @@ export function EquityChart({
       <path d={path} fill="none" stroke={tone} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
       <circle cx={scaled[scaled.length - 1][0]} cy={scaled[scaled.length - 1][1]} r="3.4" fill={tone} />
       <text x="12" y="16" fontSize="11" fill="var(--muted)">
-        {Math.max(...values).toLocaleString("en-US", { maximumFractionDigits: 2 })}
+        {num(Math.max(...values))}
       </text>
       <text x="12" y={height - 4} fontSize="11" fill="var(--muted)">
-        {Math.min(...values).toLocaleString("en-US", { maximumFractionDigits: 2 })}
+        {num(Math.min(...values))}
       </text>
       <text x={width - 12} y="16" fontSize="11" fill="var(--muted)" textAnchor="end">
-        {last.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT
+        {num(last)} USDT
       </text>
     </svg>
   );
@@ -100,11 +113,17 @@ export function ProbabilitySketch({
   sell: number;
   fit?: number;
 }) {
+  const { t } = useI18n();
   const width = 340;
   const height = 40;
   const dot = (value: number) => 10 + value * (width - 20);
   return (
-    <svg className="prob-sketch" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="probability sketch">
+    <svg
+      className="prob-sketch"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label={t("chart.probability")}
+    >
       <line x1="10" x2={width - 10} y1={height / 2} y2={height / 2} stroke="var(--line-strong)" strokeDasharray="3 4" />
       <line
         x1={dot(sell)}
@@ -119,11 +138,11 @@ export function ProbabilitySketch({
       <circle cx={dot(hold)} cy={height / 2} r="2" fill="var(--muted)" opacity="0.6" />
       <circle cx={dot(buy)} cy={height / 2} r="4" fill="var(--terracotta)" />
       <text x={dot(buy)} y={12} fontSize="10" fill="var(--ink-soft)" textAnchor="middle">
-        {`buy ${buy.toFixed(2)}`}
+        {`${t("chart.buy")} ${buy.toFixed(2)}`}
       </text>
       {fit !== undefined && (
         <text x={dot(buy)} y={height - 3} fontSize="10" fill="var(--olive)" textAnchor="middle">
-          {`fit ${fit.toFixed(2)}`}
+          {`${t("chart.fit")} ${fit.toFixed(2)}`}
         </text>
       )}
     </svg>

@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { EmptyState, ErrorNote, PaperCard, Pill, Stat } from "../components/ui";
 import { useApi } from "../hooks/useApi";
+import { useI18n } from "../i18n";
 import { ApiError, api } from "../lib/api";
 import { label, money, signed, timeAgo } from "../lib/format";
 
@@ -50,6 +51,7 @@ interface SyncResult {
 const ROUTES = ["testnet", "live"] as const;
 
 export function ExchangeBalances() {
+  const { t } = useI18n();
   const snapshots = useApi<{ items: BalanceSnapshot[] }>("/api/v1/execution/balances", 15000);
   const [result, setResult] = useState<SyncResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -100,23 +102,38 @@ export function ExchangeBalances() {
   );
   const reconcileLines = Object.entries(result?.reconciled ?? {}).map(
     ([route, outcome]) => {
+      const routeName = label(route);
       if (!outcome.triggered) {
         return outcome.reason === "cooldown"
-          ? `${label(route)}: reconciliation ran ${timeAgo(outcome.last_reconcile_at)} (cooldown ${outcome.cooldown_seconds}s)`
-          : `${label(route)}: reconciliation not run — ${outcome.reason ?? "unavailable"}`;
+          ? t("balances.reconCooldown", {
+              route: routeName,
+              time: timeAgo(outcome.last_reconcile_at),
+              seconds: outcome.cooldown_seconds ?? 0,
+            })
+          : t("balances.reconNotRun", {
+              route: routeName,
+              reason: label(outcome.reason ?? "unavailable"),
+            });
       }
       if (outcome.error) {
-        return `${label(route)}: reconciliation failed (${outcome.error}) — ledger untouched`;
+        return t("balances.reconFailed", { route: routeName, error: outcome.error });
       }
       const checked = outcome.checked_orders ?? 0;
       const unknown = outcome.unknown_orders ?? 0;
       const parts = [
-        `${label(route)}: reconciliation ${outcome.healthy ? "healthy" : "incomplete"}`,
-        `${checked} order${checked === 1 ? "" : "s"} checked`,
+        t("balances.reconStatus", {
+          route: routeName,
+          status: outcome.healthy ? t("balances.healthy") : t("balances.incomplete"),
+        }),
+        checked === 1
+          ? t("balances.reconOneChecked")
+          : t("balances.reconChecked", { n: checked }),
       ];
-      if (unknown) parts.push(`${unknown} unknown`);
+      if (unknown) parts.push(t("balances.reconUnknown", { n: unknown }));
       if (outcome.ledger_quote_after !== undefined) {
-        parts.push(`ledger now ${money(outcome.ledger_quote_after)} USDT`);
+        parts.push(
+          t("balances.reconLedgerNow", { value: money(outcome.ledger_quote_after) }),
+        );
       }
       return parts.join(" · ");
     },
@@ -124,33 +141,30 @@ export function ExchangeBalances() {
 
   return (
     <PaperCard
-      eyebrow="Exchange account"
-      title="Venue balances & drift"
+      eyebrow={t("balances.exchangeAccount")}
+      title={t("balances.title")}
       actions={
         <button className="button small" onClick={() => void sync()} disabled={busy}>
-          {busy ? "Reading venue…" : "Sync balances"}
+          {busy ? t("balances.reading") : t("balances.sync")}
         </button>
       }
     >
       <p className="small" style={{ marginBottom: 12, color: "var(--ink-soft)" }}>
-        The exchange's view of the account is recorded next to the ledger's figure. Drift is
-        reported for reconciliation — it never rewrites cash or positions. A drift triggers one
-        reconciliation for that route, rate-limited so a persistent difference cannot hammer the
-        venue.
+        {t("balances.lede")}
       </p>
       {error && <ErrorNote error={error} />}
 
       {result && (
         <div className={`callout ${anyDrift ? "danger" : "olive"}`} style={{ marginBottom: 12 }}>
           {result.drifts.length === 0
-            ? "No route returned a balance: nothing is configured, so nothing is claimed."
+            ? t("balances.noRoute")
             : anyDrift
               ? triggeredReconcile
-                ? "Drift outside tolerance — reconciliation was triggered for the affected route; check its notes below."
+                ? t("balances.driftTriggered")
                 : reconcileCoolingDown
-                  ? "Drift outside tolerance — reconciliation ran recently; the per-route cooldown is still active."
-                  : "Drift outside tolerance — run reconciliation before trusting the ledger."
-              : "Venue and ledger agree within tolerance."}
+                  ? t("balances.driftCooling")
+                  : t("balances.driftRun")
+              : t("balances.inTolerance")}
           {reconcileLines.length > 0 && (
             <div className="small" style={{ marginTop: 6 }}>
               {reconcileLines.map((line, index) => (
@@ -166,12 +180,12 @@ export function ExchangeBalances() {
           <table className="data">
             <thead>
               <tr>
-                <th>Route</th>
-                <th className="num">Venue USDT</th>
-                <th className="num">Ledger USDT</th>
-                <th className="num">Difference</th>
-                <th>Read</th>
-                <th>State</th>
+                <th>{t("balances.route")}</th>
+                <th className="num">{t("balances.venueUsdt")}</th>
+                <th className="num">{t("balances.ledgerUsdt")}</th>
+                <th className="num">{t("balances.difference")}</th>
+                <th>{t("balances.read")}</th>
+                <th>{t("balances.state")}</th>
               </tr>
             </thead>
             <tbody>
@@ -191,12 +205,12 @@ export function ExchangeBalances() {
                   <td>
                     {withinTolerance !== null ? (
                       <Pill tone={withinTolerance ? "olive" : "danger"} dot>
-                        {withinTolerance ? "in tolerance" : "drift"}
+                        {withinTolerance ? t("common.inTolerance") : t("common.drift")}
                       </Pill>
                     ) : skip ? (
-                      <Pill tone="yellow">{skip}</Pill>
+                      <Pill tone="yellow">{label(skip)}</Pill>
                     ) : (
-                      <Pill>not read</Pill>
+                      <Pill>{t("common.notRead")}</Pill>
                     )}
                   </td>
                 </tr>
@@ -206,11 +220,11 @@ export function ExchangeBalances() {
         </div>
       ) : (
         <EmptyState
-          title="No venue balance read yet."
-          hint="Configure testnet or live credentials, then sync. Paper and shadow routes have no venue account."
+          title={t("balances.noRead")}
+          hint={t("balances.noReadHint")}
           action={
             <button className="button small" onClick={() => void sync()} disabled={busy}>
-              Sync balances
+              {t("balances.sync")}
             </button>
           }
         />
@@ -218,16 +232,16 @@ export function ExchangeBalances() {
 
       {result && result.drifts.some((d) => Object.keys(d.base_mismatch).length) && (
         <div style={{ marginTop: 14 }}>
-          <div className="eyebrow">Base-asset differences</div>
+          <div className="eyebrow">{t("balances.baseDifferences")}</div>
           <div className="table-wrap" style={{ marginTop: 6 }}>
             <table className="data">
               <thead>
                 <tr>
-                  <th>Route</th>
-                  <th>Asset</th>
-                  <th className="num">Ledger</th>
-                  <th className="num">Venue</th>
-                  <th className="num">Difference</th>
+                  <th>{t("balances.route")}</th>
+                  <th>{t("balances.asset")}</th>
+                  <th className="num">{t("balances.ledger")}</th>
+                  <th className="num">{t("balances.venue")}</th>
+                  <th className="num">{t("balances.difference")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -257,7 +271,10 @@ export function ExchangeBalances() {
                 key={route}
                 label={`${label(route)} · ${snapshot?.asset ?? "USDT"}`}
                 value={money(snapshot?.total)}
-                note={`free ${money(snapshot?.free)} · locked ${money(snapshot?.locked)}`}
+                note={t("balances.freeLocked", {
+                  free: money(snapshot?.free),
+                  locked: money(snapshot?.locked),
+                })}
               />
             ))}
         </div>

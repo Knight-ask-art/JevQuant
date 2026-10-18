@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 
+import { useI18n } from "../i18n";
 import { ApiError } from "../lib/api";
 
 export function PaperCard({
@@ -139,18 +140,20 @@ export function EmptyState({
   );
 }
 
-export function Loading({ what = "the notebook" }: { what?: string }) {
-  return <div className="loading">Fetching {what}…</div>;
+export function Loading({ what }: { what?: string }) {
+  const { t } = useI18n();
+  return <div className="loading">{t("common.fetching", { what: what ?? t("common.theNotebook") })}</div>;
 }
 
 export function ErrorNote({ error }: { error: ApiError | null }) {
+  const { t } = useI18n();
   if (!error) return null;
   return (
     <div className="callout danger">
       <strong>{error.code}</strong> — {error.message}
       {error.status === 401 && (
         <div className="small" style={{ marginTop: 4 }}>
-          Add the operator API key under Audit &amp; Settings.
+          {t("common.operatorKeyHint")}
         </div>
       )}
     </div>

@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { LifecycleTrail, ProbabilitySketch } from "../components/charts";
 import { EmptyState, ErrorNote, PaperCard, Pill, ScribbleUnderline } from "../components/ui";
 import { useApi } from "../hooks/useApi";
+import { useI18n } from "../i18n";
 import {
   clock,
   label,
@@ -55,6 +56,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 export function JevSignals() {
+  const { t } = useI18n();
   const [state, setState] = useState<SignalState | "">("");
   const [selected, setSelected] = useState<string | null>(null);
   const list = useApi<{ items: SignalView[] }>(
@@ -73,18 +75,14 @@ export function JevSignals() {
     <div className="stack" style={{ gap: 20 }}>
       <div className="page-head">
         <div>
-          <div className="page-kicker">Jev Signals</div>
-          <h1>Typed questions, signed answers</h1>
+          <div className="page-kicker">{t("signals.kicker")}</div>
+          <h1>{t("signals.title")}</h1>
           <ScribbleUnderline width={320} />
-          <p className="page-lede">
-            Jev answers three typed questions — a choice with probabilities, a quality score,
-            and a yes/no policy fit. It cannot size an order or change a limit. The gate and
-            risk engine decide what happens next.
-          </p>
+          <p className="page-lede">{t("signals.lede")}</p>
         </div>
         <div className="row">
           <Link className="button ghost small" to="/risk">
-            Gate thresholds
+            {t("common.gateThresholds")}
           </Link>
         </div>
       </div>
@@ -92,7 +90,7 @@ export function JevSignals() {
       <ErrorNote error={list.error} />
 
       <div className="row">
-        <span className="eyebrow">Filter</span>
+        <span className="eyebrow">{t("signals.filter")}</span>
         <div className="segmented">
           {STATES.map((value) => (
             <button
@@ -103,91 +101,92 @@ export function JevSignals() {
                 setSelected(null);
               }}
             >
-              {value ? label(value) : "All"}
+              {value ? label(value) : t("common.all")}
             </button>
           ))}
         </div>
       </div>
 
       <div className="two-col">
-        <PaperCard eyebrow="Tape" title={`${signals.length} signals`}>
+        <PaperCard
+          eyebrow={t("signals.tape")}
+          title={
+            signals.length === 1
+              ? t("common.oneSignal")
+              : t("common.signalsCount", { n: signals.length })
+          }
+        >
           <div className="signal-tape">
-          {list.loading && !list.data ? (
-            <div className="loading">Fetching signals…</div>
-          ) : signals.length ? (
-            <div className="table-wrap">
-              <table className="data">
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>State</th>
-                    <th className="num">Buy / fit</th>
-                    <th>Age</th>
-                    <th className="num">Signal</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {signals.map((signal) => (
-                    <tr
-                      key={signal.id}
-                      className="clickable"
-                      onClick={() => setSelected(signal.id)}
-                      style={{
-                        background:
-                          selected === signal.id ? "var(--paper-2)" : undefined,
-                      }}
-                    >
-                      <td>
-                        <strong>{signal.symbol}</strong>
-                        <div className="muted small">{signal.side}</div>
-                      </td>
-                      <td>
-                        <Pill
-                          tone={
-                            toneForState(signal.state) as
-                              | ""
-                              | "olive"
-                              | "terracotta"
-                              | "danger"
-                              | "yellow"
-                          }
-                        >
-                          {label(signal.state)}
-                        </Pill>
-                      </td>
-                      <td className="num mono">
-                        {Number(signal.score?.entry_probability ?? 0).toFixed(2)} /{" "}
-                        {Number(signal.score?.policy_fit ?? 0).toFixed(2)}
-                      </td>
-                      <td className="muted">{timeAgo(signal.created_at)}</td>
-                      <td className="num mono muted">{shortId(signal.id, 6)}</td>
+            {list.loading && !list.data ? (
+              <div className="loading">{t("common.fetchingSignals")}</div>
+            ) : signals.length ? (
+              <div className="table-wrap">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>{t("common.symbol")}</th>
+                      <th>{t("common.state")}</th>
+                      <th className="num">{t("signals.buyFit")}</th>
+                      <th>{t("signals.age")}</th>
+                      <th className="num">{t("signals.signal")}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <EmptyState
-              title="The tape is blank."
-              hint="Run a cycle on the Overview page to create signals."
-            />
-          )}
+                  </thead>
+                  <tbody>
+                    {signals.map((signal) => (
+                      <tr
+                        key={signal.id}
+                        className="clickable"
+                        onClick={() => setSelected(signal.id)}
+                        style={{
+                          background:
+                            selected === signal.id ? "var(--paper-2)" : undefined,
+                        }}
+                      >
+                        <td>
+                          <strong>{signal.symbol}</strong>
+                          <div className="muted small">{label(signal.side)}</div>
+                        </td>
+                        <td>
+                          <Pill
+                            tone={
+                              toneForState(signal.state) as
+                                | ""
+                                | "olive"
+                                | "terracotta"
+                                | "danger"
+                                | "yellow"
+                            }
+                          >
+                            {label(signal.state)}
+                          </Pill>
+                        </td>
+                        <td className="num mono">
+                          {Number(signal.score?.entry_probability ?? 0).toFixed(2)} /{" "}
+                          {Number(signal.score?.policy_fit ?? 0).toFixed(2)}
+                        </td>
+                        <td className="muted">{timeAgo(signal.created_at)}</td>
+                        <td className="num mono muted">{shortId(signal.id, 6)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState title={t("signals.blankTitle")} hint={t("signals.blankHint")} />
+            )}
           </div>
         </PaperCard>
 
         <div className="stack">
           {!selected ? (
             <PaperCard>
-              <EmptyState
-                title="Pick a signal"
-                hint="The lifecycle trail, typed answers and the risk verdict appear here."
-              />
+              <EmptyState title={t("signals.pickTitle")} hint={t("signals.pickHint")} />
             </PaperCard>
           ) : detail.error ? (
             <ErrorNote error={detail.error} />
           ) : !chosen ? (
             <PaperCard>
-              <div className="loading">Opening the signal…</div>
+              <div className="loading">{t("signals.opening")}</div>
             </PaperCard>
           ) : (
             <SelectedSignal detail={chosen} />
@@ -199,6 +198,7 @@ export function JevSignals() {
 }
 
 function SelectedSignal({ detail }: { detail: SignalDetail }) {
+  const { t } = useI18n();
   const signal = detail.signal;
   const evaluation = detail.jev_evaluation;
   const answers = record(evaluation?.answers);
@@ -218,7 +218,9 @@ function SelectedSignal({ detail }: { detail: SignalDetail }) {
       <PaperCard>
         <div className="row" style={{ justifyContent: "space-between" }}>
           <div>
-            <div className="eyebrow">Signal {shortId(signal.id)}</div>
+            <div className="eyebrow">
+              {t("signals.signalId", { id: shortId(signal.id) })}
+            </div>
             <h2>{signal.symbol}</h2>
           </div>
           <Pill
@@ -242,16 +244,26 @@ function SelectedSignal({ detail }: { detail: SignalDetail }) {
         />
         <div className="grid grid-3" style={{ marginTop: 10 }}>
           <div>
-            <div className="stat-label">Choice</div>
-            <div className="mono">{String(action.choice ?? signal.score?.entry_choice ?? "—")}</div>
+            <div className="stat-label">{t("signals.choice")}</div>
+            <div className="mono">
+              {label(String(action.choice ?? signal.score?.entry_choice ?? "—"))}
+            </div>
           </div>
           <div>
-            <div className="stat-label">Quality</div>
-            <div className="mono">{String(quality.score ?? signal.score?.quality_score ?? "—")}</div>
+            <div className="stat-label">{t("signals.quality")}</div>
+            <div className="mono">
+              {String(quality.score ?? signal.score?.quality_score ?? "—")}
+            </div>
           </div>
           <div>
-            <div className="stat-label">Policy fit</div>
-            <div className="mono">{fit.noul === undefined ? "—" : fit.noul ? "yes" : "no"}</div>
+            <div className="stat-label">{t("signals.policyFit")}</div>
+            <div className="mono">
+              {fit.noul === undefined
+                ? "—"
+                : fit.noul
+                  ? t("common.yes")
+                  : t("common.no")}
+            </div>
           </div>
         </div>
         {Boolean(quality.rationale) && (
@@ -261,40 +273,43 @@ function SelectedSignal({ detail }: { detail: SignalDetail }) {
         )}
         {evaluation?.error_code && (
           <div className="callout danger" style={{ marginTop: 10 }}>
-            Jev error: {evaluation.error_code} — the signal fails closed.
+            {t("signals.jevError", { code: evaluation.error_code })}
           </div>
         )}
       </PaperCard>
 
-      <PaperCard eyebrow="Lifecycle" title="State trail">
+      <PaperCard eyebrow={t("signals.lifecycle")} title={t("signals.stateTrail")}>
         <LifecycleTrail events={detail.events} />
-        {!detail.events.length && <p className="hand">No events recorded.</p>}
+        {!detail.events.length && <p className="hand">{t("common.noEvents")}</p>}
       </PaperCard>
 
       {intent && (
-        <PaperCard eyebrow="Intent" title="Bounded by risk">
+        <PaperCard eyebrow={t("signals.intent")} title={t("signals.boundedByRisk")}>
           <div className="kv">
-            <dt>Intent</dt>
+            <dt>{t("signals.intent")}</dt>
             <dd className="mono">{shortId(String(intent.id))}</dd>
-            <dt>Notional</dt>
+            <dt>{t("signals.notional")}</dt>
             <dd className="mono">{money(intent.quote_notional as string)} USDT</dd>
-            <dt>Limit</dt>
+            <dt>{t("signals.limit")}</dt>
             <dd className="mono">{money(intent.limit_price as string)}</dd>
-            <dt>Status</dt>
+            <dt>{t("common.status")}</dt>
             <dd>
-              <Pill tone="yellow">{String(intent.status)}</Pill>
+              <Pill tone="yellow">{label(String(intent.status))}</Pill>
             </dd>
-            <dt>Idempotency key</dt>
+            <dt>{t("signals.idempotencyKey")}</dt>
             <dd className="mono small">{String(intent.idempotency_key)}</dd>
           </div>
         </PaperCard>
       )}
 
       {risk && (
-        <PaperCard eyebrow="Risk verdict" title={risk.approved ? "Approved" : "Rejected"}>
+        <PaperCard
+          eyebrow={t("signals.riskVerdict")}
+          title={risk.approved ? t("signals.approved") : t("signals.rejected")}
+        >
           <div className="note-list">
             {risk.approved ? (
-              <span className="ok">All deterministic checks passed.</span>
+              <span className="ok">{t("signals.allChecksPassed")}</span>
             ) : (
               risk.failed_rules.map((failure) => (
                 <span className="bad" key={failure.rule}>
@@ -305,11 +320,11 @@ function SelectedSignal({ detail }: { detail: SignalDetail }) {
           </div>
           {risk.approved && (
             <div className="kv" style={{ marginTop: 12 }}>
-              <dt>Effective notional</dt>
+              <dt>{t("signals.effectiveNotional")}</dt>
               <dd className="mono">{risk.effective.quote_notional} USDT</dd>
-              <dt>Approved qty</dt>
+              <dt>{t("signals.approvedQty")}</dt>
               <dd className="mono">{risk.effective.approved_qty}</dd>
-              <dt>Decision hash</dt>
+              <dt>{t("signals.decisionHash")}</dt>
               <dd className="mono small">{shortId(risk.decision_hash, 20)}</dd>
             </div>
           )}
@@ -317,19 +332,19 @@ function SelectedSignal({ detail }: { detail: SignalDetail }) {
       )}
 
       {order && (
-        <PaperCard eyebrow="Execution" title="Order">
+        <PaperCard eyebrow={t("signals.execution")} title={t("signals.order")}>
           <div className="kv">
-            <dt>Order</dt>
+            <dt>{t("signals.order")}</dt>
             <dd className="mono">{shortId(String(order.id))}</dd>
-            <dt>Status</dt>
-            <dd>{String(order.status)}</dd>
-            <dt>Filled</dt>
+            <dt>{t("common.status")}</dt>
+            <dd>{label(String(order.status))}</dd>
+            <dt>{t("signals.filled")}</dt>
             <dd className="mono">
               {String(order.filled_qty)} @ {money(order.avg_fill_price as string)}
             </dd>
-            <dt>Fee</dt>
+            <dt>{t("signals.fee")}</dt>
             <dd className="mono">{signed(-Number(order.fee_quote ?? 0), 4)}</dd>
-            <dt>Created</dt>
+            <dt>{t("signals.created")}</dt>
             <dd>{clock(String(order.created_at))}</dd>
           </div>
         </PaperCard>

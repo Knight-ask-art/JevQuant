@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { ErrorNote, PaperCard, Pill, ScribbleUnderline } from "../components/ui";
 import { useApi } from "../hooks/useApi";
+import { useI18n } from "../i18n";
 import { ApiError, api } from "../lib/api";
 import { label, shortId } from "../lib/format";
 import { ExchangeBalances } from "./ExchangeBalances";
@@ -13,6 +14,7 @@ interface ConfigResponse {
 }
 
 export function ModelsCosts() {
+  const { t } = useI18n();
   const config = useApi<ConfigResponse>("/api/v1/system/config", 30000);
   const [results, setResults] = useState<Record<string, unknown>>({});
   const [models, setModels] = useState<string[] | null>(null);
@@ -40,31 +42,28 @@ export function ModelsCosts() {
 
   const summary = config.data?.config ?? {};
   const flags = [
-    ["OpenCode Console", "opencode_console_configured"],
-    ["OpenCode Go", "opencode_go_configured"],
-    ["Jev", "jev_configured"],
-    ["Hummingbot", "hummingbot_configured"],
-    ["Binance live key", "binance_live_credentials_configured"],
-    ["Binance testnet key", "binance_testnet_credentials_configured"],
-    ["MFA TOTP", "mfa_configured"],
+    ["models.flagOpenCodeConsole", "opencode_console_configured"],
+    ["models.flagOpenCodeGo", "opencode_go_configured"],
+    ["models.flagJev", "jev_configured"],
+    ["models.flagHummingbot", "hummingbot_configured"],
+    ["models.flagBinanceLive", "binance_live_credentials_configured"],
+    ["models.flagBinanceTestnet", "binance_testnet_credentials_configured"],
+    ["models.flagMfa", "mfa_configured"],
   ] as const;
 
   return (
     <div className="stack" style={{ gap: 20 }}>
       <div className="page-head">
         <div>
-          <div className="page-kicker">Models &amp; Costs</div>
-          <h1>Who is allowed to think what</h1>
+          <div className="page-kicker">{t("models.kicker")}</div>
+          <h1>{t("models.title")}</h1>
           <ScribbleUnderline width={340} />
-          <p className="page-lede">
-            OpenCode Console authors runtime strategy. OpenCode Go is a coding-agent provider:
-            the server denies <span className="mono">trade_runtime</span> and{" "}
-            <span className="mono">backtest_analysis</span> for it, regardless of UI state.
-            Jev evaluates typed questions and never receives execution authority.
-          </p>
+          <p className="page-lede">{t("models.lede")}</p>
         </div>
         <Pill tone={summary.synthetic_market ? "terracotta" : "olive"}>
-          {summary.synthetic_market ? "simulated fallbacks" : "live providers"}
+          {summary.synthetic_market
+            ? t("models.simulatedFallbacks")
+            : t("models.liveProviders")}
         </Pill>
       </div>
 
@@ -73,13 +72,13 @@ export function ModelsCosts() {
       <ExchangeBalances />
 
       <div className="grid grid-3">
-        {flags.map(([name, key]) => (
+        {flags.map(([nameKey, key]) => (
           <PaperCard key={key} tint={summary[key] ? "olive" : undefined}>
-            <div className="eyebrow">Connection</div>
-            <h2 style={{ marginTop: 4 }}>{name}</h2>
+            <div className="eyebrow">{t("models.connection")}</div>
+            <h2 style={{ marginTop: 4 }}>{t(nameKey)}</h2>
             <div className="row" style={{ marginTop: 8 }}>
               <Pill tone={summary[key] ? "olive" : "yellow"} dot>
-                {summary[key] ? "configured" : "not configured"}
+                {summary[key] ? t("common.configured") : t("common.notConfigured")}
               </Pill>
             </div>
           </PaperCard>
@@ -88,11 +87,9 @@ export function ModelsCosts() {
 
       <div className="two-col">
         <div className="stack">
-          <PaperCard eyebrow="OpenCode Console" title="Runtime authoring">
+          <PaperCard eyebrow="OpenCode Console" title={t("models.runtimeAuthoring")}>
             <p className="small" style={{ marginBottom: 12, color: "var(--ink-soft)" }}>
-              Purpose <span className="mono">trade_runtime</span>. The adapter sends a strict
-              schema instruction and validates the response against{" "}
-              <span className="mono">strategy-policy/1.0</span> before the compiler sees it.
+              {t("models.runtimeAuthoringBody")}
             </p>
             <div className="row">
               <button
@@ -100,7 +97,7 @@ export function ModelsCosts() {
                 onClick={() => void call("opencode-test", "/api/v1/connections/opencode/test", "POST")}
                 disabled={busy !== null}
               >
-                {busy === "opencode-test" ? "Testing…" : "Test connection"}
+                {busy === "opencode-test" ? t("models.testing") : t("models.testConnection")}
               </button>
               <button
                 className="button ghost small"
@@ -109,7 +106,7 @@ export function ModelsCosts() {
                 }
                 disabled={busy !== null}
               >
-                {busy === "opencode-models" ? "Listing…" : "List models"}
+                {busy === "opencode-models" ? t("models.listing") : t("models.listModels")}
               </button>
             </div>
             {models && (
@@ -119,7 +116,7 @@ export function ModelsCosts() {
                     <Pill key={model}>{shortId(model, 24)}</Pill>
                   ))
                 ) : (
-                  <span className="hand">No catalogue — simulated author has no models.</span>
+                  <span className="hand">{t("models.noCatalogue")}</span>
                 )}
               </div>
             )}
@@ -130,17 +127,16 @@ export function ModelsCosts() {
             )}
           </PaperCard>
 
-          <PaperCard eyebrow="Jev" title="Typed evaluator">
+          <PaperCard eyebrow="Jev" title={t("models.typedEvaluator")}>
             <p className="small" style={{ marginBottom: 12, color: "var(--ink-soft)" }}>
-              Jev returns a choice distribution, a 0–5 quality score, and a yes/no policy fit.
-              Range validation happens on the server; malformed answers fail closed.
+              {t("models.typedEvaluatorBody")}
             </p>
             <button
               className="button small"
               onClick={() => void call("jev-test", "/api/v1/connections/jev/test", "POST")}
               disabled={busy !== null}
             >
-              {busy === "jev-test" ? "Testing…" : "Test Jev"}
+              {busy === "jev-test" ? t("models.testing") : t("models.testJev")}
             </button>
             {"jev-test" in results && (
               <pre className="mono" style={preStyle}>
@@ -149,18 +145,16 @@ export function ModelsCosts() {
             )}
           </PaperCard>
 
-          <PaperCard eyebrow="Binance" title="Key restrictions">
+          <PaperCard eyebrow="Binance" title={t("models.keyRestrictions")}>
             <p className="small" style={{ marginBottom: 12, color: "var(--ink-soft)" }}>
-              The live gate requires reading + spot trading, withdrawals disabled, and IP
-              restriction enabled. A restricted location answering HTTP 451 is reported, never
-              bypassed.
+              {t("models.keyRestrictionsBody")}
             </p>
             <button
               className="button small"
               onClick={() => void call("binance-test", "/api/v1/connections/binance/test", "POST")}
               disabled={busy !== null}
             >
-              {busy === "binance-test" ? "Inspecting…" : "Inspect key"}
+              {busy === "binance-test" ? t("models.inspecting") : t("models.inspectKey")}
             </button>
             {"binance-test" in results && (
               <pre className="mono" style={preStyle}>
@@ -171,7 +165,10 @@ export function ModelsCosts() {
         </div>
 
         <div className="stack">
-          <PaperCard eyebrow="Redacted configuration" title="No secrets leave the server">
+          <PaperCard
+            eyebrow={t("models.redactedConfig")}
+            title={t("models.noSecrets")}
+          >
             <div className="kv">
               {Object.entries(summary).map(([key, value]) => (
                 <FragmentRow key={key} name={key} value={value} />
@@ -179,7 +176,7 @@ export function ModelsCosts() {
             </div>
           </PaperCard>
 
-          <PaperCard eyebrow="Hummingbot" title="Execution gateway">
+          <PaperCard eyebrow="Hummingbot" title={t("models.executionGateway")}>
             <div className="row">
               <button
                 className="button ghost small"
@@ -188,7 +185,7 @@ export function ModelsCosts() {
                 }
                 disabled={busy !== null}
               >
-                {busy === "hummingbot" ? "Checking…" : "Check gateway"}
+                {busy === "hummingbot" ? t("models.checking") : t("models.checkGateway")}
               </button>
             </div>
             {"hummingbot" in results && (
@@ -198,32 +195,25 @@ export function ModelsCosts() {
             )}
           </PaperCard>
 
-          <PaperCard eyebrow="Cost posture" title="What this costs">
+          <PaperCard eyebrow={t("models.costPosture")} title={t("models.whatCosts")}>
             <div className="note-list">
-              <span className="ok">Paper mode: no exchange fees, no order routing.</span>
-              <span className="warn">
-                LLM and Jev calls cost money when configured; synthetic fallbacks do not.
-              </span>
-              <span className="warn">
-                Backtests are local and synthetic by default; real data replay is a separate
-                data-source decision.
-              </span>
-              <span className="ok">
-                Live exits are deterministic — no model call is required to close a position.
-              </span>
+              <span className="ok">{t("models.costPaper")}</span>
+              <span className="warn">{t("models.costCalls")}</span>
+              <span className="warn">{t("models.costBacktests")}</span>
+              <span className="ok">{t("models.costExits")}</span>
             </div>
           </PaperCard>
 
           {config.data && (
-            <PaperCard eyebrow="Runtime" title="Data &amp; execution">
+            <PaperCard eyebrow={t("models.runtime")} title={t("models.dataExecution")}>
               <div className="kv">
-                <dt>Data source</dt>
-                <dd className="mono">{config.data.data_source}</dd>
-                <dt>Execution backend</dt>
-                <dd className="mono">{config.data.execution_backend}</dd>
-                <dt>Environment</dt>
+                <dt>{t("models.dataSource")}</dt>
+                <dd className="mono">{label(config.data.data_source)}</dd>
+                <dt>{t("models.executionBackend")}</dt>
+                <dd className="mono">{label(config.data.execution_backend)}</dd>
+                <dt>{t("models.environment")}</dt>
                 <dd className="mono">{String(summary.app_env ?? "dev")}</dd>
-                <dt>Auth disabled</dt>
+                <dt>{t("models.authDisabled")}</dt>
                 <dd>{String(summary.auth_disabled ?? true)}</dd>
               </div>
             </PaperCard>

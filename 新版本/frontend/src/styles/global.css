@@ -185,6 +185,38 @@ button {
   flex: 1;
 }
 
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--card);
+}
+
+.lang-switch button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.lang-switch button + button {
+  border-left: 1px solid var(--line);
+}
+
+.lang-switch button:hover {
+  color: var(--ink);
+}
+
+.lang-switch button.active {
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
 .page-head {
   display: flex;
   align-items: flex-end;

@@ -4,18 +4,19 @@ import { NavLink, Outlet } from "react-router-dom";
 import { api, eventStreamUrl } from "../lib/api";
 import { isHealthy, label, timeAgo } from "../lib/format";
 import { useApi } from "../hooks/useApi";
+import { LanguageSwitch, useI18n } from "../i18n";
 import type { SystemStatus } from "../lib/types";
 import { Pill } from "./ui";
 
 const NAV = [
-  ["/", "Overview"],
-  ["/strategy", "Strategy Desk"],
-  ["/signals", "Jev Signals"],
-  ["/orders", "Orders & Positions"],
-  ["/backtests", "Backtests"],
-  ["/models", "Models & Costs"],
-  ["/risk", "Risk & Modes"],
-  ["/audit", "Audit & Settings"],
+  ["/", "nav.overview"],
+  ["/strategy", "nav.strategy"],
+  ["/signals", "nav.signals"],
+  ["/orders", "nav.orders"],
+  ["/backtests", "nav.backtests"],
+  ["/models", "nav.models"],
+  ["/risk", "nav.risk"],
+  ["/audit", "nav.audit"],
 ] as const;
 
 function dependencyTone(healthy: boolean): string {
@@ -23,6 +24,7 @@ function dependencyTone(healthy: boolean): string {
 }
 
 export function Layout() {
+  const { t } = useI18n();
   const status = useApi<SystemStatus>("/api/v1/system/status", 8000);
   const [killError, setKillError] = useState<string | null>(null);
   const [lastEvent, setLastEvent] = useState<string>("");
@@ -82,40 +84,42 @@ export function Layout() {
         <aside className="sidebar">
           <div className="brand">
             <span className="brand-mark">Jev Trading</span>
-            <span className="brand-sub">strategy notebook · paper first</span>
+            <span className="brand-sub">{t("brand.sub")}</span>
           </div>
 
           <nav className="nav">
-            {NAV.map(([to, text]) => (
+            {NAV.map(([to, key]) => (
               <NavLink key={to} to={to} end={to === "/"}>
-                {text}
+                {t(key)}
               </NavLink>
             ))}
           </nav>
 
           <div className="sidebar-foot">
-            <div className="eyebrow">Margin notes</div>
+            <div className="eyebrow">{t("sidebar.marginNotes")}</div>
             <div className="note-list">
               <span className={dependencyTone(isHealthy(view?.dependencies.market))}>
-                market feed · {view?.data_source ?? "…"}
+                {t("sidebar.marketFeed")} · {view?.data_source ?? "…"}
               </span>
               <span className={dependencyTone(isHealthy(view?.dependencies.database))}>
-                database
+                {t("sidebar.database")}
               </span>
               <span className={dependencyTone(isHealthy(view?.dependencies.execution))}>
-                execution · {view?.execution_backend ?? "…"}
+                {t("sidebar.execution")} · {view?.execution_backend ?? "…"}
               </span>
               <span className={dependencyTone(Boolean(view?.policy))}>
-                policy {view?.policy ? "valid" : "missing"}
+                {view?.policy ? t("sidebar.policyValid") : t("sidebar.policyMissing")}
               </span>
               <span className={dependencyTone(isHealthy(view?.dependencies.jev))}>
-                Jev · {view?.dependencies.jev?.simulated ? "simulated" : "connected"}
+                {view?.dependencies.jev?.simulated
+                  ? t("sidebar.jevSimulated")
+                  : t("sidebar.jevConnected")}
               </span>
             </div>
             <div className="hand" style={{ marginTop: 8 }}>
               {view?.synthetic_market
-                ? "Synthetic market. Plumbing only."
-                : "Live market data source."}
+                ? t("sidebar.syntheticNote")
+                : t("sidebar.liveNote")}
             </div>
           </div>
         </aside>
@@ -123,24 +127,38 @@ export function Layout() {
         <main className="main">
           <div className="mode-ribbon">
             <Pill tone={modeTone as "" | "olive" | "yellow" | "danger"} dot>
-              {mode?.mode ?? "connecting"}
+              {mode?.mode ? label(mode.mode) : t("ribbon.connecting")}
             </Pill>
-            {isLive && <Pill tone={armed ? "danger" : "yellow"}>{armed ? "armed" : "not armed"}</Pill>}
-            {killSwitch && <Pill tone="danger">entries stopped</Pill>}
-            {view?.simulated_models && <Pill tone="terracotta">simulated models</Pill>}
-            {view?.synthetic_market && <Pill>synthetic data</Pill>}
+            {isLive && (
+              <Pill tone={armed ? "danger" : "yellow"}>
+                {armed ? t("ribbon.armed") : t("ribbon.notArmed")}
+              </Pill>
+            )}
+            {killSwitch && <Pill tone="danger">{t("ribbon.entriesStopped")}</Pill>}
+            {view?.simulated_models && (
+              <Pill tone="terracotta">{t("ribbon.simulatedModels")}</Pill>
+            )}
+            {view?.synthetic_market && <Pill>{t("ribbon.syntheticData")}</Pill>}
             <span className="spacer" />
-            {lastEvent && <span className="muted small">event · {label(lastEvent)}</span>}
+            {lastEvent && (
+              <span className="muted small">
+                {t("ribbon.event")} · {label(lastEvent)}
+              </span>
+            )}
             <span className="muted small">
-              updated {timeAgo(view?.server_time ?? null)} · {view?.server_time ? "" : "offline"}
+              {t("ribbon.updated", {
+                time: timeAgo(view?.server_time ?? null),
+                status: view?.server_time ? "" : ` · ${t("ribbon.offline")}`,
+              })}
             </span>
             <button
               className="button danger small"
               onClick={() => void stopEntries()}
               disabled={killSwitch}
             >
-              Stop new entries
+              {t("ribbon.stopEntries")}
             </button>
+            <LanguageSwitch />
           </div>
 
           {killError && <div className="callout danger">{killError}</div>}

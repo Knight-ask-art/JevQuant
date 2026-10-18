@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { useOutletContext } from "react-router-dom";
 
 import { EquityChart } from "../components/charts";
 import { EmptyState, ErrorNote, PaperCard, Pill, ScribbleUnderline } from "../components/ui";
 import { useApi } from "../hooks/useApi";
-import { clock, money, pct, shortId, signed, timeAgo } from "../lib/format";
-import type { OrderView, PnlPoint, PositionView } from "../lib/types";
+import { useI18n } from "../i18n";
+import { clock, label, money, pct, shortId, signed, timeAgo } from "../lib/format";
+import type { OrderView, PnlPoint, PositionView, SystemStatus } from "../lib/types";
 
 type Tab = "positions" | "orders" | "fills" | "ledger";
 
@@ -27,6 +29,8 @@ function orderTone(status: string): "" | "olive" | "terracotta" | "danger" | "ye
 }
 
 export function OrdersPositions() {
+  const { t } = useI18n();
+  const { status } = useOutletContext<{ status?: SystemStatus }>();
   const [tab, setTab] = useState<Tab>("positions");
   const positions = useApi<{ items: PositionView[] }>("/api/v1/positions?limit=100", 10000);
   const orders = useApi<{ items: OrderView[] }>("/api/v1/orders?limit=100", 10000);
@@ -46,42 +50,51 @@ export function OrdersPositions() {
     .reverse()
     .map((point) => ({ at: point.as_of, equity_usdt: point.equity_usdt }));
   const openPositions = positions.data?.items ?? [];
+  const orderCount = orders.data?.items?.length ?? 0;
 
   return (
     <div className="stack" style={{ gap: 20 }}>
       <div className="page-head">
         <div>
-          <div className="page-kicker">Orders &amp; Positions</div>
-          <h1>The execution ledger</h1>
+          <div className="page-kicker">{t("orders.kicker")}</div>
+          <h1>{t("orders.title")}</h1>
           <ScribbleUnderline width={270} />
-          <p className="page-lede">
-            Paper, Shadow, Testnet and Hummingbot consume the same frozen approved intent.
-            Every fill, fee and position change is written once, with the mode and simulation
-            flag that produced it.
-          </p>
+          <p className="page-lede">{t("orders.lede")}</p>
         </div>
         <div className="row">
-          <Pill tone="olive">{openPositions.length} open</Pill>
-          <Pill>{orders.data?.items?.length ?? 0} orders</Pill>
+          <Pill tone="olive">
+            {t("orders.openCount", { n: openPositions.length })}
+          </Pill>
+          <Pill>
+            {orderCount === 1
+              ? t("common.oneOrder")
+              : t("orders.ordersCount", { n: orderCount })}
+          </Pill>
         </div>
       </div>
 
       <div className="grid grid-3">
         <PaperCard>
-          <div className="stat-label">Realized PnL</div>
+          <div className="stat-label">{t("orders.realizedPnl")}</div>
           <div className="stat-value">{signed(pnl.data?.account?.realized_pnl_usdt)}</div>
-          <div className="stat-note">since inception · paper ledger</div>
+          <div className="stat-note">
+            {t("orders.sinceInception", {
+              mode: label(status?.mode?.mode ?? "paper"),
+            })}
+          </div>
         </PaperCard>
         <PaperCard>
-          <div className="stat-label">Daily realized</div>
+          <div className="stat-label">{t("orders.dailyRealized")}</div>
           <div className="stat-value">{signed(pnl.data?.account?.daily_realized_pnl_usdt)}</div>
-          <div className="stat-note">resets on the UTC date boundary</div>
+          <div className="stat-note">{t("orders.resetsUtc")}</div>
         </PaperCard>
         <PaperCard>
-          <div className="stat-label">Peak equity</div>
+          <div className="stat-label">{t("orders.peakEquity")}</div>
           <div className="stat-value">{money(pnl.data?.account?.peak_equity_usdt)}</div>
           <div className="stat-note">
-            started at {money(pnl.data?.account?.starting_equity_usdt)}
+            {t("orders.startedAt", {
+              value: money(pnl.data?.account?.starting_equity_usdt),
+            })}
           </div>
         </PaperCard>
       </div>
@@ -89,10 +102,10 @@ export function OrdersPositions() {
       <div className="tabs">
         {(
           [
-            ["positions", "Positions"],
-            ["orders", "Orders"],
-            ["fills", "Fills"],
-            ["ledger", "PnL ledger"],
+            ["positions", t("orders.tabPositions")],
+            ["orders", t("orders.tabOrders")],
+            ["fills", t("orders.tabFills")],
+            ["ledger", t("orders.tabLedger")],
           ] as Array<[Tab, string]>
         ).map(([value, text]) => (
           <button
@@ -106,22 +119,22 @@ export function OrdersPositions() {
       </div>
 
       {tab === "positions" && (
-        <PaperCard eyebrow="Spot long-only" title="Open positions">
+        <PaperCard eyebrow={t("orders.spotLongOnly")} title={t("orders.openPositions")}>
           <ErrorNote error={positions.error} />
           {openPositions.length ? (
             <div className="table-wrap">
               <table className="data">
                 <thead>
                   <tr>
-                    <th>Symbol</th>
-                    <th className="num">Qty</th>
-                    <th className="num">Entry</th>
-                    <th className="num">Mark</th>
-                    <th className="num">Unrealized</th>
-                    <th className="num">Stop</th>
-                    <th className="num">Take</th>
-                    <th>Opened</th>
-                    <th>Mode</th>
+                    <th>{t("common.symbol")}</th>
+                    <th className="num">{t("common.qty")}</th>
+                    <th className="num">{t("common.entry")}</th>
+                    <th className="num">{t("common.mark")}</th>
+                    <th className="num">{t("common.unrealized")}</th>
+                    <th className="num">{t("orders.stop")}</th>
+                    <th className="num">{t("orders.take")}</th>
+                    <th>{t("common.opened")}</th>
+                    <th>{t("common.mode")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -139,7 +152,7 @@ export function OrdersPositions() {
                       <td className="muted">{timeAgo(position.opened_at)}</td>
                       <td>
                         <Pill tone={position.is_simulated ? "terracotta" : "olive"}>
-                          {position.is_simulated ? "simulated" : "live"}
+                          {position.is_simulated ? t("common.simulated") : t("common.live")}
                         </Pill>
                       </td>
                     </tr>
@@ -148,33 +161,33 @@ export function OrdersPositions() {
               </table>
             </div>
           ) : (
-            <EmptyState
-              title="Flat."
-              hint="Positions appear after an approved entry fills. Stops and take-profits are deterministic."
-            />
+            <EmptyState title={t("orders.flat")} hint={t("orders.flatHint")} />
           )}
         </PaperCard>
       )}
 
       {tab === "orders" && (
-        <PaperCard eyebrow="Execution state machine" title="Orders">
+        <PaperCard
+          eyebrow={t("orders.executionStateMachine")}
+          title={t("orders.tabOrders")}
+        >
           <ErrorNote error={orders.error} />
           {orders.data?.items?.length ? (
             <div className="table-wrap">
               <table className="data">
                 <thead>
                   <tr>
-                    <th>Order</th>
-                    <th>Symbol</th>
-                    <th>Side</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th className="num">Qty</th>
-                    <th className="num">Filled</th>
-                    <th className="num">Avg price</th>
-                    <th className="num">Fee</th>
-                    <th>Mode</th>
-                    <th>Created</th>
+                    <th>{t("orders.order")}</th>
+                    <th>{t("common.symbol")}</th>
+                    <th>{t("common.side")}</th>
+                    <th>{t("common.type")}</th>
+                    <th>{t("common.status")}</th>
+                    <th className="num">{t("common.qty")}</th>
+                    <th className="num">{t("orders.fill")}</th>
+                    <th className="num">{t("orders.avgPrice")}</th>
+                    <th className="num">{t("signals.fee")}</th>
+                    <th>{t("common.mode")}</th>
+                    <th>{t("common.created")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -184,17 +197,17 @@ export function OrdersPositions() {
                       <td>
                         <strong>{order.symbol}</strong>
                       </td>
-                      <td>{order.side}</td>
-                      <td>{order.order_type}</td>
+                      <td>{label(order.side)}</td>
+                      <td>{label(order.order_type)}</td>
                       <td>
-                        <Pill tone={orderTone(order.status)}>{order.status}</Pill>
+                        <Pill tone={orderTone(order.status)}>{label(order.status)}</Pill>
                       </td>
                       <td className="num">{order.qty}</td>
                       <td className="num">{order.filled_qty}</td>
                       <td className="num">{money(order.avg_fill_price)}</td>
                       <td className="num">{money(order.fee_quote, 4)}</td>
                       <td>
-                        <span className="mono small">{order.mode}</span>
+                        <span className="mono small">{label(order.mode)}</span>
                       </td>
                       <td className="muted">{clock(order.created_at)}</td>
                     </tr>
@@ -203,25 +216,25 @@ export function OrdersPositions() {
               </table>
             </div>
           ) : (
-            <EmptyState title="No orders yet." hint="Approved intents become orders here." />
+            <EmptyState title={t("orders.noOrders")} hint={t("orders.noOrdersHint")} />
           )}
         </PaperCard>
       )}
 
       {tab === "fills" && (
-        <PaperCard eyebrow="Append-only" title="Fills">
+        <PaperCard eyebrow={t("orders.appendOnly")} title={t("orders.fills")}>
           <ErrorNote error={fills.error} />
           {fills.data?.items?.length ? (
             <div className="table-wrap">
               <table className="data">
                 <thead>
                   <tr>
-                    <th>Fill</th>
-                    <th>Order</th>
-                    <th className="num">Qty</th>
-                    <th className="num">Price</th>
-                    <th className="num">Fee</th>
-                    <th>At</th>
+                    <th>{t("orders.fill")}</th>
+                    <th>{t("orders.order")}</th>
+                    <th className="num">{t("common.qty")}</th>
+                    <th className="num">{t("common.price")}</th>
+                    <th className="num">{t("signals.fee")}</th>
+                    <th>{t("orders.at")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -241,30 +254,30 @@ export function OrdersPositions() {
               </table>
             </div>
           ) : (
-            <EmptyState title="No fills yet." hint="The paper adapter writes a fill per execution." />
+            <EmptyState title={t("orders.noFills")} hint={t("orders.noFillsHint")} />
           )}
         </PaperCard>
       )}
 
       {tab === "ledger" && (
         <div className="stack">
-          <PaperCard eyebrow="Equity" title="Snapshots">
+          <PaperCard eyebrow={t("orders.equity")} title={t("orders.snapshots")}>
             <ErrorNote error={pnl.error} />
             <EquityChart points={points} />
           </PaperCard>
-          <PaperCard eyebrow="Snapshot rows" title="Ledger detail">
+          <PaperCard eyebrow={t("orders.snapshotRows")} title={t("orders.ledgerDetail")}>
             {pnl.data?.items?.length ? (
               <div className="table-wrap">
                 <table className="data">
                   <thead>
                     <tr>
-                      <th>As of</th>
-                      <th className="num">Equity</th>
-                      <th className="num">Cash</th>
-                      <th className="num">Realized</th>
-                      <th className="num">Unrealized</th>
-                      <th className="num">Gross</th>
-                      <th className="num">Drawdown</th>
+                      <th>{t("orders.asOf")}</th>
+                      <th className="num">{t("orders.equity")}</th>
+                      <th className="num">{t("orders.cash")}</th>
+                      <th className="num">{t("orders.realized")}</th>
+                      <th className="num">{t("common.unrealized")}</th>
+                      <th className="num">{t("orders.gross")}</th>
+                      <th className="num">{t("overview.drawdown")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -283,7 +296,7 @@ export function OrdersPositions() {
                 </table>
               </div>
             ) : (
-              <EmptyState title="No ledger rows." hint="A cycle writes one snapshot." />
+              <EmptyState title={t("orders.noLedger")} hint={t("orders.noLedgerHint")} />
             )}
           </PaperCard>
         </div>

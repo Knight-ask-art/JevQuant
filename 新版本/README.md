@@ -34,7 +34,7 @@ shared by Paper, Shadow, Binance Testnet and Hummingbot V2.
 | Hash-linked append-only audit + redaction + verification | ✅ implemented, tested |
 | Live arming handshake (env flags → preflight → one-time token → phrase + TOTP) | ✅ implemented, cannot pass without real credentials |
 | Optional auto-cycle scheduler | ✅ implemented |
-| Hand-drawn editorial React UI (8 pages) | ✅ implemented |
+| Hand-drawn editorial React UI (8 pages, EN/中文) | ✅ implemented |
 | Deterministic synthetic backtest replay | ✅ implemented, explicitly labelled synthetic |
 | Real OHLCV / Freqtrade replay | ❌ not implemented |
 | Real fill-ledger rebuild for Hummingbot | ❌ follow-up (unknown states are reconciled, not invented) |
