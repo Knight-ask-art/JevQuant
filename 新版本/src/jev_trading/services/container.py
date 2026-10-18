@@ -473,8 +473,8 @@ class AppContainer:
             )
             merged = self._merge_provider(current["jev"], jev, existing_key=current_key)
             merged.setdefault(
-            "path", current["jev"].get("path") or "/v1/decisions"
-        )
+                "path", current["jev"].get("path") or "/v1/decisions"
+            )
             stored["jev"] = merged
         # Swap adapters while no cycle can be reading them.
         async with self._cycle_lock:
