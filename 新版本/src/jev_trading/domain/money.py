@@ -84,13 +84,16 @@ def safe_div(numerator: Decimal, denominator: Decimal) -> Decimal:
 
 
 def round_price(price: Decimal, tick: Decimal) -> Decimal:
-    """Round a price down to the exchange tick."""
+    """Round a price down to the exchange tick.
+
+    ``tick`` is a step, not a precision: Binance reports ``tickSize`` as
+    ``"0.01000000"`` (eight decimals), whose *exponent* would let
+    ``Decimal.quantize`` through a price of ``81777.56224200``. Dividing by
+    the tick value makes the step independent of how it is written.
+    """
     if tick <= ZERO:
         raise MoneyError("tick must be positive")
     try:
-        stepped = price.quantize(tick)
+        return max(quantize_down(price, tick), ZERO)
     except InvalidOperation as exc:  # pragma: no cover - defensive
         raise MoneyError("invalid price precision") from exc
-    if stepped > price:
-        stepped -= tick
-    return max(stepped, ZERO)
