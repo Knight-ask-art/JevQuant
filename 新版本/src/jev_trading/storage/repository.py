@@ -10,7 +10,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
@@ -521,20 +521,25 @@ class Repository:
             return row
 
     async def recent_entry_signal_times(
-        self, symbol: str, since: datetime
+        self, symbol: str, since: datetime, states: Sequence[str]
     ) -> list[datetime]:
-        """When the entry signals for ``symbol`` were created.
+        """When entries for ``symbol`` reached the market since ``since``.
 
-        Over-trading protection counts signals, not fills: it must catch
-        entries the risk engine turned down or that never filled. The cycle
-        creates every entry signal for one account, and a close reuses its
-        position's entry signal, so every row here is an entry attempt.
+        Over-trading protection counts entries that got past the Jev gate, not
+        every signal the cycle evaluated: throttling evaluation would starve
+        the agent of the evidence it calibrates against. Signals the risk
+        engine later turned down are included - they still cost a round trip
+        of work, and a symbol that keeps producing them is churning.
         """
 
         async with self.db.session() as session:
             result = await session.execute(
                 select(SignalRow.created_at)
-                .where(SignalRow.symbol == symbol, SignalRow.created_at >= since)
+                .where(
+                    SignalRow.symbol == symbol,
+                    SignalRow.created_at >= since,
+                    SignalRow.state.in_(list(states)),
+                )
                 .order_by(SignalRow.created_at)
             )
             return list(result.scalars())

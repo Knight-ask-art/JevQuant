@@ -632,8 +632,15 @@ def _age_the_clock(orchestrator, seconds: int = 90) -> None:
 # ---------------------------------------------------------------------------
 # over-trading protection
 # ---------------------------------------------------------------------------
-async def _entry_signal(repo, policy, ctx, symbol: str, at: datetime):
-    """An entry signal backdated to ``at``.
+async def _entry_signal(
+    repo,
+    policy,
+    ctx,
+    symbol: str,
+    at: datetime,
+    state: SignalState = SignalState.ELIGIBLE,
+):
+    """An entry signal that reached the market, backdated to ``at``.
 
     Column defaults bind the clock at import time, so the timestamp is set
     explicitly rather than monkeypatched.
@@ -644,7 +651,7 @@ async def _entry_signal(repo, policy, ctx, symbol: str, at: datetime):
         policy_id=str(policy.policy_id),
         snapshot_id=str(ctx.market.snapshot_id),
         side="BUY",
-        state=SignalState.CANDIDATE,
+        state=state,
     )
     async with repo.db.session() as session:
         row = await session.get(SignalRow, signal.id)
@@ -667,11 +674,15 @@ async def test_overtrade_guard_blocks_once_the_window_is_full(repo, server_limit
         repo, server_limits
     )
     orchestrator = _guard_orchestrator(repo, account, paper, window=3600, maximum=3)
-    # The paper entry's own signal carries the real clock, far outside the
-    # window; only the backdated ones below count.
+    # Signals Jev never let through are still evaluated, and must not count.
+    for minutes in (5, 6):
+        await _entry_signal(
+            repo, policy, ctx, "ETHUSDT", NOW - timedelta(minutes=minutes), SignalState.REJECTED
+        )
+    assert await orchestrator._overtrade_wait("ETHUSDT", NOW) == 0.0
+
     for minutes in (10, 20):
         await _entry_signal(repo, policy, ctx, "ETHUSDT", NOW - timedelta(minutes=minutes))
-
     assert await orchestrator._overtrade_wait("ETHUSDT", NOW) == 0.0
     await _entry_signal(repo, policy, ctx, "ETHUSDT", NOW - timedelta(minutes=1))
 

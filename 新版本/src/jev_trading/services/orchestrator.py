@@ -50,6 +50,28 @@ CLOSE_ORDER_WORKING_LIMIT_SECONDS = 300
 # against a market that has moved away from it. Waiting for the full working
 # limit is how an exit quietly turns into a held loss: re-price instead.
 RESTING_CLOSE_REPRICE_SECONDS = 60
+# Signal states that mean an entry reached the market (the Jev gate let it
+# through). The over-trading guard counts these, so a symbol Jev keeps
+# rejecting is still evaluated as often as the cycle runs.
+MARKET_REACHED_SIGNAL_STATES = tuple(
+    state.value
+    for state in SignalState
+    if state
+    in {
+        SignalState.ELIGIBLE,
+        SignalState.INTENT_CREATED,
+        SignalState.RISK_PENDING,
+        SignalState.RISK_REJECTED,
+        SignalState.APPROVED,
+        SignalState.EXECUTION_PENDING,
+        SignalState.ACCEPTED,
+        SignalState.PARTIALLY_FILLED,
+        SignalState.FILLED,
+        SignalState.POSITION_OPEN,
+        SignalState.EXIT_PENDING,
+        SignalState.CLOSED,
+    }
+)
 # A resting sell is stale once the bid has risen this far above its limit: at
 # that point it no longer tracks the market and is simply absorbing moves.
 REPRICE_BPS = 10
@@ -519,7 +541,9 @@ class TradingOrchestrator:
         if window <= 0 or maximum <= 0:
             return 0.0
         recent = await self.repo.recent_entry_signal_times(
-            symbol, now - timedelta(seconds=window)
+            symbol,
+            now - timedelta(seconds=window),
+            MARKET_REACHED_SIGNAL_STATES,
         )
         if len(recent) < maximum:
             return 0.0
