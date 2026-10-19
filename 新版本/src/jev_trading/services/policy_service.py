@@ -37,6 +37,22 @@ def _trace_flags(trace: Any) -> dict[str, bool]:
     return {name: True for name in _TRACE_FLAGS if trace.get(name)}
 
 
+def policy_display_status(
+    row: StrategyPolicyRow, now: datetime | None = None
+) -> tuple[str, bool]:
+    """The status a policy row should be presented with, and whether it has expired.
+
+    Expiry is derived from ``expires_at`` on every read rather than trusted
+    from the status column: the column is only rewritten the next time the
+    policy is looked up, so a stale row would otherwise keep reading ACTIVE.
+    """
+
+    expired = row.expires_at <= (now or datetime.now(UTC))
+    if expired and row.status == "ACTIVE":
+        return "EXPIRED", True
+    return row.status, expired
+
+
 def _with_trace_flags(
     usage: dict[str, Any] | None,
     trace: dict[str, bool] | None,
@@ -332,12 +348,15 @@ class PolicyService:
         except Exception:  # noqa: BLE001 - journal-only figure
             return Decimal("0")
 
-    async def get_active(self, mode: str) -> EffectivePolicy | None:
+    async def get_active(
+        self, mode: str, *, now: datetime | None = None
+    ) -> EffectivePolicy | None:
         row = await self.repo.get_active_policy()
         if row is None:
             return None
-        if row.expires_at <= datetime.now(UTC):
-            await self.repo.expire_policies()
+        now = now or datetime.now(UTC)
+        if row.expires_at <= now:
+            await self.repo.expire_policies(now)
             return None
         effective = EffectivePolicy.model_validate(row.effective_json)
         if not effective.applies_to(_mode(mode)):
@@ -346,6 +365,55 @@ class PolicyService:
 
     async def get_active_row(self) -> StrategyPolicyRow | None:
         return await self.repo.get_active_policy()
+
+    async def current(
+        self, mode: str, *, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """The policy in force plus the newest row, with an explicit reason.
+
+        Callers get ``active`` as the only authority for "entries may open".
+        When nothing is in force the newest row is still returned so the UI
+        can distinguish "expired" from "never authored" and warn accordingly.
+        """
+
+        now = now or datetime.now(UTC)
+        effective = await self.get_active(mode, now=now)
+        row = await self.repo.get_active_policy()
+        if row is not None:
+            status, expired = policy_display_status(row, now)
+            return {
+                "active": effective is not None,
+                "expired": expired,
+                "reason": (
+                    "expired"
+                    if expired
+                    else None
+                    if effective is not None
+                    else "mode_mismatch"
+                ),
+                "status": status,
+                "policy": row,
+                "compiled": effective,
+            }
+        latest = await self.repo.get_latest_policy()
+        if latest is None:
+            return {
+                "active": False,
+                "expired": False,
+                "reason": "no_policy",
+                "status": None,
+                "policy": None,
+                "compiled": None,
+            }
+        status, expired = policy_display_status(latest, now)
+        return {
+            "active": False,
+            "expired": expired,
+            "reason": "expired" if expired or latest.status == "EXPIRED" else "inactive",
+            "status": status,
+            "policy": latest,
+            "compiled": None,
+        }
 
     @staticmethod
     def describe(effective: EffectivePolicy) -> dict[str, Any]:

@@ -307,6 +307,13 @@ export function Overview() {
               </div>
             ) : (
               <div className="stack">
+                {view?.policy_state?.expired && (
+                  <p className="small" style={{ color: "var(--terracotta)" }}>
+                    {t("overview.policyExpired", {
+                      time: clock(view.policy_state.expires_at),
+                    })}
+                  </p>
+                )}
                 <p className="hand">{t("overview.noPolicy")}</p>
                 <Link className="small" to="/strategy">
                   {t("overview.generateOne")}

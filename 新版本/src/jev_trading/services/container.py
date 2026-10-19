@@ -40,7 +40,7 @@ from .features import build_features
 from .market_service import MarketService
 from .modes import ModeManager
 from .orchestrator import TradingOrchestrator
-from .policy_service import PolicyService
+from .policy_service import PolicyService, policy_display_status
 
 logger = logging.getLogger("jev_trading.container")
 
@@ -658,10 +658,39 @@ class AppContainer:
         marks = await self.repo.latest_market_marks()
         account = await self.repo.account_snapshot(self.account_id, marks)
         positions = await self.repo.get_open_positions(self.account_id)
+        now = datetime.now(UTC)
         policy_row = await self.repo.get_active_policy()
+        latest_policy = policy_row or await self.repo.get_latest_policy()
+        active_policy = bool(dependencies.get("policy_fresh"))
+        policy_expired = latest_policy is not None and latest_policy.expires_at <= now
+        policy_state = {
+            "active": active_policy,
+            "expired": policy_expired,
+            "reason": (
+                None
+                if active_policy
+                else "expired"
+                if policy_expired
+                or (latest_policy is not None and latest_policy.status == "EXPIRED")
+                else "mode_mismatch"
+                if latest_policy is not None
+                else "no_policy"
+            ),
+            "status": (
+                policy_display_status(latest_policy, now)[0]
+                if latest_policy is not None
+                else None
+            ),
+            "policy_id": latest_policy.policy_id if latest_policy is not None else None,
+            "expires_at": (
+                latest_policy.expires_at.isoformat()
+                if latest_policy is not None
+                else None
+            ),
+        }
         spend = await self.budgets.snapshot()
         policy_payload = None
-        if policy_row is not None:
+        if policy_row is not None and active_policy:
             policy_payload = {
                 "policy_id": policy_row.policy_id,
                 "status": policy_row.status,
@@ -726,6 +755,7 @@ class AppContainer:
             },
             "positions": position_payload,
             "policy": policy_payload,
+            "policy_state": policy_state,
             "budgets": spend,
             "server_limits": {
                 "max_position_notional_usdt": str(

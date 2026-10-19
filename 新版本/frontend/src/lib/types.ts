@@ -64,6 +64,22 @@ export interface PolicyView {
   }>;
 }
 
+export type PolicyStaleReason =
+  | "expired"
+  | "mode_mismatch"
+  | "inactive"
+  | "no_policy"
+  | null;
+
+export interface PolicyState {
+  active: boolean;
+  expired: boolean;
+  reason: PolicyStaleReason;
+  status: string | null;
+  policy_id: string | null;
+  expires_at: string | null;
+}
+
 export interface ModelConnection {
   provider: string;
   configured: boolean;
@@ -165,6 +181,7 @@ export interface SystemStatus {
   account: AccountView;
   positions: PositionView[];
   policy: (PolicyView & { mode_scope: string[] }) | null;
+  policy_state?: PolicyState;
   budgets?: ProviderSpendView;
   server_limits: {
     max_position_notional_usdt: string;

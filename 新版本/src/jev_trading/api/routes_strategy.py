@@ -17,6 +17,7 @@ from ..domain.enums import ErrorCode
 from ..domain.errors import AppError
 from ..domain.money import canonical_str
 from ..services.agent_tools import AgentToolbox
+from ..services.policy_service import policy_display_status
 from . import serializers as ser
 from .security import require_operator
 
@@ -158,17 +159,28 @@ async def current_policy(
 ) -> dict[str, object]:
     container = _container(request)
     mode = await container.modes.current_mode()
-    effective = await container.policy_service.get_active(mode.value)
-    row = await container.policy_service.get_active_row()
+    view = await container.policy_service.current(mode.value)
+    row = view["policy"]
     if row is None:
-        return {"active": False, "policy": None}
+        return {
+            "active": False,
+            "expired": False,
+            "reason": view["reason"],
+            "compiled": None,
+            "policy": None,
+        }
+    effective = view["compiled"]
     return {
-        "active": effective is not None,
+        "active": view["active"],
+        "expired": view["expired"],
+        "reason": view["reason"],
         "compiled": container.policy_service.describe(effective) if effective else None,
         "policy": {
             "id": row.id,
             "policy_id": row.policy_id,
-            "status": row.status,
+            "status": view["status"],
+            "active": view["active"],
+            "expired": view["expired"],
             "source": row.source,
             "is_simulated": row.is_simulated,
             "mode_scope": row.mode_scope_json,
@@ -195,7 +207,8 @@ async def list_policies(
             {
                 "id": row.id,
                 "policy_id": row.policy_id,
-                "status": row.status,
+                "status": policy_display_status(row)[0],
+                "expired": policy_display_status(row)[1],
                 "source": row.source,
                 "is_simulated": row.is_simulated,
                 "regime": (row.effective_json or {}).get("regime", {}).get("label"),
@@ -216,10 +229,12 @@ async def get_policy(
     row = await container.repo.get_policy_by_policy_id(policy_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, f"Policy {policy_id} was not found.")
+    status, expired = policy_display_status(row)
     return {
         "id": row.id,
         "policy_id": row.policy_id,
-        "status": row.status,
+        "status": status,
+        "expired": expired,
         "source": row.source,
         "is_simulated": row.is_simulated,
         "mode_scope": row.mode_scope_json,

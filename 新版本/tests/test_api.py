@@ -86,6 +86,54 @@ def test_policy_generation_is_compiled_and_marked(open_client):
     assert current["active"] is True
 
 
+def test_an_expired_policy_is_reported_expired_not_active(open_client):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    from jev_trading.storage.models import StrategyPolicyRow
+
+    response = open_client.post(
+        "/api/v1/strategy/policies/generate", json={"purpose": "trade_runtime"}
+    )
+    assert response.status_code == 200
+
+    container = open_client.app.state.container
+
+    async def _expire_policy():
+        async with container.db.session() as session:
+            row = (
+                await session.execute(
+                    select(StrategyPolicyRow).order_by(
+                        StrategyPolicyRow.created_at.desc()
+                    )
+                )
+            ).scalars().first()
+            assert row is not None
+            expires = datetime.now(UTC) - timedelta(minutes=1)
+            row.expires_at = expires
+            row.effective_json = {**row.effective_json, "expires_at": expires.isoformat()}
+
+    open_client.portal.call(_expire_policy)
+
+    current = open_client.get("/api/v1/strategy/policies/current").json()
+    assert current["active"] is False
+    assert current["expired"] is True
+    assert current["reason"] == "expired"
+    assert current["policy"]["status"] == "EXPIRED"
+
+    status = open_client.get("/api/v1/system/status").json()
+    assert status["policy"] is None
+    assert status["policy_state"]["active"] is False
+    assert status["policy_state"]["expired"] is True
+    assert status["policy_state"]["status"] == "EXPIRED"
+    assert status["dependencies"]["policy_fresh"] is False
+
+    history = open_client.get("/api/v1/strategy/policies").json()["items"]
+    assert history[0]["status"] == "EXPIRED"
+    assert history[0]["expired"] is True
+
+
 def test_reconcile_endpoint_uses_the_active_adapter(open_client):
     response = open_client.post(
         "/api/v1/execution/reconcile",

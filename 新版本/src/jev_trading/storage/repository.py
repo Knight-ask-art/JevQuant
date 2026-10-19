@@ -345,6 +345,23 @@ class Repository:
                 )
             ).scalar_one_or_none()
 
+    async def get_latest_policy(self) -> StrategyPolicyRow | None:
+        """The most recently written policy row, whatever its status.
+
+        Used only to explain a blocked state: when nothing is ACTIVE, the
+        newest row tells the operator whether the desk expired or was never
+        authored.
+        """
+
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(StrategyPolicyRow)
+                    .order_by(StrategyPolicyRow.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
     async def get_policy_by_policy_id(self, policy_id: str) -> StrategyPolicyRow | None:
         async with self.db.session() as session:
             return (

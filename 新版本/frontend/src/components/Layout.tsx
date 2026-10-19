@@ -71,6 +71,8 @@ export function Layout() {
   }, []);
 
   const view = status.data;
+  // Expiry is derived server-side so a stale ACTIVE row never reads valid.
+  const policyActive = view?.policy_state?.active ?? Boolean(view?.policy);
   const mode = view?.mode;
   const killSwitch = mode?.kill_switch ?? false;
   const armed = mode?.live_armed ?? false;
@@ -132,8 +134,8 @@ export function Layout() {
               <span className={dependencyTone(isHealthy(view?.dependencies.execution))}>
                 {t("sidebar.execution")} · {view?.execution_backend ?? "…"}
               </span>
-              <span className={dependencyTone(Boolean(view?.policy))}>
-                {view?.policy ? t("sidebar.policyValid") : t("sidebar.policyMissing")}
+              <span className={dependencyTone(policyActive)}>
+                {policyActive ? t("sidebar.policyValid") : t("sidebar.policyMissing")}
               </span>
               <span className={dependencyTone(isHealthy(view?.dependencies.jev))}>
                 {view?.dependencies.jev?.simulated

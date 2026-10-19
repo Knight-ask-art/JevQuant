@@ -9,8 +9,16 @@ import type { PolicyView } from "../lib/types";
 
 interface CurrentPolicy {
   active: boolean;
+  expired: boolean;
+  reason: "expired" | "mode_mismatch" | "inactive" | "no_policy" | null;
   compiled: Record<string, unknown> | null;
-  policy: (PolicyView & { mode_scope: string[] }) | null;
+  policy:
+    | (PolicyView & {
+        mode_scope: string[];
+        active?: boolean;
+        expired?: boolean;
+      })
+    | null;
 }
 
 type Tab = "notebook" | "compiled";
@@ -102,6 +110,20 @@ export function StrategyDesk() {
 
       {error && <ErrorNote error={error} />}
       {notice && <div className="callout olive">{notice}</div>}
+      {current.data && !current.data.active && current.data.policy && (
+        <div className="callout" role="status">
+          <strong>{t("strategy.noActiveTitle")}</strong>{" "}
+          {current.data.reason === "expired"
+            ? t("strategy.expiredBody", {
+                time: clock(current.data.policy?.expires_at),
+              })
+            : current.data.reason === "mode_mismatch"
+              ? t("strategy.mismatchBody", {
+                  scope: current.data.policy?.mode_scope?.join(", ") ?? "—",
+                })
+              : t("strategy.inactiveBody")}
+        </div>
+      )}
 
       {!policy ? (
         <PaperCard>
@@ -134,7 +156,11 @@ export function StrategyDesk() {
                 {t("strategy.generated", { time: clock(policy.generated_at) })}
               </p>
               <div className="row" style={{ marginTop: 10 }}>
-                <Pill tone="yellow">{label(policy.status)}</Pill>
+                {policy.expired || current.data?.expired ? (
+                  <Pill tone="danger">{t("strategy.expiredPill")}</Pill>
+                ) : (
+                  <Pill tone="yellow">{label(policy.status)}</Pill>
+                )}
                 <Pill tone={policy.simulated ? "terracotta" : "olive"}>
                   {policy.simulated ? t("common.simulated") : policy.source}
                 </Pill>
