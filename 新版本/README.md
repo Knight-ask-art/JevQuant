@@ -72,7 +72,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 181 tests: policy, agent, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
+pytest                     # 185 tests: policy, agent, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:
@@ -165,7 +165,7 @@ frontend/
                 Orders & Positions, Backtests, Models & Costs (incl. exchange
                 balances), Risk & Modes, Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          181 deterministic tests
+tests/          185 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)
@@ -218,6 +218,11 @@ contradict `JEV_APP_ENV=prod`.
   environment.
 - **Synthetic market, simulated models.** `SimulatedPolicyGenerator` and
   `SimulatedJevEvaluator` exist to exercise the pipeline. They are labelled everywhere.
+- **Jev is called at most once per closed candle per symbol, and only after that symbol's
+  previous signal passed the Jev gate.** The cadence is server-side (`JEV_JEV_MIN_CALL_INTERVAL_SECONDS`,
+  `JEV_CYCLE_REQUIRES_NEW_CANDLE=0` to disable); combined with the daily call cap, a 60-second
+  cycle no longer spends the budget on the same candle. A restart never resumes unattended
+  cycles on its own; the UI switch is persisted with an `origin` so a restart cannot flip it.
 - **Backtests are synthetic replays.** The engine is deterministic and discloses its
   assumptions; it is not evidence of edge and does not use historical exchange data.
 - **Hummingbot fill reconciliation is partial.** Order state is mapped and unknown states

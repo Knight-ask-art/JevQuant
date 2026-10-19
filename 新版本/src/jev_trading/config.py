@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     # reports cost 0, and a cap that can never be reached is worse than none.
     # 0 disables the individual limit.
     jev_max_calls_per_utc_day: int = Field(default=30, ge=0, le=100_000)
+    # Jev is asked at most once per closed 1h candle (the spec's rate
+    # policy). A 60-second cycle re-asking the same candle spends the daily
+    # budget on identical evidence, so the call itself is paced here, server
+    # side: a policy (or the model writing it) cannot loosen it, and exits do
+    # not need Jev. 0 disables pacing.
+    jev_min_call_interval_seconds: int = Field(default=3600, ge=0, le=86_400)
     jev_max_calls_per_utc_month: int = Field(default=900, ge=0, le=3_000_000)
     jev_max_monthly_cost_usd: Decimal = Field(default=Decimal("0"), ge=0)
     jev_input_price_per_mtok_usd: Decimal = Field(default=Decimal("0"), ge=0)
@@ -135,9 +141,16 @@ class Settings(BaseSettings):
     demo_mode: bool = True
 
     # Background cycle scheduler. 0 disables it; cycles are then driven by the
-    # CLI or POST /api/v1/demo/cycle. A non-zero value is the wall-clock
-    # interval between cycle starts.
+    # CLI or POST /api/v1/demo/cycle. A non-zero value is auto-enabled at
+    # startup, so an unattended host never cycles silently while a human
+    # expects it to. A runtime switch (PUT /settings/automation) is still
+    # persisted in system_state and restored on restart.
     auto_cycle_seconds: int = Field(default=0, ge=0, le=3600)
+    # A cycle whose candle has not closed since the last cycle has no new
+    # market evidence. On synthetic data replaying the same candle produces
+    # the same signal every minute; the default skips those cycles. Set false
+    # for demos that show a signal on every press.
+    cycle_requires_new_candle: bool = True
 
     # Exchange-account balance sync (testnet/live venues only). 0 disables the
     # scheduler; POST /api/v1/execution/balances/sync still runs on demand.
@@ -249,6 +262,7 @@ class Settings(BaseSettings):
                     self.jev_input_price_per_mtok_usd
                     or self.jev_output_price_per_mtok_usd
                 ),
+                "jev_min_call_interval_seconds": self.jev_min_call_interval_seconds,
                 "model_max_tokens_per_utc_month": self.model_max_tokens_per_utc_month,
                 "model_max_monthly_cost_usd": str(self.model_max_monthly_cost_usd),
                 "model_priced": bool(

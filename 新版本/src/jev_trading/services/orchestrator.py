@@ -176,6 +176,8 @@ class TradingOrchestrator:
         # position ids whose resting close was cancelled for a re-price most
         # recently; their replacement must not reuse this minute's key.
         self._repriced_positions: set[str] = set()
+        # Closed-candle time of the last cycle, for the new-evidence check.
+        self._last_candle_at: datetime | None = None
 
     async def request_close(self, position_id: str, *, actor: str) -> Any:
         """Mark an open position for an immediate close. Returns the row."""
@@ -225,9 +227,11 @@ class TradingOrchestrator:
             feed_error = exc
 
         snapshot_map: dict[str, MarketSnapshot] = {}
+        candle_times: set[datetime] = set()
         for snapshot in snapshots:
             await self.repo.insert_market_snapshot(snapshot)
             snapshot_map[snapshot.symbol] = snapshot
+            candle_times.add(snapshot.candle_close_at)
         marks = {symbol: snap.mid for symbol, snap in snapshot_map.items()}
         account = await self.repo.account_snapshot(self.account_id, marks, started)
 
@@ -253,6 +257,11 @@ class TradingOrchestrator:
         if adapter is not None:
             execution_health = bool((await adapter.health()).get("healthy"))
         feed_healthy = feed_error is None and bool(snapshots)
+        # The candle the last cycle evaluated, so a repeat tick can be told
+        # apart from a new one. Kept in memory: a restart always evaluates once.
+        previous_candle = self._last_candle_at
+        if feed_healthy and len(candle_times) == 1:
+            self._last_candle_at = next(iter(candle_times))
         system = await self.modes.system_snapshot(
             feed_healthy=feed_healthy,
             execution_healthy=execution_health,
@@ -294,6 +303,29 @@ class TradingOrchestrator:
                     "cycle",
                     cycle_id,
                     {"provider": "jev", "code": exc.code.value, **exc.details},
+                )
+
+        if (
+            self.settings.cycle_requires_new_candle
+            and feed_healthy
+            and len(candle_times) == 1
+            and previous_candle == next(iter(candle_times))
+        ):
+            # Every symbol resolved to the candle already in hand. Replaying
+            # it at the next tick re-asks Jev about evidence that has not
+            # moved, so entries stop here; exits still run below. A cycle
+            # blocked for a stronger reason keeps that reason.
+            notes.append("no closed candle since the last cycle; entries skipped")
+            if blocked_reason is None:
+                blocked_reason = "no_new_candle"
+                await self.audit.record(
+                    "cycle.no_new_candle",
+                    "cycle",
+                    cycle_id,
+                    {
+                        "mode": mode.value,
+                        "candle_close_at": next(iter(candle_times)).isoformat(),
+                    },
                 )
 
         if blocked_reason is None and policy is not None:
@@ -548,6 +580,30 @@ class TradingOrchestrator:
             price += rules.tick_size
         return min(price, rules.max_price)
 
+    async def _jev_pace_wait(self, symbol: str, now: datetime) -> float:
+        """Seconds Jev must wait before this symbol may be asked again.
+
+        The spec allows at most one Jev call per closed 1h candle, so a
+        symbol is not asked again until the server's minimum interval has
+        passed since its last signal reached the market (rejected signals
+        included: the call was paid for). Combined with the new-candle check,
+        replaying one candle can never spend the day's budget. Server side;
+        exits do not consult Jev, so pacing never delays a close.
+        """
+
+        interval = int(self.settings.jev_min_call_interval_seconds)
+        if interval <= 0:
+            return 0.0
+        last_reached = await self.repo.last_market_reached_at(
+            symbol, MARKET_REACHED_SIGNAL_STATES
+        )
+        if last_reached is None:
+            return 0.0
+        if last_reached.tzinfo is None:
+            last_reached = last_reached.replace(tzinfo=UTC)
+        elapsed = (now - last_reached).total_seconds()
+        return max(0.0, min(interval - elapsed, 86_400.0))
+
     async def _overtrade_wait(self, symbol: str, now: datetime) -> float:
         """Seconds the over-trading guard holds this symbol back, 0 if free.
 
@@ -619,6 +675,26 @@ class TradingOrchestrator:
             # Jev error).
             if self.budgets is not None:
                 await self.budgets.check_jev()
+            paused = await self._jev_pace_wait(symbol, now)
+            if paused > 0:
+                await self.repo.transition_signal(
+                    signal.id,
+                    SignalState.HOLD,
+                    {"reason": "jev_candle_pacing", "wait_seconds": int(paused)},
+                )
+                counters["entries_blocked"] += 1
+                await self.audit.record(
+                    "signal.paced",
+                    "signal",
+                    signal.id,
+                    {
+                        "symbol": symbol,
+                        "reason": "jev_candle_pacing",
+                        "min_interval_seconds": self.settings.jev_min_call_interval_seconds,
+                        "wait_seconds": int(paused),
+                    },
+                )
+                return
             jev_result = await self.jev.evaluate(state, questions, signal_id=signal.id)
         except AppError as exc:
             await self.repo.insert_jev_evaluation(

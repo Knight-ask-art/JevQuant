@@ -149,7 +149,10 @@ class AppContainer:
         # Runtime automation. The interval is mutable so the UI can switch the
         # scheduler on or off without restarting the process.
         self._auto_interval = settings.auto_cycle_seconds
-        self._automation_enabled = settings.auto_cycle_seconds > 0
+        # Off at construction even when auto_cycle_seconds is set: a restart
+        # must not resume unattended cycles on its own. startup() restores the
+        # persisted switch, or the env value only when configured for boot.
+        self._automation_enabled = False
         self._next_cycle_at: datetime | None = None
         self._automation_lock = asyncio.Lock()
         # Serializes changes to the symbol universe: the settings, compiler
@@ -332,11 +335,20 @@ class AppContainer:
         if isinstance(stored, dict):
             self._apply_credentials(stored)
         automation = await self.repo.get_state("automation")
-        if isinstance(automation, dict) and automation.get("enabled"):
-            interval = int(automation.get("interval_seconds") or 300)
+        if isinstance(automation, dict) and automation.get("origin") == "env":
+            # Boot policy from the env: followed on every restart, including
+            # "off", so the file stays the authority for unattended runs.
+            if self.settings.auto_cycle_seconds > 0:
+                self._start_auto_loop(self.settings.auto_cycle_seconds)
+            return
+        if not isinstance(automation, dict):
+            # Nothing chosen yet: offer the scheduler but do not start it.
+            if self.settings.auto_cycle_seconds > 0:
+                self._auto_interval = max(10, int(self.settings.auto_cycle_seconds))
+            return
+        interval = int(automation.get("interval_seconds") or 300)
+        if automation.get("enabled"):
             self._start_auto_loop(interval)
-        elif self.settings.auto_cycle_seconds > 0:
-            self._start_auto_loop(self.settings.auto_cycle_seconds)
 
     def model_settings(self) -> dict[str, Any]:
         """Non-secret view of the model connections."""
@@ -546,6 +558,7 @@ class AppContainer:
                 {
                     "enabled": self._automation_enabled,
                     "interval_seconds": self._auto_interval,
+                    "origin": "operator",
                 },
             )
         await self.audit.record(

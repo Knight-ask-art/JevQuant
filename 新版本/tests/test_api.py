@@ -386,6 +386,31 @@ def test_automation_can_be_switched_without_a_restart(open_client):
     assert disabled.json()["next_run_at"] is None
 
 
+def test_the_persisted_automation_switch_survives_a_restart(tmp_path):
+    with client(tmp_path) as api:
+        api.put(
+            "/api/v1/settings/automation",
+            json={"enabled": True, "interval_seconds": 600},
+        )
+    with client(tmp_path) as api:
+        status = api.get("/api/v1/system/status").json()
+        assert status["automation"]["enabled"] is True
+        assert status["automation"]["interval_seconds"] == 600
+        # Switch it off, then restart: an "off" chosen by an operator stays off.
+        api.put(
+            "/api/v1/settings/automation",
+            json={"enabled": False, "interval_seconds": 600},
+        )
+    with client(tmp_path) as api:
+        assert api.get("/api/v1/system/status").json()["automation"]["enabled"] is False
+
+
+def test_a_configured_auto_interval_waits_for_the_operator(tmp_path):
+    with client(tmp_path, auto_cycle_seconds=60) as api:
+        # The env interval is not resurrected by a restart on its own.
+        assert api.get("/api/v1/system/status").json()["automation"]["enabled"] is False
+
+
 def test_symbol_universe_narrows_the_hard_envelope(open_client):
     listing = open_client.get("/api/v1/market/universe").json()
     assert "BTCUSDT" in listing["symbols"]

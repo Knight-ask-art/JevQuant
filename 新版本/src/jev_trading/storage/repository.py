@@ -577,6 +577,25 @@ class Repository:
             await session.flush()
             return row
 
+    async def last_market_reached_at(
+        self, symbol: str, states: Sequence[str]
+    ) -> datetime | None:
+        """When ``symbol`` last produced an entry signal the Jev gate let through.
+
+        The Jev cadence uses this: a symbol that has not reached the market
+        since it was last evaluated has no new evidence to ask about.
+        """
+
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(func.max(SignalRow.created_at)).where(
+                        SignalRow.symbol == symbol,
+                        SignalRow.state.in_(list(states)),
+                    )
+                )
+            ).scalar_one()
+
     async def recent_entry_signal_times(
         self, symbol: str, since: datetime, states: Sequence[str]
     ) -> list[datetime]:
