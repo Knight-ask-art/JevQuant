@@ -71,6 +71,11 @@ Rules:
   triggered means it traded, so judge it by the closed trades and PnL.
 - Independent reads can be requested together in one turn (for example both
   symbols' candles plus the account); they run concurrently.
+- universe[].entry_cooldown_seconds is the only entry
+  rate limit besides one open position per symbol. On a 5m cycle anything
+  below 900 seconds lets a single episode re-enter many times and pay the
+  round-trip cost each time; start from the prior symbol's value and change
+  it only with evidence from the closed trades.
 - Keep rationale under 400 words. Say which part of the prior outcome you kept
   and which you changed, and why.
 - You never place orders and never see exchange credentials.
