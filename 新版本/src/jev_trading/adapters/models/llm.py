@@ -71,6 +71,9 @@ Rules:
   triggered means it traded, so judge it by the closed trades and PnL.
 - Independent reads can be requested together in one turn (for example both
   symbols' candles plus the account); they run concurrently.
+- A server-side over-trading guard also caps how many entry signals a symbol
+  may produce per hour, no matter what you set here; keep the cooldown honest
+  instead of relying on the guard.
 - universe[].entry_cooldown_seconds is the only entry
   rate limit besides one open position per symbol. On a 5m cycle anything
   below 900 seconds lets a single episode re-enter many times and pay the

@@ -72,7 +72,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 158 tests: policy, agent, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
+pytest                     # 163 tests: policy, agent, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:
@@ -126,6 +126,11 @@ Key boundaries:
 - **Failures are asymmetric.** Stale feed/policy/Jev/DB/Redis block *new entries*;
   existing positions keep deterministic exits while execution is healthy.
 - **Exits are deterministic.** Stops, take-profits and max holding do not wait for a model.
+  A close that the market walks away from is cancelled and re-priced near the bid instead of
+  resting until its timeout, and an operator-requested close is sent as a marketable order.
+- **Over-trading is bounded by the server.** `JEV_OVERTRADE_WINDOW_SECONDS` /
+  `JEV_OVERTRADE_MAX_ENTRIES` cap how many entry signals one symbol may produce per window,
+  independently of any cooldown a policy proposes.
 - **Every decision is auditable.** Audit rows are hash-linked; secrets are redacted before
   persistence; `/api/v1/audit/verify` re-walks the chain.
 
@@ -160,7 +165,7 @@ frontend/
                 Orders & Positions, Backtests, Models & Costs (incl. exchange
                 balances), Risk & Modes, Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          158 deterministic tests
+tests/          163 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)

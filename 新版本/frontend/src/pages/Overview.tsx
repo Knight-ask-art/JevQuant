@@ -102,6 +102,9 @@ export function Overview() {
             executed: cycle.executed,
             exits: cycle.exits,
           })}
+          {cycle.entries_blocked
+            ? t("overview.guardBlocked", { n: cycle.entries_blocked })
+            : ""}
           {cycle.entries_blocked_reason
             ? t("overview.entriesBlocked", {
                 reason: label(cycle.entries_blocked_reason),

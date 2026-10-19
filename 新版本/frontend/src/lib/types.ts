@@ -304,6 +304,7 @@ export interface CycleResult {
   mode: string;
   policy_generated: boolean;
   entries_blocked_reason: string | null;
+  entries_blocked: number;
   signals_created: number;
   signals_eligible: number;
   intents_created: number;

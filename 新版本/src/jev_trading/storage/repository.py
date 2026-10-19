@@ -520,6 +520,25 @@ class Repository:
             await session.flush()
             return row
 
+    async def recent_entry_signal_times(
+        self, symbol: str, since: datetime
+    ) -> list[datetime]:
+        """When the entry signals for ``symbol`` were created.
+
+        Over-trading protection counts signals, not fills: it must catch
+        entries the risk engine turned down or that never filled. The cycle
+        creates every entry signal for one account, and a close reuses its
+        position's entry signal, so every row here is an entry attempt.
+        """
+
+        async with self.db.session() as session:
+            result = await session.execute(
+                select(SignalRow.created_at)
+                .where(SignalRow.symbol == symbol, SignalRow.created_at >= since)
+                .order_by(SignalRow.created_at)
+            )
+            return list(result.scalars())
+
     async def get_signal(self, signal_id: str) -> SignalRow | None:
         async with self.db.session() as session:
             return await session.get(SignalRow, signal_id)

@@ -11,7 +11,7 @@ Covers the failure modes found in review:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
@@ -33,7 +33,8 @@ from jev_trading.domain.risk import RiskEngine
 from jev_trading.services import orchestrator as orchestrator_module
 from jev_trading.services.orchestrator import TradingOrchestrator
 from jev_trading.storage.db import Database
-from jev_trading.storage.models import PositionRow
+from jev_trading.storage.models import PositionRow, SignalRow
+from jev_trading.storage import models as models_module
 from jev_trading.storage import repository as repository_module
 from jev_trading.storage.repository import Repository
 
@@ -77,6 +78,9 @@ async def repo(tmp_path, monkeypatch):
     # Services read the wall clock; the fixtures build every timestamp at NOW.
     monkeypatch.setattr(orchestrator_module, "datetime", _FrozenDatetime)
     monkeypatch.setattr(repository_module, "utcnow", lambda: NOW)
+    # Row defaults come from the models module, so it needs the same clock or
+    # a freshly inserted row lands hours away from the fixtures' NOW.
+    monkeypatch.setattr(models_module, "utcnow", lambda: NOW)
     try:
         yield Repository(db)
     finally:
@@ -521,3 +525,180 @@ async def test_manual_close_request_on_a_closed_position_is_not_found(repo, serv
     with pytest.raises(AppError) as raised:
         await orchestrator.request_close(position.id, actor="operator:test")
     assert raised.value.http_status == 404
+
+
+# ---------------------------------------------------------------------------
+# resting sell re-pricing
+# ---------------------------------------------------------------------------
+def _resting_sell_market(ctx):
+    """A market where the bid fell well below the resting close's limit."""
+
+    # The sold instrument is a sub-dollar-ish pair in the fixtures' terms, so
+    # the step below the bid is rounded to the ledger's own precision.
+    resting_limit = ctx.market.ask
+    bid = (resting_limit * Decimal("0.95")).quantize(Decimal("0.0001"))
+    return ctx.market.model_copy(update={"bid": bid, "ask": bid})
+
+
+async def test_resting_sell_far_from_the_bid_is_cancelled_and_repriced_within_the_cycle(
+    repo, server_limits
+):
+    account, policy, ctx, engine, signal, position, paper = await open_position(
+        repo, server_limits
+    )
+    await park_resting_close(repo, policy, ctx, position, engine, "close-stale-1")
+    market = _resting_sell_market(ctx)
+
+    container = ActiveContainer()
+    container.execution_for_mode = {Mode.PAPER: paper}
+    orchestrator = make_orchestrator(repo, container, account.id)
+    _age_the_clock(orchestrator)
+    orchestrator.market = ChainedMarket([ctx.symbol_rules] * 4)
+    exits, notes = await orchestrator._manage_exits(
+        policy=policy, snapshot_map={market.symbol: market}, system=system_snapshot()
+    )
+
+    # The bid is below the stop, so the cycle both re-prices and closes.
+    assert exits == 1, notes
+    assert any("re-priced" in note for note in notes), notes
+    assert (await repo.get_signal(signal.id)).state == SignalState.CLOSED.value
+    closes = [
+        intent
+        for intent in await repo.list_intents(limit=20)
+        if intent.intent_type == "CLOSE"
+    ]
+    assert len(closes) == 2, "a second close must be generated after the cancel"
+    replacement = [item for item in closes if item.idempotency_key != "close-stale-1"]
+    assert len(replacement) == 1
+    # The replacement chases the bid; the cancelled order was parked above it.
+    assert replacement[0].limit_price < market.bid
+
+
+async def test_a_resting_sell_near_the_bid_is_left_working(repo, server_limits):
+    account, policy, ctx, engine, signal, position, paper = await open_position(
+        repo, server_limits
+    )
+    await park_resting_close(repo, policy, ctx, position, engine, "close-fresh-1")
+    market = ctx.market.model_copy(update={"bid": ctx.market.ask - Decimal("0.01")})
+
+    container = ActiveContainer()
+    container.execution_for_mode = {Mode.PAPER: paper}
+    orchestrator = make_orchestrator(repo, container, account.id)
+    _age_the_clock(orchestrator)
+    orchestrator.market = ChainedMarket([ctx.symbol_rules] * 4)
+    exits, notes = await orchestrator._manage_exits(
+        policy=policy, snapshot_map={market.symbol: market}, system=system_snapshot()
+    )
+    assert exits == 0, notes
+    assert (await repo.get_signal(signal.id)).state == SignalState.EXIT_PENDING.value
+    assert any("working" in note for note in notes), notes
+
+
+async def test_a_fresh_reprice_waits_for_the_next_candle(repo, server_limits):
+    account, policy, ctx, engine, signal, position, paper = await open_position(
+        repo, server_limits
+    )
+    await park_resting_close(repo, policy, ctx, position, engine, "close-lag-1")
+    market = _resting_sell_market(ctx)
+
+    container = ActiveContainer()
+    container.execution_for_mode = {Mode.PAPER: paper}
+    orchestrator = make_orchestrator(repo, container, account.id)
+    _age_the_clock(orchestrator)
+    orchestrator.market = ChainedMarket([ctx.symbol_rules] * 4)
+    # As if this same candle's bid had already been chased once.
+    orchestrator._reprice_guard[position.id] = (
+        market.symbol,
+        int(market.candle_close_at.timestamp()),
+    )
+
+    exits, notes = await orchestrator._manage_exits(
+        policy=policy, snapshot_map={market.symbol: market}, system=system_snapshot()
+    )
+    assert exits == 0, notes
+    assert any("deferred to the next candle" in note for note in notes), notes
+    assert (await repo.get_signal(signal.id)).state == SignalState.EXIT_PENDING.value
+
+
+def _age_the_clock(orchestrator, seconds: int = 90) -> None:
+    """Pretend the close has been working for longer than the re-price delay."""
+
+    async def _later():
+        return NOW + timedelta(seconds=seconds)
+
+    orchestrator._now = _later
+
+
+# ---------------------------------------------------------------------------
+# over-trading protection
+# ---------------------------------------------------------------------------
+async def _entry_signal(repo, policy, ctx, symbol: str, at: datetime):
+    """An entry signal backdated to ``at``.
+
+    Column defaults bind the clock at import time, so the timestamp is set
+    explicitly rather than monkeypatched.
+    """
+
+    signal = await repo.create_signal(
+        symbol=symbol,
+        policy_id=str(policy.policy_id),
+        snapshot_id=str(ctx.market.snapshot_id),
+        side="BUY",
+        state=SignalState.CANDIDATE,
+    )
+    async with repo.db.session() as session:
+        row = await session.get(SignalRow, signal.id)
+        row.created_at = at
+        session.add(row)
+    return signal
+
+
+def _guard_orchestrator(repo, account, paper, *, window: int, maximum: int):
+    container = ActiveContainer()
+    container.execution_for_mode = {Mode.PAPER: paper}
+    orchestrator = make_orchestrator(repo, container, account.id)
+    orchestrator.settings.overtrade_window_seconds = window
+    orchestrator.settings.overtrade_max_entries = maximum
+    return orchestrator
+
+
+async def test_overtrade_guard_blocks_once_the_window_is_full(repo, server_limits):
+    account, policy, ctx, engine, _signal, _position, paper = await open_position(
+        repo, server_limits
+    )
+    orchestrator = _guard_orchestrator(repo, account, paper, window=3600, maximum=3)
+    # The paper entry's own signal carries the real clock, far outside the
+    # window; only the backdated ones below count.
+    for minutes in (10, 20):
+        await _entry_signal(repo, policy, ctx, "ETHUSDT", NOW - timedelta(minutes=minutes))
+
+    assert await orchestrator._overtrade_wait("ETHUSDT", NOW) == 0.0
+    await _entry_signal(repo, policy, ctx, "ETHUSDT", NOW - timedelta(minutes=1))
+
+    wait = await orchestrator._overtrade_wait("ETHUSDT", NOW)
+    # The third-newest signal (20 minutes ago) leaves 40 minutes of the hour.
+    assert 39 * 60 < wait <= 40 * 60, wait
+    # Another symbol is unaffected by this symbol's history.
+    assert await orchestrator._overtrade_wait("BTCUSDT", NOW) == 0.0
+
+
+async def test_overtrade_guard_ignores_signals_older_than_the_window(repo, server_limits):
+    account, policy, ctx, engine, _signal, _position, paper = await open_position(
+        repo, server_limits
+    )
+    orchestrator = _guard_orchestrator(repo, account, paper, window=600, maximum=2)
+    for minutes in (30, 25):
+        await _entry_signal(repo, policy, ctx, "ETHUSDT", NOW - timedelta(minutes=minutes))
+
+    assert await orchestrator._overtrade_wait("ETHUSDT", NOW) == 0.0
+
+
+async def test_overtrade_guard_can_be_switched_off(repo, server_limits):
+    account, policy, ctx, engine, _signal, _position, paper = await open_position(
+        repo, server_limits
+    )
+    orchestrator = _guard_orchestrator(repo, account, paper, window=0, maximum=1)
+    for minutes in (1, 2, 3):
+        await _entry_signal(repo, policy, ctx, "ETHUSDT", NOW - timedelta(minutes=minutes))
+
+    assert await orchestrator._overtrade_wait("ETHUSDT", NOW) == 0.0

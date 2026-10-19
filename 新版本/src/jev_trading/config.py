@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     min_stop_loss_bps: Decimal = Decimal("20")
     max_stop_loss_bps: Decimal = Decimal("300")
     min_entry_cooldown_seconds: int = 60
+    # Over-trading protection (Freqtrade-style "guard"): within
+    # overtrade_window_seconds a symbol may enter at most
+    # overtrade_max_entries times; the next entry waits for the oldest to age
+    # out. This bounds churn no matter what cooldown the policy proposes.
+    overtrade_window_seconds: int = Field(default=3600, ge=0, le=86_400)
+    overtrade_max_entries: int = Field(default=3, ge=1, le=100)
     min_choice_probability: float = 0.5
     min_policy_fit: float = 0.5
     min_quality_score: float = 0.0

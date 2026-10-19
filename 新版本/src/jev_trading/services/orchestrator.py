@@ -25,7 +25,7 @@ from ..domain.enums import (
     Side,
     SignalState,
 )
-from ..domain.enums import ErrorCode
+from ..domain.enums import ErrorCode, PositionStatus
 from ..domain.errors import AppError, ReconciliationRequiredError
 from ..domain.intent import ApprovedTradeIntent, Provenance, TradeIntent
 from ..domain.market import AccountSnapshot, MarketSnapshot
@@ -46,6 +46,50 @@ DEFAULT_INTENT_TTL_SECONDS = 15
 # A close order left working for longer than this is cancelled by the exit
 # manager, measured in wall-clock seconds from the order's creation time.
 CLOSE_ORDER_WORKING_LIMIT_SECONDS = 300
+# A close that still has not filled this long after generation is working
+# against a market that has moved away from it. Waiting for the full working
+# limit is how an exit quietly turns into a held loss: re-price instead.
+RESTING_CLOSE_REPRICE_SECONDS = 60
+# A resting sell is stale once the bid has risen this far above its limit: at
+# that point it no longer tracks the market and is simply absorbing moves.
+REPRICE_BPS = 10
+# Staleness is measured on the snapshot's candle, not on the cycle clock: paper
+# replays historical candles, and the wall clock would make every order look old.
+POSITION_SNAPSHOT_GRACE_SECONDS = 60
+
+
+def _needs_reprice(
+    limit_price: Decimal | None, bid: Decimal, threshold_bps: int = REPRICE_BPS
+) -> bool:
+    """Whether a resting sell now sits above a bid the market has left behind.
+
+    The order only fills when the bid rises to its limit. If the bid has
+    dropped away from it, the exit is no longer tracking the market; chasing
+    the bid is the only way the stop keeps its meaning.
+    """
+
+    if limit_price is None or limit_price <= ZERO or bid <= ZERO:
+        return False
+    return limit_price - bid >= limit_price * Decimal(threshold_bps) / 10_000
+
+
+def _snapshot_key(snapshot: MarketSnapshot) -> tuple[str, int]:
+    """Identity of the market view a decision was made against."""
+
+    return (snapshot.symbol, int(snapshot.candle_close_at.timestamp()))
+
+
+def _marketable_sell_price(bid: Decimal, rules) -> Decimal:
+    """Sell limit just below the bid: crosses now, still legal on Binance spot.
+
+    The exchange rejects a SELL limit at or above the bid, so the price is
+    floored to tick size and dropped a step when it would sit on the bid.
+    """
+
+    price = rules.quantize_price(bid)
+    if price >= bid:
+        price -= rules.tick_size
+    return rules.quantize_price(price)
 
 
 class CycleResult(BaseModel):
@@ -59,6 +103,7 @@ class CycleResult(BaseModel):
     policy_generated: bool = False
     entries_blocked_reason: str | None = None
     symbols: list[str] = Field(default_factory=list)
+    entries_blocked: int = 0
     signals_created: int = 0
     signals_eligible: int = 0
     intents_created: int = 0
@@ -102,6 +147,8 @@ class TradingOrchestrator:
         self.audit = audit
         self.broker = broker
         self.account_id = account_id
+        # position id -> snapshot the last re-price was generated from.
+        self._reprice_guard: dict[str, tuple[str, int]] = {}
 
     async def request_close(self, position_id: str, *, actor: str) -> Any:
         """Mark an open position for an immediate close. Returns the row."""
@@ -186,6 +233,7 @@ class TradingOrchestrator:
         )
 
         counters = {
+            "entries_blocked": 0,
             "signals_created": 0,
             "signals_eligible": 0,
             "intents_created": 0,
@@ -210,6 +258,25 @@ class TradingOrchestrator:
             for symbol_policy in policy.universe:
                 snapshot = snapshot_map.get(symbol_policy.symbol)
                 if snapshot is None:
+                    continue
+                wait = await self._overtrade_wait(symbol_policy.symbol, started)
+                if wait > 0:
+                    counters["entries_blocked"] += 1
+                    notes.append(
+                        f"{symbol_policy.symbol}: over-trading guard, next entry in "
+                        f"{int(wait)}s"
+                    )
+                    await self.audit.record(
+                        "signal.overtrade_blocked",
+                        "symbol",
+                        symbol_policy.symbol,
+                        {
+                            "mode": mode.value,
+                            "window_seconds": self.settings.overtrade_window_seconds,
+                            "max_entries": self.settings.overtrade_max_entries,
+                            "wait_seconds": int(wait),
+                        },
+                    )
                     continue
                 await self._process_entry(
                     mode=mode,
@@ -437,6 +504,29 @@ class TradingOrchestrator:
         if price < snapshot.ask:
             price += rules.tick_size
         return min(price, rules.max_price)
+
+    async def _overtrade_wait(self, symbol: str, now: datetime) -> float:
+        """Seconds the over-trading guard holds this symbol back, 0 if free.
+
+        Freqtrade's guards cap how often one pair may trade regardless of the
+        strategy; here a sliding window over entry signals does the same. The
+        window is a server setting so a policy (or the model writing it) can
+        loosen the strategy but never the guard.
+        """
+
+        window = int(self.settings.overtrade_window_seconds)
+        maximum = int(self.settings.overtrade_max_entries)
+        if window <= 0 or maximum <= 0:
+            return 0.0
+        recent = await self.repo.recent_entry_signal_times(
+            symbol, now - timedelta(seconds=window)
+        )
+        if len(recent) < maximum:
+            return 0.0
+        oldest = recent[-maximum]
+        if oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=UTC)
+        return max(0.0, (oldest + timedelta(seconds=window) - now).total_seconds())
 
     async def _process_entry(
         self,
@@ -1000,7 +1090,13 @@ class TradingOrchestrator:
             return Mode.PAPER
 
     async def _resolve_pending_close(
-        self, position, signal, adapter, now: datetime, notes: list[str]
+        self,
+        position,
+        signal,
+        adapter,
+        now: datetime,
+        snapshot: MarketSnapshot,
+        notes: list[str],
     ) -> int:
         """Finish or back out a close order that is still EXIT_PENDING.
 
@@ -1010,8 +1106,13 @@ class TradingOrchestrator:
 
         * filled        -> CLOSED
         * rejected/error -> POSITION_OPEN (a fresh exit may be attempted)
+        * stale          -> cancelled after RESTING_CLOSE_REPRICE_SECONDS (the
+                            bid has moved away; re-price near the current one)
         * still working  -> cancelled once older than the working limit, then
                             POSITION_OPEN once the cancel is acknowledged
+
+        Returns the number of exits completed, and -1 when a stale close was
+        cancelled so the caller can re-price this cycle instead of next.
         """
 
         # Resolve against the close order of *this* signal, not "whatever order
@@ -1052,10 +1153,23 @@ class TradingOrchestrator:
         created = order.created_at
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
+        # How long the order has been working, measured the same two ways the
+        # two clocks allow: wall time since creation, or how many closed
+        # candles have printed since. This order was placed on the cycle where
+        # "now" was at or after its creation, so the wall clock can be used.
         age = (now - created).total_seconds()
         if age < CLOSE_ORDER_WORKING_LIMIT_SECONDS:
-            notes.append(f"{position.symbol}: exit order working")
-            return 0
+            stale = (
+                age >= RESTING_CLOSE_REPRICE_SECONDS
+                and _needs_reprice(order.price, snapshot.bid)
+            )
+            if not stale:
+                notes.append(f"{position.symbol}: exit order working")
+                return 0
+            repriced = await self._cancel_and_reprice(
+                position, signal, adapter, order, intent, now, age, snapshot, notes
+            )
+            return -1 if repriced else 0
         try:
             await adapter.cancel(order.id)
         except ReconciliationRequiredError:
@@ -1085,6 +1199,72 @@ class TradingOrchestrator:
         )
         notes.append(f"{position.symbol}: stale exit order cancelled; retry next cycle")
         return 0
+
+    async def _cancel_and_reprice(
+        self,
+        position,
+        signal,
+        adapter,
+        order,
+        intent,
+        now: datetime,
+        age: float,
+        snapshot: MarketSnapshot,
+        notes: list[str],
+    ) -> bool:
+        """Cancel a resting close whose price the market has left behind."""
+
+        state_note = {
+            "symbol": position.symbol,
+            "order_id": order.id,
+            "order_limit": canonical_str(order.price) if order.price else None,
+            "bid": canonical_str(snapshot.bid),
+            "age_seconds": int(age),
+        }
+        try:
+            await adapter.cancel(order.id)
+        except ReconciliationRequiredError:
+            await self.repo.transition_signal(
+                signal.id,
+                SignalState.RECONCILIATION_REQUIRED,
+                {**state_note, "reason": "reprice_cancel_outcome_unknown"},
+            )
+            if intent is not None:
+                await self.repo.update_intent_status(
+                    intent.id, "RECONCILIATION_REQUIRED"
+                )
+            notes.append(f"{position.symbol}: reprice cancel outcome unknown; reconcile")
+            return False
+        except AppError as exc:
+            notes.append(f"{position.symbol}: reprice cancel failed ({exc.code.value})")
+            return False
+        # Cheap placeholders (paper, shadow) cancel locally without touching the
+        # order row. Re-read it so a close the cancel did not actually stop
+        # (it filled meanwhile) is not re-priced on top of a filled position.
+        current = await self.repo.get_order(order.id)
+        if current is not None and current.status == OrderStatus.FILLED.value:
+            await self.repo.transition_signal(
+                signal.id, SignalState.CLOSED, {**state_note, "source": "filled_during_reprice"}
+            )
+            if intent is not None:
+                await self.repo.update_intent_status(intent.id, "EXECUTED")
+            notes.append(f"{position.symbol}: exit filled while being re-priced")
+            return False
+        await self.repo.transition_signal(
+            signal.id,
+            SignalState.POSITION_OPEN,
+            {**state_note, "reason": "close_repriced"},
+        )
+        if intent is not None:
+            await self.repo.update_intent_status(intent.id, "CANCELLED")
+        await self.audit.record("exit.repriced", "position", position.id, state_note)
+        await self.broker.publish(
+            "execution.events",
+            {"event": "exit_reprice", "symbol": position.symbol, **state_note},
+        )
+        self._reprice_guard[position.id] = _snapshot_key(snapshot)
+        notes.append(f"{position.symbol}: resting exit re-priced to the current bid")
+        return True
 
     async def _await_snapshot(self, symbol: str, now: datetime) -> MarketSnapshot | None:
         """The next snapshot for a symbol after price ``now``.
@@ -1193,10 +1373,35 @@ class TradingOrchestrator:
                 continue
             state = SignalState(signal.state)
             if state is SignalState.EXIT_PENDING:
-                exits += await self._resolve_pending_close(
-                    position, signal, adapter, now, notes
+                # A close already chased against this very snapshot must wait
+                # for the next one: re-pricing the same bid would only churn.
+                if self._reprice_guard.get(position.id) == _snapshot_key(snapshot):
+                    notes.append(
+                        f"{position.symbol}: exit re-pricing deferred to the next candle"
+                    )
+                    continue
+                # A cancelled re-price leaves the original stop reason in
+                # place, so the fresh close below is generated at once.
+                resolved = await self._resolve_pending_close(
+                    position, signal, adapter, now, snapshot, notes
                 )
-                continue
+                # A negative value is not an exit count: it says the resting
+                # close was cancelled and this cycle should re-price it.
+                exits += max(resolved, 0)
+                if resolved < 0:
+                    # Re-read through a fresh identity: the re-price wrote to
+                    # the same row this object was loaded from.
+                    position = await self.repo.settled_position(position.id)
+                    if position.status != PositionStatus.OPEN.value:
+                        continue
+                    signal = await self.repo.get_signal(position.signal_id)
+                    if signal is None or SignalState(signal.state) is not SignalState.POSITION_OPEN:
+                        continue
+                    adapter = self.execution_for_mode.get(self._mode_of(position)) or adapter
+                    execute = self._mode_of(position) is not await self.modes.current_mode()
+                    state = SignalState(signal.state)
+                else:
+                    continue
             if state in {
                 SignalState.RECONCILIATION_REQUIRED,
                 SignalState.CLOSED,
@@ -1250,12 +1455,22 @@ class TradingOrchestrator:
             if await self.repo.get_intent_by_idempotency(idempotency_key) is not None:
                 continue
 
+            if position.exit_requested_reason and reason == position.exit_requested_reason:
+                # The operator asked for this close: fill it as a marketable
+                # order so it executes now, and anchor fills on the bid (never
+                # the ask) so realized PnL does not absorb the spread.
+                order_preference = OrderPreference.MARKET
+                limit_price = None
+            else:
+                # Binance spot rejects any SELL whose limit is at or above the
+                # bid ("would immediately trigger"). Keeping the floor just
+                # below the bid at submit time makes the order cross whenever
+                # it still can, and rest only if the bid fell meanwhile.
+                order_preference = OrderPreference.LIMIT
+                limit_price = _marketable_sell_price(snapshot.bid, rules)
+
             quote_notional = max(position.qty * snapshot.bid, rules.min_notional)
-            slip = self.settings.exit_slippage_bps / Decimal("10000")
-            limit_price = rules.quantize_price(snapshot.bid * (Decimal("1") - slip))
-            if limit_price <= ZERO:
-                limit_price = rules.quantize_price(snapshot.bid)
-            if limit_price <= ZERO:
+            if limit_price is not None and limit_price <= ZERO:
                 notes.append(f"{position.symbol}: exit price rounds to zero")
                 continue
 
@@ -1268,7 +1483,7 @@ class TradingOrchestrator:
                 symbol=position.symbol,
                 side=Side.SELL,
                 intent_type=IntentType.CLOSE,
-                order_preference=OrderPreference.LIMIT,
+                order_preference=order_preference,
                 quote_notional=quote_notional,
                 max_slippage_bps=self.settings.exit_slippage_bps,
                 limit_price=limit_price,
@@ -1350,7 +1565,12 @@ class TradingOrchestrator:
                 notes.append(f"{position.symbol}: partial exit; position remains open")
                 exits += 1
             elif receipt.status in {OrderStatus.ACCEPTED, OrderStatus.SHADOWED}:
-                notes.append(f"{position.symbol}: exit order resting")
+                if order_preference is OrderPreference.MARKET:
+                    notes.append(
+                        f"{position.symbol}: manual close resting at the bid; re-priced next cycle"
+                    )
+                else:
+                    notes.append(f"{position.symbol}: exit order resting")
             elif receipt.status is OrderStatus.UNKNOWN:
                 await self.repo.transition_signal(
                     signal.id,
