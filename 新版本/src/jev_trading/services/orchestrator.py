@@ -171,6 +171,9 @@ class TradingOrchestrator:
         self.account_id = account_id
         # position id -> snapshot the last re-price was generated from.
         self._reprice_guard: dict[str, tuple[str, int]] = {}
+        # position ids whose resting close was cancelled for a re-price most
+        # recently; their replacement must not reuse this minute's key.
+        self._repriced_positions: set[str] = set()
 
     async def request_close(self, position_id: str, *, actor: str) -> Any:
         """Mark an open position for an immediate close. Returns the row."""
@@ -1357,6 +1360,17 @@ class TradingOrchestrator:
         snapshot_map: dict[str, MarketSnapshot],
         system,
     ) -> tuple[int, list[str]]:
+        return await self._route_exits(
+            policy=policy, snapshot_map=snapshot_map, system=system
+        )
+
+    async def _route_exits(
+        self,
+        *,
+        policy: EffectivePolicy | None,
+        snapshot_map: dict[str, MarketSnapshot],
+        system,
+    ) -> tuple[int, list[str]]:
         """Route deterministic exits for every open position.
 
         Each position exits through the adapter of the mode that opened it, not
@@ -1368,8 +1382,10 @@ class TradingOrchestrator:
         now = await self._now()
         notes: list[str] = []
         exits = 0
+        self._repriced_positions.clear()
         positions = await self.repo.get_open_positions(self.account_id)
         for position in positions:
+            repriced_this_cycle = False
             snapshot = snapshot_map.get(position.symbol)
             if snapshot is None:
                 try:
@@ -1424,6 +1440,8 @@ class TradingOrchestrator:
                     adapter = self.execution_for_mode.get(self._mode_of(position)) or adapter
                     execute = self._mode_of(position) is not await self.modes.current_mode()
                     state = SignalState(signal.state)
+                    repriced_this_cycle = True
+                    self._repriced_positions.add(position.id)
                 else:
                     continue
             if state in {
@@ -1452,6 +1470,13 @@ class TradingOrchestrator:
             if reason is None:
                 continue
             idempotency_suffix = f"{int(now.timestamp() // 60)}"
+            if repriced_this_cycle or position.id in self._repriced_positions:
+                # The cancelled order may share this minute's key (even if the
+                # re-price happened in an earlier cycle); the replacement
+                # needs its own so the insert is not skipped as a duplicate.
+                # The chased candle identifies it: the guard allows at most one
+                # re-price per candle, so the key stays unique and stable.
+                idempotency_suffix = f"reprice-{_snapshot_key(snapshot)[1]}"
             if await self.repo.has_unsettled_close_for(
                 self.account_id, position.symbol, position_mode.value
             ):

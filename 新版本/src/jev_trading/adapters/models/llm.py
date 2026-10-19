@@ -438,31 +438,34 @@ class ConsoleLLMAdapter:
                 # symbols, market plus account). Run the independent ones
                 # together, then write the answers back in request order so
                 # the transcript stays deterministic.
-                parallel_ok = spent < MAX_TOOL_CONTEXT_CHARS and all(
+                answers: list[tuple[dict[str, Any], bool, int]] | None = None
+                if spent < MAX_TOOL_CONTEXT_CHARS and all(
                     _runs_in_parallel(
                         toolbox, str((call.get("function") or {}).get("name") or "")
                     )
                     for call in tool_calls
-                )
-                if parallel_ok:
-                    await asyncio.gather(
-                        *(
-                            self._call_tool(
-                                toolbox,
-                                str((call.get("function") or {}).get("name") or ""),
-                                _parse_arguments(
-                                    ((call.get("function") or {}).get("arguments"))
-                                ),
-                                parallel=True,
+                ):
+                    answers = list(
+                        await asyncio.gather(
+                            *(
+                                self._call_tool(
+                                    toolbox,
+                                    str((call.get("function") or {}).get("name") or ""),
+                                    _parse_arguments(
+                                        ((call.get("function") or {}).get("arguments"))
+                                    ),
+                                )
+                                for call in tool_calls
                             )
-                            for call in tool_calls
                         )
                     )
-                for call in tool_calls:
+                for index, call in enumerate(tool_calls):
                     function = call.get("function") or {}
                     name = str(function.get("name") or "")
                     arguments = _parse_arguments(function.get("arguments"))
-                    if spent >= MAX_TOOL_CONTEXT_CHARS:
+                    if answers is not None:
+                        result, ok, latency_ms = answers[index]
+                    elif spent >= MAX_TOOL_CONTEXT_CHARS:
                         result, ok, latency_ms = (
                             {
                                 "summary": "tool context budget exhausted",
@@ -579,33 +582,37 @@ class ConsoleLLMAdapter:
             if tool_uses and not final_turn:
                 messages.append({"role": "assistant", "content": blocks})
                 results: list[dict[str, Any]] = []
+                answers: list[tuple[dict[str, Any], bool, int]] | None = None
                 if all(
                     _runs_in_parallel(toolbox, str(block.get("name") or ""))
                     for block in tool_uses
                 ):
-                    await asyncio.gather(
-                        *(
-                            self._call_tool(
-                                toolbox,
-                                str(block.get("name") or ""),
-                                (
-                                    block.get("input")
-                                    if isinstance(block.get("input"), dict)
-                                    else {}
-                                ),
-                                parallel=True,
+                    answers = list(
+                        await asyncio.gather(
+                            *(
+                                self._call_tool(
+                                    toolbox,
+                                    str(block.get("name") or ""),
+                                    (
+                                        block.get("input")
+                                        if isinstance(block.get("input"), dict)
+                                        else {}
+                                    ),
+                                )
+                                for block in tool_uses
                             )
-                            for block in tool_uses
                         )
                     )
-                for block in tool_uses:
+                for index, block in enumerate(tool_uses):
                     name = str(block.get("name") or "")
                     arguments = (
                         block.get("input")
                         if isinstance(block.get("input"), dict)
                         else {}
                     )
-                    if spent >= MAX_TOOL_CONTEXT_CHARS:
+                    if answers is not None:
+                        result, ok, latency_ms = answers[index]
+                    elif spent >= MAX_TOOL_CONTEXT_CHARS:
                         result, ok, latency_ms = (
                             {
                                 "summary": "tool context budget exhausted",
@@ -721,19 +728,11 @@ class ConsoleLLMAdapter:
         return repaired, usage
 
     async def _call_tool(
-        self,
-        toolbox: AgentToolbox,
-        name: str,
-        arguments: dict[str, Any],
-        *,
-        parallel: bool = False,
+        self, toolbox: AgentToolbox, name: str, arguments: dict[str, Any]
     ) -> tuple[dict[str, Any], bool, int]:
         started = time.perf_counter()
         try:
-            if parallel:
-                result = await toolbox.call_parallel(name, arguments)
-            else:
-                result = await toolbox.call(name, arguments)
+            result = await toolbox.call(name, arguments)
             ok = True
         except Exception as exc:  # noqa: BLE001 - tell the model, keep the loop alive
             result = {

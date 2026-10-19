@@ -499,6 +499,7 @@ class Repository:
         side: str,
         state: SignalState = SignalState.CANDIDATE,
         detail: dict[str, Any] | None = None,
+        created_at: datetime | None = None,
     ) -> SignalRow:
         async with self.db.session() as session:
             row = SignalRow(
@@ -508,6 +509,10 @@ class Repository:
                 snapshot_id=snapshot_id,
                 side=side,
             )
+            if created_at is not None:
+                # Backdated signal (demo clocks, replay); the caller owns the
+                # timestamp rather than the column default.
+                row.created_at = created_at
             session.add(row)
             await session.flush()
             session.add(

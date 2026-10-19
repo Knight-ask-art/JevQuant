@@ -33,7 +33,7 @@ from jev_trading.domain.risk import RiskEngine
 from jev_trading.services import orchestrator as orchestrator_module
 from jev_trading.services.orchestrator import TradingOrchestrator
 from jev_trading.storage.db import Database
-from jev_trading.storage.models import PositionRow, SignalRow
+from jev_trading.storage.models import PositionRow
 from jev_trading.storage import models as models_module
 from jev_trading.storage import repository as repository_module
 from jev_trading.storage.repository import Repository
@@ -620,6 +620,49 @@ async def test_a_fresh_reprice_waits_for_the_next_candle(repo, server_limits):
     assert (await repo.get_signal(signal.id)).state == SignalState.EXIT_PENDING.value
 
 
+async def test_a_replacement_close_never_collides_with_the_cancelled_key(
+    repo, server_limits
+):
+    """The cancelled order shares this minute's key; the replacement must not.
+
+    The guard from the re-price is exercised by the test above; here it is
+    primed with another snapshot so the fresh close is generated at once.
+    """
+
+    account, policy, ctx, engine, signal, position, paper = await open_position(
+        repo, server_limits
+    )
+    await park_resting_close(repo, policy, ctx, position, engine, "close-stale-2")
+    market = _resting_sell_market(ctx)
+
+    container = ActiveContainer()
+    container.execution_for_mode = {Mode.PAPER: paper}
+    orchestrator = make_orchestrator(repo, container, account.id)
+    _age_the_clock(orchestrator)
+    orchestrator.market = ChainedMarket([ctx.symbol_rules] * 4)
+    # Primed with an unrelated snapshot so the re-price is not deferred.
+    orchestrator._reprice_guard[position.id] = (market.symbol, 0)
+
+    exits, notes = await orchestrator._manage_exits(
+        policy=policy, snapshot_map={market.symbol: market}, system=system_snapshot()
+    )
+    assert exits == 1, notes
+    assert any("re-priced" in note for note in notes), notes
+    # The venue keeps the cancelled order, so this cycle also uses a retry
+    # key; what matters is that the replacement never reuses the stale key.
+    intents = [
+        intent
+        for intent in await repo.list_intents(limit=20)
+        if intent.intent_type == "CLOSE"
+    ]
+    replacement = [item for item in intents if item.idempotency_key != "close-stale-2"]
+    assert len(replacement) == 1, [item.idempotency_key for item in intents]
+    assert "close-stale-2" not in replacement[0].idempotency_key
+    # Keyed on the candle that was chased, never on the wall-clock minute.
+    chased = int(market.candle_close_at.timestamp())
+    assert replacement[0].idempotency_key.endswith(f"reprice-{chased}-sell")
+
+
 def _age_the_clock(orchestrator, seconds: int = 90) -> None:
     """Pretend the close has been working for longer than the re-price delay."""
 
@@ -632,7 +675,7 @@ def _age_the_clock(orchestrator, seconds: int = 90) -> None:
 # ---------------------------------------------------------------------------
 # over-trading protection
 # ---------------------------------------------------------------------------
-async def _entry_signal(
+def _entry_signal(
     repo,
     policy,
     ctx,
@@ -646,18 +689,14 @@ async def _entry_signal(
     explicitly rather than monkeypatched.
     """
 
-    signal = await repo.create_signal(
+    return repo.create_signal(
         symbol=symbol,
         policy_id=str(policy.policy_id),
         snapshot_id=str(ctx.market.snapshot_id),
         side="BUY",
         state=state,
+        created_at=at,
     )
-    async with repo.db.session() as session:
-        row = await session.get(SignalRow, signal.id)
-        row.created_at = at
-        session.add(row)
-    return signal
 
 
 def _guard_orchestrator(repo, account, paper, *, window: int, maximum: int):

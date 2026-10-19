@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import UTC, datetime
 import asyncio
-from collections import Counter, deque
+from collections import Counter
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Sequence
@@ -250,11 +250,6 @@ class AgentToolbox:
         self._now = now or datetime.now(UTC)
         self._marks_cache: dict[str, Decimal] | None = None
         self.calls = 0
-        # Answers from tools that ran in parallel during the current turn.
-        # They are handed over in the order the model asked, not the order
-        # they happened to finish, so two runs with the same inputs read the
-        # same transcript.
-        self._inbox: deque[dict[str, Any]] = deque()
 
     # -- contract --------------------------------------------------------
     def specs(self) -> list[dict[str, Any]]:
@@ -268,46 +263,10 @@ class AgentToolbox:
             raise ValueError("tool call budget exhausted")
         arguments = arguments if isinstance(arguments, dict) else {}
         handler = getattr(self, f"_tool_{name}")
-        if self._inbox:
-            # This call's answer was already computed alongside its siblings.
-            pending = self._inbox.popleft()
-            if pending["name"] == name:
-                return pending["result"]
-            self._inbox.clear()
         return await handler(**arguments)
 
     def supports_parallel(self, name: str) -> bool:
         return name in PARALLEL_TOOLS
-
-    async def call_parallel(
-        self, name: str, arguments: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Run read-only tools at once; answers queue for ``call`` in order.
-
-        A failure is captured like ``call`` would report it, so the model sees
-        the same content either way.
-        """
-
-        if name not in PARALLEL_TOOLS:
-            raise ValueError(f"{name!r} cannot run in parallel")
-        self.calls += 1
-        if self.calls > MAX_TOOL_CALLS:
-            raise ValueError("tool call budget exhausted")
-        arguments = arguments if isinstance(arguments, dict) else {}
-        handler = getattr(self, f"_tool_{name}")
-        try:
-            result = await handler(**arguments)
-        except Exception as exc:  # noqa: BLE001 - reported to the model, as in call()
-            result = {
-                "summary": f"{type(exc).__name__}: {exc}",
-                "data": {"error": str(exc), "tool": name},
-            }
-        # The "__failed" marker never reaches the model or the journal: only
-        # the ok flag does, exactly as on the sequential path.
-        if result.pop("__failed", False):
-            result["data"]["error"] = str(result["data"].get("error", ""))
-        self._inbox.append({"name": name, "result": result})
-        return result
 
     async def memory(self) -> dict[str, Any]:
         """The context pack assembled before the agent starts thinking."""
@@ -632,24 +591,32 @@ class AgentToolbox:
         """
 
         hours = _clamp_int(lookback_hours, 24, 1, 168)
-        rows = await self.repo.list_policies(limit=1)
-        if not rows:
+        # The policy in force; if none is active (expired, or the last
+        # generation failed) fall back to the newest one, which is still the
+        # most recent thing the account traded on.
+        row = await self.repo.get_active_policy()
+        if row is None:
+            rows = await self.repo.list_policies(limit=1)
+            row = rows[0] if rows else None
+        if row is None:
             return {
                 "summary": "no prior policy",
                 "data": {"prior": None},
             }
-        row = rows[0]
+        # Signals and positions carry the effective policy id, which is not
+        # the table row's primary key.
+        policy_id = row.policy_id
         raw = row.raw_json if isinstance(row.raw_json, dict) else {}
         since = self._now - timedelta(hours=hours)
         signals = [
             signal
             for signal in await self.repo.list_signals(limit=600)
-            if signal.policy_id == row.id and signal.created_at >= since
+            if signal.policy_id == policy_id and signal.created_at >= since
         ]
         closed = [
             position
             for position in await self._closed_positions(200)
-            if position.policy_id == row.id
+            if position.policy_id == policy_id
         ]
         right = [position for position in closed if position.realized_pnl_usdt > 0]
         fits = [
@@ -663,7 +630,7 @@ class AgentToolbox:
             if isinstance(signal.score_json, dict) and signal.score_json.get("entry_choice")
         )
         prior = {
-            "policy_id": row.id,
+            "policy_id": policy_id,
             "compiled_at": _iso(row.compiled_at),
             "expires_at": _iso(row.expires_at),
             "jev_gate": raw.get("jev_gate"),
@@ -687,7 +654,7 @@ class AgentToolbox:
         }
         gate = prior["jev_gate"] or {}
         summary = (
-            f"prior policy {str(row.id)[:8]}: gate {gate.get('entry_choice')} "
+            f"prior policy {str(policy_id)[:8]}: gate {gate.get('entry_choice')} "
             f"/prob {gate.get('min_choice_probability')} /fit {gate.get('min_policy_fit')} "
             f"/q {gate.get('min_quality_score')}; {outcome['signals']} signals in "
             f"{hours}h ({outcome['gate_state']}), {outcome['closed']} closed, "

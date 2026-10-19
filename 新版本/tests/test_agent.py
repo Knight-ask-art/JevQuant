@@ -75,6 +75,9 @@ class FakeRepo:
     async def list_policies(self, limit: int = 50):
         return list(self.policies[:limit])
 
+    async def get_active_policy(self):
+        return self.policies[0] if self.policies else None
+
     async def list_signals(self, limit: int = 100, state=None):
         return list(self.signals[:limit])
 
@@ -688,7 +691,10 @@ def _prior_policy(gate: dict[str, Any] | None = None) -> Any:
     from types import SimpleNamespace
 
     return SimpleNamespace(
-        id="policy-prev-0001",
+        # The table row's key and the effective policy id differ in production;
+        # outcomes are keyed by the latter.
+        id="row-0001",
+        policy_id="policy-prev-0001",
         compiled_at=NOW - timedelta(hours=2),
         expires_at=NOW + timedelta(hours=4),
         raw_json={
@@ -799,12 +805,9 @@ class SlowToolbox(FakeToolbox):
     def supports_parallel(self, name: str) -> bool:
         return name in self.parallel_names
 
-    async def call_parallel(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.started += 1
         await self.release.wait()
-        return {"summary": f"{name} done", "data": {"name": name}}
-
-    async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, arguments))
         return {"summary": f"{name} done", "data": {"name": name}}
 
@@ -846,13 +849,6 @@ async def test_a_failure_in_a_parallel_read_is_reported_like_a_sequential_one():
     import json as _json
 
     box = toolbox()
-    result = await box.call_parallel("get_candles", {"symbol": "DOGEUSDT"})
-    assert "outside the traded universe" in result["summary"]
-    assert result["data"]["tool"] == "get_candles"
-
-    with pytest.raises(ValueError, match="cannot run in parallel"):
-        await box.call_parallel("not_a_tool", {})
-
     instance, sent = adapter(
         [
             openai_calls(
@@ -863,10 +859,11 @@ async def test_a_failure_in_a_parallel_read_is_reported_like_a_sequential_one():
         ]
     )
     result = await instance.generate_policy(context(), toolbox=box)
-    assert [call["ok"] for call in result.trace["tool_calls"]] == [True, True]
-    # The failed read carries its error as a summary and its ok flag is False;
-    # the sibling read still delivers normally.
+    # Identical to the sequential path: the failed read is marked not-ok with
+    # its error as the summary, and the sibling still delivers.
+    assert [call["ok"] for call in result.trace["tool_calls"]] == [False, True]
     assert result.trace["tool_calls"][0]["summary"].startswith("ValueError")
+    assert result.trace["tool_calls"][1]["ok"] is True
     tool_messages = [m for m in sent[1]["messages"] if m["role"] == "tool"]
     assert "outside the traded universe" in tool_messages[0]["content"]
 
@@ -876,3 +873,24 @@ def test_test_doubles_without_parallel_support_stay_sequential():
 
     assert _runs_in_parallel(FakeToolbox(), "get_candles") is False
     assert _runs_in_parallel(toolbox(), "get_candles") is True
+
+
+async def test_parallel_reads_count_once_against_the_tool_budget():
+    """Each tool call is one unit of the budget, however it is dispatched."""
+
+    import json as _json
+
+    box = toolbox()
+    instance, _sent = adapter(
+        [
+            openai_calls(
+                openai_tool_call("get_candles", {"symbol": "BTCUSDT"}, "c1"),
+                openai_tool_call("get_account_state", {}, "c2"),
+            ),
+            openai_answer(_json.dumps(policy_json())),
+        ]
+    )
+    result = await instance.generate_policy(context(), toolbox=box)
+
+    assert len(result.trace["tool_calls"]) == 2
+    assert box.calls == 2, "a gathered call must not also be re-counted as a sequential one"
