@@ -41,6 +41,7 @@ const TOOL_LABELS: Record<string, Key> = {
   get_recent_trades: "agent.tool.trades",
   get_performance_summary: "agent.tool.performance",
   get_recent_evaluations: "agent.tool.evaluations",
+  get_prior_strategy: "agent.tool.prior",
 };
 
 /** Group the flat call list by agent turn; calls arrive in turn order. */

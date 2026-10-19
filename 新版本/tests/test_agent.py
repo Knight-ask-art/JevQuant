@@ -679,3 +679,200 @@ def test_journal_keeps_only_the_flags_agent_desk_narrates():
     assert merged["__trace__"] == {"repaired": True}
     assert "tool_calls" not in merged["__trace__"]
     assert _with_trace_flags(usage, {}) == usage
+
+
+# ---------------------------------------------------------------------------
+# cross-cycle memory: each run starts from where the last one stopped
+# ---------------------------------------------------------------------------
+def _prior_policy(gate: dict[str, Any] | None = None) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id="policy-prev-0001",
+        compiled_at=NOW - timedelta(hours=2),
+        expires_at=NOW + timedelta(hours=4),
+        raw_json={
+            "rationale": "range tape, wait for a sweep",
+            "universe": [{"symbol": "BTCUSDT"}],
+            "jev_gate": gate
+            or {
+                "entry_choice": "buy",
+                "min_choice_probability": 0.35,
+                "min_policy_fit": 0.34,
+                "min_quality_score": 1.45,
+            },
+        },
+    )
+
+
+def _reject_signal(at: datetime, fit: float = 0.3) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        policy_id="policy-prev-0001",
+        created_at=at,
+        score_json={
+            "entry_choice": "reject",
+            "entry_probability": 0.7,
+            "policy_fit": fit,
+            "quality_score": 1.3,
+        },
+    )
+
+
+async def test_prior_strategy_tool_says_what_the_last_policy_produced():
+    from types import SimpleNamespace
+
+    repo = FakeRepo()
+    repo.policies = [_prior_policy()]
+    repo.signals = [_reject_signal(NOW - timedelta(minutes=m * 10)) for m in range(6)]
+
+    result = await toolbox(repo=repo).call("get_prior_strategy", {"lookback_hours": 24})
+    data = result["data"]
+    assert data["prior"]["policy_id"] == "policy-prev-0001"
+    assert data["prior"]["jev_gate"]["min_policy_fit"] == 0.34
+    assert data["outcome"]["signals"] == 6
+    assert data["outcome"]["jev_choices"] == {"reject": 6}
+    # Every answer was "reject": tightening thresholds cannot fix that gate.
+    assert data["outcome"]["gate_state"] == "blocked_by_jev_choice"
+    assert "6 signals in 24h" in result["summary"]
+
+
+async def test_prior_strategy_separates_choice_from_thresholds():
+    from types import SimpleNamespace
+
+    repo = FakeRepo()
+    repo.policies = [_prior_policy()]
+    repo.signals = [
+        _reject_signal(NOW),
+        SimpleNamespace(
+            policy_id="policy-prev-0001",
+            created_at=NOW,
+            score_json={"entry_choice": "buy", "policy_fit": 0.2, "quality_score": 1.0},
+        ),
+    ]
+    repo.positions = [
+        SimpleNamespace(
+            policy_id="policy-prev-0001",
+            status="CLOSED",
+            opened_at=NOW - timedelta(hours=1),
+            realized_pnl_usdt=Decimal("0.42"),
+        )
+    ]
+
+    data = (await toolbox(repo=repo).call("get_prior_strategy", {}))["data"]
+    assert data["outcome"]["gate_state"] == "triggered"
+    assert data["outcome"]["wins"] == 1
+    assert data["outcome"]["realized_pnl_usdt"] == "0.42000000" or Decimal(
+        data["outcome"]["realized_pnl_usdt"]
+    ) == Decimal("0.42")
+
+    repo.positions = []
+    data = (await toolbox(repo=repo).call("get_prior_strategy", {}))["data"]
+    assert data["outcome"]["gate_state"] == "blocked_by_thresholds"
+
+
+async def test_prior_strategy_before_the_first_policy_is_not_an_error():
+    data = (await toolbox().call("get_prior_strategy", {}))["data"]
+    assert data["prior"] is None
+
+
+async def test_memory_pack_carries_the_prior_strategy():
+    repo = FakeRepo()
+    repo.policies = [_prior_policy()]
+    memory = await toolbox(repo=repo).memory()
+    assert memory["prior_strategy"]["prior"]["policy_id"] == "policy-prev-0001"
+
+
+# ---------------------------------------------------------------------------
+# parallel reads within one turn
+# ---------------------------------------------------------------------------
+class SlowToolbox(FakeToolbox):
+    """Runs forever until released; proves whether calls overlap."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parallel_names: set[str] = set()
+        self.release = __import__("asyncio").Event()
+        self.started = 0
+
+    def supports_parallel(self, name: str) -> bool:
+        return name in self.parallel_names
+
+    async def call_parallel(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.started += 1
+        await self.release.wait()
+        return {"summary": f"{name} done", "data": {"name": name}}
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, arguments))
+        return {"summary": f"{name} done", "data": {"name": name}}
+
+
+async def test_independent_reads_in_a_turn_run_concurrently_and_keep_order():
+    import asyncio as _asyncio
+    import json as _json
+
+    instance, sent = adapter(
+        [
+            openai_calls(
+                openai_tool_call("get_candles", {"symbol": "BTCUSDT"}, "c1"),
+                openai_tool_call("get_performance_summary", {}, "c2"),
+            ),
+            openai_answer(_json.dumps(policy_json())),
+        ]
+    )
+    box = SlowToolbox()
+    box.parallel_names = {"get_candles", "get_performance_summary"}
+    task = _asyncio.create_task(instance.generate_policy(context(), toolbox=box))
+    for _ in range(200):
+        await _asyncio.sleep(0)
+        if box.started == 2:
+            break
+    assert box.started == 2, "the second read waited for the first to finish"
+    box.release.set()
+    result = await task
+
+    assert [call["name"] for call in result.trace["tool_calls"]] == [
+        "get_candles",
+        "get_performance_summary",
+    ]
+    tool_messages = [m for m in sent[1]["messages"] if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_messages] == ["c1", "c2"]
+    assert "get_candles done" in tool_messages[0]["content"]
+
+
+async def test_a_failure_in_a_parallel_read_is_reported_like_a_sequential_one():
+    import json as _json
+
+    box = toolbox()
+    result = await box.call_parallel("get_candles", {"symbol": "DOGEUSDT"})
+    assert "outside the traded universe" in result["summary"]
+    assert result["data"]["tool"] == "get_candles"
+
+    with pytest.raises(ValueError, match="cannot run in parallel"):
+        await box.call_parallel("not_a_tool", {})
+
+    instance, sent = adapter(
+        [
+            openai_calls(
+                openai_tool_call("get_candles", {"symbol": "DOGEUSDT"}, "c1"),
+                openai_tool_call("get_account_state", {}, "c2"),
+            ),
+            openai_answer(_json.dumps(policy_json())),
+        ]
+    )
+    result = await instance.generate_policy(context(), toolbox=box)
+    assert [call["ok"] for call in result.trace["tool_calls"]] == [True, True]
+    # The failed read carries its error as a summary and its ok flag is False;
+    # the sibling read still delivers normally.
+    assert result.trace["tool_calls"][0]["summary"].startswith("ValueError")
+    tool_messages = [m for m in sent[1]["messages"] if m["role"] == "tool"]
+    assert "outside the traded universe" in tool_messages[0]["content"]
+
+
+def test_test_doubles_without_parallel_support_stay_sequential():
+    from jev_trading.adapters.models.llm import _runs_in_parallel
+
+    assert _runs_in_parallel(FakeToolbox(), "get_candles") is False
+    assert _runs_in_parallel(toolbox(), "get_candles") is True

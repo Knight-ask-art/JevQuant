@@ -18,6 +18,9 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import UTC, datetime
+import asyncio
+from collections import Counter, deque
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Sequence
 
@@ -151,6 +154,28 @@ GET_PERFORMANCE = {
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }
 
+GET_PRIOR_STRATEGY = {
+    "name": "get_prior_strategy",
+    "description": (
+        "The policy currently in force and what it produced over the last "
+        "N hours: its Jev gate, how many signals it generated, the Jev "
+        "choices it received, its policy_fit range and the closed trades "
+        "with their PnL. Use it to keep what worked and change what did not."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "lookback_hours": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 168,
+                "description": "How far back to summarize outcomes.",
+            }
+        },
+        "additionalProperties": False,
+    },
+}
+
 TOOL_SPECS: tuple[dict[str, Any], ...] = (
     MARKET_OVERVIEW,
     GET_CANDLES,
@@ -160,8 +185,14 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
     GET_RECENT_EVALUATIONS,
     GET_RECENT_TRADES,
     GET_PERFORMANCE,
+    GET_PRIOR_STRATEGY,
 )
 TOOL_NAMES = frozenset(spec["name"] for spec in TOOL_SPECS)
+
+# Every tool is a read (repo queries, in-memory candles). None of them holds a
+# shared mutable buffer, so calls within one model turn can run concurrently;
+# a tool that ever needs sequencing must be removed from this set.
+PARALLEL_TOOLS = TOOL_NAMES
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -170,6 +201,22 @@ def _iso(value: datetime | None) -> str | None:
 
 def _num(value: float | None, digits: int = 6) -> float | None:
     return None if value is None else round(float(value), digits)
+
+
+def _blocked_reason(signals: list[Any], choices: Counter, closed: list[Any]) -> str:
+    """Why the prior policy did or did not trade, in one word for the model.
+
+    ``triggered`` means the gate let something through; the other values say
+    which leg held the gate shut, so the next policy knows what to change.
+    """
+
+    if closed:
+        return "triggered"
+    if not signals:
+        return "no_signals"
+    if set(choices) == {"reject"}:
+        return "blocked_by_jev_choice"
+    return "blocked_by_thresholds"
 
 
 def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
@@ -203,6 +250,11 @@ class AgentToolbox:
         self._now = now or datetime.now(UTC)
         self._marks_cache: dict[str, Decimal] | None = None
         self.calls = 0
+        # Answers from tools that ran in parallel during the current turn.
+        # They are handed over in the order the model asked, not the order
+        # they happened to finish, so two runs with the same inputs read the
+        # same transcript.
+        self._inbox: deque[dict[str, Any]] = deque()
 
     # -- contract --------------------------------------------------------
     def specs(self) -> list[dict[str, Any]]:
@@ -216,7 +268,46 @@ class AgentToolbox:
             raise ValueError("tool call budget exhausted")
         arguments = arguments if isinstance(arguments, dict) else {}
         handler = getattr(self, f"_tool_{name}")
+        if self._inbox:
+            # This call's answer was already computed alongside its siblings.
+            pending = self._inbox.popleft()
+            if pending["name"] == name:
+                return pending["result"]
+            self._inbox.clear()
         return await handler(**arguments)
+
+    def supports_parallel(self, name: str) -> bool:
+        return name in PARALLEL_TOOLS
+
+    async def call_parallel(
+        self, name: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Run read-only tools at once; answers queue for ``call`` in order.
+
+        A failure is captured like ``call`` would report it, so the model sees
+        the same content either way.
+        """
+
+        if name not in PARALLEL_TOOLS:
+            raise ValueError(f"{name!r} cannot run in parallel")
+        self.calls += 1
+        if self.calls > MAX_TOOL_CALLS:
+            raise ValueError("tool call budget exhausted")
+        arguments = arguments if isinstance(arguments, dict) else {}
+        handler = getattr(self, f"_tool_{name}")
+        try:
+            result = await handler(**arguments)
+        except Exception as exc:  # noqa: BLE001 - reported to the model, as in call()
+            result = {
+                "summary": f"{type(exc).__name__}: {exc}",
+                "data": {"error": str(exc), "tool": name},
+            }
+        # The "__failed" marker never reaches the model or the journal: only
+        # the ok flag does, exactly as on the sequential path.
+        if result.pop("__failed", False):
+            result["data"]["error"] = str(result["data"].get("error", ""))
+        self._inbox.append({"name": name, "result": result})
+        return result
 
     async def memory(self) -> dict[str, Any]:
         """The context pack assembled before the agent starts thinking."""
@@ -225,20 +316,22 @@ class AgentToolbox:
             "as_of": self._now.isoformat(),
             "mode": self.mode,
         }
-        for key, loader in (
-            ("recent_decisions", lambda: self._tool_get_recent_decisions(limit=4)),
-            (
-                "recent_evaluations",
-                lambda: self._tool_get_recent_evaluations(limit=10),
-            ),
-            ("open_positions", self._tool_get_open_positions),
-            ("recent_trades", lambda: self._tool_get_recent_trades(limit=6)),
-            ("performance", self._tool_get_performance_summary),
-        ):
-            try:
-                memory[key] = (await loader())["data"]
-            except Exception as exc:  # noqa: BLE001 - memory is best effort
-                memory[key] = {"unavailable": type(exc).__name__}
+        loaders = {
+            "recent_decisions": lambda: self._tool_get_recent_decisions(limit=4),
+            "recent_evaluations": lambda: self._tool_get_recent_evaluations(limit=10),
+            "open_positions": self._tool_get_open_positions,
+            "recent_trades": lambda: self._tool_get_recent_trades(limit=6),
+            "performance": self._tool_get_performance_summary,
+            "prior_strategy": self._tool_get_prior_strategy,
+        }
+        answers = await asyncio.gather(
+            *(loader() for loader in loaders.values()), return_exceptions=True
+        )
+        for key, answer in zip(loaders, answers, strict=True):
+            if isinstance(answer, BaseException):
+                memory[key] = {"unavailable": type(answer).__name__}
+            else:
+                memory[key] = answer["data"]
         return memory
 
     # -- helpers ---------------------------------------------------------
@@ -527,6 +620,80 @@ class AgentToolbox:
                 "best": best,
             },
         }
+
+    async def _tool_get_prior_strategy(
+        self, lookback_hours: int = 24
+    ) -> dict[str, Any]:
+        """The previous policy and what it actually produced, side by side.
+
+        Without this every run starts from a blank sheet and re-learns the
+        same lessons; mature agents (AutoGen's conversable-group memory,
+        OpenHands' condenser) always carry the last outcome forward.
+        """
+
+        hours = _clamp_int(lookback_hours, 24, 1, 168)
+        rows = await self.repo.list_policies(limit=1)
+        if not rows:
+            return {
+                "summary": "no prior policy",
+                "data": {"prior": None},
+            }
+        row = rows[0]
+        raw = row.raw_json if isinstance(row.raw_json, dict) else {}
+        since = self._now - timedelta(hours=hours)
+        signals = [
+            signal
+            for signal in await self.repo.list_signals(limit=600)
+            if signal.policy_id == row.id and signal.created_at >= since
+        ]
+        closed = [
+            position
+            for position in await self._closed_positions(200)
+            if position.policy_id == row.id
+        ]
+        right = [position for position in closed if position.realized_pnl_usdt > 0]
+        fits = [
+            float(score["policy_fit"])
+            for score in (signal.score_json or {} for signal in signals)
+            if isinstance(score, dict) and score.get("policy_fit") is not None
+        ]
+        choices = Counter(
+            str((signal.score_json or {}).get("entry_choice"))
+            for signal in signals
+            if isinstance(signal.score_json, dict) and signal.score_json.get("entry_choice")
+        )
+        prior = {
+            "policy_id": row.id,
+            "compiled_at": _iso(row.compiled_at),
+            "expires_at": _iso(row.expires_at),
+            "jev_gate": raw.get("jev_gate"),
+            "universe": [
+                item.get("symbol") for item in raw.get("universe") or [] if isinstance(item, dict)
+            ],
+            "rationale": raw.get("rationale"),
+        }
+        outcome = {
+            "hours": hours,
+            "signals": len(signals),
+            "jev_choices": dict(choices),
+            "policy_fit_min": round(min(fits), 3) if fits else None,
+            "policy_fit_max": round(max(fits), 3) if fits else None,
+            "closed": len(closed),
+            "wins": len(right),
+            "realized_pnl_usdt": canonical_str(
+                sum((position.realized_pnl_usdt for position in closed), Decimal("0"))
+            ),
+            "gate_state": _blocked_reason(signals, choices, closed),
+        }
+        gate = prior["jev_gate"] or {}
+        summary = (
+            f"prior policy {str(row.id)[:8]}: gate {gate.get('entry_choice')} "
+            f"/prob {gate.get('min_choice_probability')} /fit {gate.get('min_policy_fit')} "
+            f"/q {gate.get('min_quality_score')}; {outcome['signals']} signals in "
+            f"{hours}h ({outcome['gate_state']}), {outcome['closed']} closed, "
+            f"{outcome['wins']} wins"
+        )
+        return {"summary": summary, "data": {"prior": prior, "outcome": outcome}}
 
     async def _tool_get_performance_summary(self) -> dict[str, Any]:
         rows = await self._closed_positions(200)

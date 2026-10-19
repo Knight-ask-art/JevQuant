@@ -21,7 +21,7 @@ from ..adapters.market.synthetic import SyntheticMarketDataProvider
 from ..adapters.models.jev import JevAdapter
 from ..adapters.models.llm import ConsoleLLMAdapter
 from ..adapters.models.simulated import SimulatedJevEvaluator, SimulatedPolicyGenerator
-from ..config import Settings, get_settings
+from ..config import Settings
 from ..migrations import migrate
 from ..domain.enums import ErrorCode, Mode
 from ..domain.errors import AppError

@@ -63,7 +63,16 @@ Rules:
   level that in practice sits far below 5, and policy_fit is a probability.
   A minimum above the observed values rejects every setup, so pick thresholds
   a genuinely good setup can clear.
-- Keep rationale under 400 words.
+- Start from memory.prior_strategy: it is the policy you wrote last and what
+  it produced. Read its outcome.gate_state before changing anything:
+  blocked_by_jev_choice means Jev never said buy, so tightening or loosening
+  thresholds cannot help and the setup itself must change; blocked_by_thresholds
+  means Jev wanted in but your minimums held it, so lower the failing leg;
+  triggered means it traded, so judge it by the closed trades and PnL.
+- Independent reads can be requested together in one turn (for example both
+  symbols' candles plus the account); they run concurrently.
+- Keep rationale under 400 words. Say which part of the prior outcome you kept
+  and which you changed, and why.
 - You never place orders and never see exchange credentials.
 
 Agent protocol (when tools are available):
@@ -417,6 +426,30 @@ class ConsoleLLMAdapter:
                         "tool_calls": tool_calls,
                     }
                 )
+                # Several reads in one turn are the common case (both
+                # symbols, market plus account). Run the independent ones
+                # together, then write the answers back in request order so
+                # the transcript stays deterministic.
+                parallel_ok = spent < MAX_TOOL_CONTEXT_CHARS and all(
+                    _runs_in_parallel(
+                        toolbox, str((call.get("function") or {}).get("name") or "")
+                    )
+                    for call in tool_calls
+                )
+                if parallel_ok:
+                    await asyncio.gather(
+                        *(
+                            self._call_tool(
+                                toolbox,
+                                str((call.get("function") or {}).get("name") or ""),
+                                _parse_arguments(
+                                    ((call.get("function") or {}).get("arguments"))
+                                ),
+                                parallel=True,
+                            )
+                            for call in tool_calls
+                        )
+                    )
                 for call in tool_calls:
                     function = call.get("function") or {}
                     name = str(function.get("name") or "")
@@ -538,6 +571,25 @@ class ConsoleLLMAdapter:
             if tool_uses and not final_turn:
                 messages.append({"role": "assistant", "content": blocks})
                 results: list[dict[str, Any]] = []
+                if all(
+                    _runs_in_parallel(toolbox, str(block.get("name") or ""))
+                    for block in tool_uses
+                ):
+                    await asyncio.gather(
+                        *(
+                            self._call_tool(
+                                toolbox,
+                                str(block.get("name") or ""),
+                                (
+                                    block.get("input")
+                                    if isinstance(block.get("input"), dict)
+                                    else {}
+                                ),
+                                parallel=True,
+                            )
+                            for block in tool_uses
+                        )
+                    )
                 for block in tool_uses:
                     name = str(block.get("name") or "")
                     arguments = (
@@ -661,11 +713,19 @@ class ConsoleLLMAdapter:
         return repaired, usage
 
     async def _call_tool(
-        self, toolbox: AgentToolbox, name: str, arguments: dict[str, Any]
+        self,
+        toolbox: AgentToolbox,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        parallel: bool = False,
     ) -> tuple[dict[str, Any], bool, int]:
         started = time.perf_counter()
         try:
-            result = await toolbox.call(name, arguments)
+            if parallel:
+                result = await toolbox.call_parallel(name, arguments)
+            else:
+                result = await toolbox.call(name, arguments)
             ok = True
         except Exception as exc:  # noqa: BLE001 - tell the model, keep the loop alive
             result = {
@@ -745,6 +805,17 @@ def _extract_json(text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise PolicyInvalidError("Model output JSON was not an object.")
     return parsed
+
+
+def _runs_in_parallel(toolbox: AgentToolbox, name: str) -> bool:
+    """Whether ``name`` may run alongside its siblings in the same turn.
+
+    Toolboxes that do not advertise ``supports_parallel`` (test doubles,
+    older adapters) are treated as strictly sequential.
+    """
+
+    check = getattr(toolbox, "supports_parallel", None)
+    return bool(callable(check) and check(name))
 
 
 def _parse_arguments(raw: Any) -> dict[str, Any]:

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Awaitable, Callable
 
-from sqlalchemy import Column, MetaData, String, Table, inspect as sa_inspect, select, text
+from sqlalchemy import inspect as sa_inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .storage.db import Database

@@ -12,14 +12,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..domain.enums import (
     IntentType,
-    JevChoice,
     Mode,
     OrderPreference,
     OrderStatus,

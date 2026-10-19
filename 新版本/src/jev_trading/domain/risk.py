@@ -7,7 +7,7 @@ significant arithmetic is Decimal-only.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -16,7 +16,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from .enums import IntentType, Mode, OrderPreference, Side
 from .intent import ApprovedTradeIntent, TradeIntent
 from .market import AccountSnapshot, MarketSnapshot, SymbolFilters, SystemSnapshot
-from .money import ZERO, canonical_str, quantize_down, safe_div
+from .money import ZERO, canonical_str
 from .policy import EffectivePolicy, sha256_json
 
 
