@@ -128,6 +128,7 @@ def make_orchestrator(
         settings=SimpleNamespace(
             market_staleness_ms=5000,
             exit_slippage_bps=Decimal("8"),
+            exit_stress_drawdown_bps=Decimal("300"),
             allowed_symbols=["BTCUSDT", "ETHUSDT"],
         ),
         repo=repo,

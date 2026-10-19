@@ -26,6 +26,7 @@ _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.NOT_FOUND: 404,
     ErrorCode.CONFLICT: 409,
     ErrorCode.KILL_SWITCH_ACTIVE: 409,
+    ErrorCode.BUDGET_EXHAUSTED: 429,
 }
 
 
@@ -131,3 +132,10 @@ class RiskRejectedError(AppError):
 class ReconciliationRequiredError(AppError):
     def __init__(self, message: str, **kwargs: Any) -> None:
         super().__init__(ErrorCode.RECONCILIATION_REQUIRED, message, **kwargs)
+
+
+class BudgetExhaustedError(AppError):
+    """A paid provider was not called because its configured budget is spent."""
+
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        super().__init__(ErrorCode.BUDGET_EXHAUSTED, message, **kwargs)

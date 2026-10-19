@@ -63,6 +63,41 @@ def to_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def usage_with_cache_split(usage: Any) -> dict[str, int]:
+    """Normalize OpenAI/DeepSeek and Anthropic usage into one token shape.
+
+    Cached prompt tokens are a subset of the prompt in both shapes, so they
+    are reported separately rather than added.
+    """
+
+    data = usage if isinstance(usage, dict) else {}
+    details = data.get("prompt_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    prompt = _as_int(data.get("prompt_tokens", data.get("input_tokens")))
+    completion = _as_int(data.get("completion_tokens", data.get("output_tokens")))
+    cached = _as_int(data.get("prompt_cache_hit_tokens", details.get("cached_tokens")))
+    cached += _as_int(data.get("cache_read_input_tokens"))
+    cached = min(cached, prompt) if prompt else cached
+    total = _as_int(data.get("total_tokens")) or prompt + completion
+    return {
+        "prompt_tokens": prompt,
+        "cached_tokens": cached,
+        "completion_tokens": completion,
+        "total_tokens": total,
+    }
+
+
+def _as_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    try:
+        return max(0, int(str(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
 def utc_date(value: datetime) -> str:
     normalized = to_utc(value)
     assert normalized is not None

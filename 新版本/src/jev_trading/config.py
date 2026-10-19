@@ -65,6 +65,29 @@ class Settings(BaseSettings):
     # out. This bounds churn no matter what cooldown the policy proposes.
     overtrade_window_seconds: int = Field(default=3600, ge=0, le=86_400)
     overtrade_max_entries: int = Field(default=3, ge=1, le=100)
+    # Paid-call budgets. The spec's rate policy caps how often the paid
+    # providers may be called; the counters are rebuilt from the ledger, so
+    # they survive a restart. Counts are exact. USD caps are only enforced
+    # once a price is configured for that provider: an unpriced provider
+    # reports cost 0, and a cap that can never be reached is worse than none.
+    # 0 disables the individual limit.
+    jev_max_calls_per_utc_day: int = Field(default=30, ge=0, le=100_000)
+    jev_max_calls_per_utc_month: int = Field(default=900, ge=0, le=3_000_000)
+    jev_max_monthly_cost_usd: Decimal = Field(default=Decimal("0"), ge=0)
+    jev_input_price_per_mtok_usd: Decimal = Field(default=Decimal("0"), ge=0)
+    jev_output_price_per_mtok_usd: Decimal = Field(default=Decimal("0"), ge=0)
+    model_max_tokens_per_utc_month: int = Field(default=3_000_000, ge=0)
+    model_max_monthly_cost_usd: Decimal = Field(default=Decimal("0"), ge=0)
+    model_input_price_per_mtok_usd: Decimal = Field(default=Decimal("0"), ge=0)
+    # Cached prompt tokens are usually discounted; 0 prices them as input.
+    model_cached_input_price_per_mtok_usd: Decimal = Field(default=Decimal("0"), ge=0)
+    model_output_price_per_mtok_usd: Decimal = Field(default=Decimal("0"), ge=0)
+
+    # Exit feasibility is judged against this adverse move, not just the
+    # stop: a position that cannot be sold after a 3% drop plus fees and
+    # slippage must not be opened.
+    exit_stress_drawdown_bps: Decimal = Field(default=Decimal("300"), ge=0, le=5_000)
+
     min_choice_probability: float = 0.5
     min_policy_fit: float = 0.5
     min_quality_score: float = 0.0
@@ -217,6 +240,21 @@ class Settings(BaseSettings):
                 "max_positions": self.max_positions,
                 "max_drawdown_pct": str(self.max_drawdown_pct),
                 "allowed_symbols": self.allowed_symbols,
+            },
+            "budgets": {
+                "jev_max_calls_per_utc_day": self.jev_max_calls_per_utc_day,
+                "jev_max_calls_per_utc_month": self.jev_max_calls_per_utc_month,
+                "jev_max_monthly_cost_usd": str(self.jev_max_monthly_cost_usd),
+                "jev_priced": bool(
+                    self.jev_input_price_per_mtok_usd
+                    or self.jev_output_price_per_mtok_usd
+                ),
+                "model_max_tokens_per_utc_month": self.model_max_tokens_per_utc_month,
+                "model_max_monthly_cost_usd": str(self.model_max_monthly_cost_usd),
+                "model_priced": bool(
+                    self.model_input_price_per_mtok_usd
+                    or self.model_output_price_per_mtok_usd
+                ),
             },
         }
 

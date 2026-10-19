@@ -8,7 +8,7 @@ significant arithmetic is Decimal-only.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from uuid import UUID, uuid4
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
@@ -44,6 +44,9 @@ class RiskContext(BaseModel):
 
     max_staleness_ms: int = Field(default=5000, ge=0)
     exit_slippage_bps: Decimal = Field(default=Decimal("8"), ge=0)
+    # The adverse move the exit-feasibility pre-check assumes, on top of the
+    # stop: the venue must still let the position be sold after this drop.
+    exit_stress_drawdown_bps: Decimal = Field(default=Decimal("300"), ge=0)
     max_intent_ttl_seconds: int = Field(default=30, gt=0)
 
 
@@ -112,6 +115,7 @@ def compute_risk_snapshot_hash(intent: TradeIntent, ctx: RiskContext) -> str:
             "execution_healthy": ctx.system.execution_healthy,
         },
         "position_qty": canonical_str(ctx.position_qty),
+        "exit_stress_drawdown_bps": canonical_str(ctx.exit_stress_drawdown_bps),
     }
     return sha256_json(payload)
 
@@ -516,6 +520,81 @@ class RiskEngine:
 
         expected_fee = notional * rules.taker_fee_bps / Decimal("10000")
         if intent.intent_type is IntentType.OPEN:
+            # Exit feasibility: the position must remain legally sellable
+            # under an adverse move that is at least the configured stress
+            # drawdown AND enough to reach the stop (so a stop tighter than
+            # the stress level still assumes the stress move). Fees and
+            # slippage are then added on top of that price drop.
+            stop_bps = policy.exit_defaults.stop_loss_bps
+            move_bps = max(ctx.exit_stress_drawdown_bps, stop_bps)
+            adverse_rate = (move_bps + rules.taker_fee_bps + ctx.exit_slippage_bps) / Decimal(
+                "10000"
+            )
+            adverse_exit_price = (
+                ZERO
+                if adverse_rate >= Decimal("1")
+                else price * (Decimal("1") - adverse_rate)
+            )
+            adverse_exit_qty = (qty / rules.step_size).to_integral_value(
+                rounding=ROUND_DOWN
+            ) * rules.step_size
+            adverse_exit_notional = adverse_exit_qty * adverse_exit_price
+            if adverse_exit_price <= ZERO or adverse_exit_qty < rules.min_qty:
+                failures.append(
+                    RuleFailure(
+                        rule="REJECT_EXIT_MIN_NOTIONAL",
+                        message="Position cannot be legally sold after an adverse move.",
+                        details={
+                            "adverse_exit_qty": canonical_str(adverse_exit_qty),
+                            "min_qty": canonical_str(rules.min_qty),
+                            "stop_loss_bps": canonical_str(stop_bps),
+                            "exit_slippage_bps": canonical_str(ctx.exit_slippage_bps),
+                            "exit_stress_drawdown_bps": canonical_str(
+                                ctx.exit_stress_drawdown_bps
+                            ),
+                        },
+                    )
+                )
+            elif adverse_exit_notional < rules.min_notional:
+                failures.append(
+                    RuleFailure(
+                        rule="REJECT_EXIT_MIN_NOTIONAL",
+                        message="Adverse exit notional falls below MIN_NOTIONAL.",
+                        details={
+                            "adverse_exit_notional": canonical_str(adverse_exit_notional),
+                            "min_notional": canonical_str(rules.min_notional),
+                            "adverse_exit_price": canonical_str(adverse_exit_price),
+                            "exit_stress_drawdown_bps": canonical_str(
+                                ctx.exit_stress_drawdown_bps
+                            ),
+                        },
+                    )
+                )
+            elif intent.order_preference is OrderPreference.LIMIT:
+                # A stop is placed by the engine as a limit below the bid at
+                # the time it triggers. Binance spot rejects a SELL limit at
+                # or above the bid ("would immediately trigger"), and its
+                # own PERCENT_PRICE_BY_SIDE filter rejects a limit too far
+                # below it. The conservative reading of the filter is that
+                # the bid may sit as low as the stress price; the stop limit
+                # is then the stress price minus a tick, which must stay
+                # inside the venue's permitted band.
+                stop_price = rules.quantize_price(adverse_exit_price)
+                problem = rules.validate_price(stop_price)
+                if problem:
+                    failures.append(
+                        RuleFailure(
+                            rule="REJECT_EXIT_MIN_NOTIONAL",
+                            message="Stop-loss price would be outside the venue price band.",
+                            details={
+                                "stop_price": canonical_str(stop_price),
+                                "problem": "; ".join(problem),
+                                "exit_stress_drawdown_bps": canonical_str(
+                                    ctx.exit_stress_drawdown_bps
+                                ),
+                            },
+                        )
+                    )
             fee_rate = rules.taker_fee_bps / Decimal("10000")
             if notional + expected_fee > ctx.account.available_quote_usdt:
                 failures.append(
@@ -528,45 +607,6 @@ class RiskEngine:
                         },
                     )
                 )
-
-            stop_bps = policy.exit_defaults.stop_loss_bps
-            adverse_rate = (
-                stop_bps + rules.taker_fee_bps + ctx.exit_slippage_bps
-            ) / Decimal("10000")
-            exit_price = price * (Decimal("1") - adverse_rate)
-            if exit_price <= ZERO:
-                failures.append(
-                    RuleFailure(
-                        rule="REJECT_EXIT_MIN_NOTIONAL",
-                        message="Adverse exit price is non-positive under the stop-loss.",
-                    )
-                )
-            elif qty < rules.min_qty:
-                failures.append(
-                    RuleFailure(
-                        rule="REJECT_EXIT_MIN_NOTIONAL",
-                        message="Position cannot be legally sold after a stop-loss move.",
-                        details={
-                            "exit_qty": canonical_str(qty),
-                            "min_qty": canonical_str(rules.min_qty),
-                        },
-                    )
-                )
-            else:
-                exit_notional = qty * exit_price
-                if exit_notional < rules.min_notional:
-                    failures.append(
-                        RuleFailure(
-                            rule="REJECT_EXIT_MIN_NOTIONAL",
-                            message="Position cannot be legally sold after a stop-loss move.",
-                            details={
-                                "exit_notional": canonical_str(exit_notional),
-                                "min_notional": canonical_str(rules.min_notional),
-                                "stop_loss_bps": canonical_str(stop_bps),
-                                "exit_slippage_bps": canonical_str(ctx.exit_slippage_bps),
-                            },
-                        )
-                    )
 
         if failures:
             return None, failures

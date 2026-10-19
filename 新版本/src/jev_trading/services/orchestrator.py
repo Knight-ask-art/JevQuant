@@ -156,8 +156,10 @@ class TradingOrchestrator:
         audit: AuditService,
         broker: EventBroker,
         account_id: str,
+        budgets: Any | None = None,
     ) -> None:
         self.settings = settings
+        self.budgets = budgets
         self.repo = repo
         self.policy_service = policy_service
         self.market = market
@@ -278,6 +280,21 @@ class TradingOrchestrator:
             blocked_reason = "market_feed_unhealthy"
         elif not execution_health:
             blocked_reason = "execution_unhealthy"
+        elif self.budgets is not None:
+            # Checked once per cycle, before any signal row exists, so a
+            # spent budget reads as a budget problem rather than as a run of
+            # signals Jev never answered.
+            try:
+                await self.budgets.check_jev(started)
+            except AppError as exc:
+                blocked_reason = "jev_budget_exhausted"
+                notes.append(f"Jev call budget spent: {exc.message}")
+                await self.audit.record(
+                    "cycle.budget_exhausted",
+                    "cycle",
+                    cycle_id,
+                    {"provider": "jev", "code": exc.code.value, **exc.details},
+                )
 
         if blocked_reason is None and policy is not None:
             for symbol_policy in policy.universe:
@@ -440,6 +457,7 @@ class TradingOrchestrator:
             purpose=purpose,
             toolbox=toolbox,
             cycle_id=cycle_id,
+            budgets=self.budgets,
         )
         return effective
 
@@ -595,6 +613,12 @@ class TradingOrchestrator:
 
         questions = build_jev_questions()
         try:
+            # The per-call gate: one cheap aggregate read, because checking at
+            # cycle start alone would let the last symbols of a cycle overshoot
+            # the cap (and a spent budget must stop here, not surface as a
+            # Jev error).
+            if self.budgets is not None:
+                await self.budgets.check_jev()
             jev_result = await self.jev.evaluate(state, questions, signal_id=signal.id)
         except AppError as exc:
             await self.repo.insert_jev_evaluation(
@@ -794,6 +818,7 @@ class TradingOrchestrator:
             last_entry_at=last_entry,
             max_staleness_ms=self.settings.market_staleness_ms,
             exit_slippage_bps=self.settings.exit_slippage_bps,
+            exit_stress_drawdown_bps=self.settings.exit_stress_drawdown_bps,
         )
         risk_hash = compute_risk_snapshot_hash(provisional, context)
         intent = provisional.model_copy(update={"risk_snapshot_hash": risk_hash})
@@ -1561,6 +1586,7 @@ class TradingOrchestrator:
                 last_entry_at=None,
                 max_staleness_ms=self.settings.market_staleness_ms,
                 exit_slippage_bps=self.settings.exit_slippage_bps,
+                exit_stress_drawdown_bps=self.settings.exit_stress_drawdown_bps,
             )
             risk_hash = compute_risk_snapshot_hash(provisional, context)
             intent = provisional.model_copy(update={"risk_snapshot_hash": risk_hash})

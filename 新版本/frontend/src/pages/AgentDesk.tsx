@@ -150,7 +150,12 @@ export function AgentDesk() {
     const input = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0);
     const output = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
     if (!input && !output) return null;
-    return t("agent.usage", { input, output });
+    const line = t("agent.usage", { input, output });
+    // Present only when a per-token price is configured; otherwise the run
+    // shows its tokens alone rather than a misleading $0.00.
+    const cost = typeof usage.__cost_usd__ === "string" ? usage.__cost_usd__ : null;
+    if (!cost || Number(cost) === 0) return line;
+    return t("agent.usageCost", { input, output, cost: Number(cost).toFixed(4) });
   };
 
   // Pull the newest run's trace once so the narration is there on arrival.

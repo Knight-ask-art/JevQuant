@@ -503,7 +503,12 @@ def test_agent_journal_records_what_the_strategy_layer_decided(open_client):
 
     detail = open_client.get(f"/api/v1/strategy/agent/{latest['id']}")
     assert detail.status_code == 200
-    assert detail.json()["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    # Unpriced providers still record what the run would cost: 0 here.
+    assert detail.json()["usage"] == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "__cost_usd__": "0",
+    }
     assert isinstance(detail.json()["tools"], list)
 
     missing = open_client.get("/api/v1/strategy/agent/does-not-exist")
@@ -559,4 +564,8 @@ def test_a_rejected_policy_is_still_journaled(open_client):
     # The attempt still cost two model turns and one tool call: say so.
     assert run["turns"] == 2
     assert run["tool_count"] == 1
-    assert run["usage"] == {"input_tokens": 11, "output_tokens": 3}
+    assert run["usage"] == {
+        "input_tokens": 11,
+        "output_tokens": 3,
+        "__cost_usd__": "0",
+    }

@@ -246,6 +246,7 @@ def make_context(
     position_qty: str = "0",
     last_entry_at: datetime | None = None,
     duplicate: bool = False,
+    exit_stress_drawdown_bps: Decimal = Decimal("300"),
 ) -> RiskContext:
     return RiskContext(
         policy=policy,
@@ -259,4 +260,5 @@ def make_context(
         duplicate_intent=duplicate,
         max_staleness_ms=5000,
         exit_slippage_bps=Decimal("8"),
+        exit_stress_drawdown_bps=exit_stress_drawdown_bps,
     )

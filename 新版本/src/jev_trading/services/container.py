@@ -34,6 +34,7 @@ from ..storage.repository import Repository
 from .agent_tools import TOOL_NAMES as AGENT_TOOL_NAMES
 from .audit import AuditService
 from .balance_sync import BalanceSyncScheduler, BalanceSyncService
+from .budgets import BudgetService
 from .events import EventBroker
 from .features import build_features
 from .market_service import MarketService
@@ -67,8 +68,14 @@ class AppContainer:
         )
         self.compiler = PolicyCompiler(settings.server_limits)
         self.policy_service = PolicyService(
-            self.repo, self.compiler, settings.server_limits, self.audit, self.broker
+            self.repo,
+            self.compiler,
+            settings.server_limits,
+            self.audit,
+            self.broker,
+            settings=settings,
         )
+        self.budgets = BudgetService(self.repo, settings)
         self.policy_generator = self._build_policy_generator()
         self.jev = self._build_jev()
         self.risk_engine = RiskEngine()
@@ -214,6 +221,7 @@ class AppContainer:
             audit=self.audit,
             broker=self.broker,
             account_id=self.account_id,
+            budgets=self.budgets,
         )
         await self.audit.record(
             "system.started",
@@ -651,6 +659,7 @@ class AppContainer:
         account = await self.repo.account_snapshot(self.account_id, marks)
         positions = await self.repo.get_open_positions(self.account_id)
         policy_row = await self.repo.get_active_policy()
+        spend = await self.budgets.snapshot()
         policy_payload = None
         if policy_row is not None:
             policy_payload = {
@@ -717,6 +726,7 @@ class AppContainer:
             },
             "positions": position_payload,
             "policy": policy_payload,
+            "budgets": spend,
             "server_limits": {
                 "max_position_notional_usdt": str(
                     self.settings.max_position_notional_usdt

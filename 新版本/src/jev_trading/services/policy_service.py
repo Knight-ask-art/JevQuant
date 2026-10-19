@@ -5,11 +5,14 @@ from __future__ import annotations
 import inspect
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 from ..adapters.models.base import PolicyContext, PolicyGenerator
+from ..config import Settings
 from ..domain.errors import AppError, PolicyInvalidError
+from ..domain.money import canonical_str
 from ..domain.policy import (
     EffectivePolicy,
     PolicyCompiler,
@@ -19,6 +22,7 @@ from ..domain.policy import (
 from ..storage.models import StrategyPolicyRow
 from ..storage.repository import Repository
 from .audit import AuditService
+from .budgets import model_cost_usd
 from .events import EventBroker
 
 
@@ -34,17 +38,23 @@ def _trace_flags(trace: Any) -> dict[str, bool]:
 
 
 def _with_trace_flags(
-    usage: dict[str, Any] | None, trace: dict[str, bool] | None
+    usage: dict[str, Any] | None,
+    trace: dict[str, bool] | None,
+    *,
+    priced_cost_usd: Decimal | None = None,
 ) -> dict[str, Any]:
     """Provider usage as-is, with the run's flags hung off ``__trace__``.
 
     Kept off the provider's own keys so token accounting is never confused
-    by journal-only fields.
+    by journal-only fields. ``__cost_usd__`` is the run's cost at the
+    configured prices, so Agent Desk can show what it spent.
     """
 
     merged = dict(usage or {})
     if trace:
         merged["__trace__"] = dict(trace)
+    if priced_cost_usd is not None:
+        merged["__cost_usd__"] = canonical_str(priced_cost_usd)
     return merged
 
 
@@ -56,8 +66,12 @@ class PolicyService:
         server_limits: ServerLimits,
         audit: AuditService,
         broker: EventBroker,
+        settings: Settings | None = None,
     ) -> None:
         self.repo = repo
+        # Only used to price each run for the journal; None when a caller
+        # builds the service without settings (tests, tooling).
+        self.settings = settings
         self.compiler = compiler
         self.server_limits = server_limits
         self.audit = audit
@@ -101,7 +115,14 @@ class PolicyService:
         purpose: str | None = None,
         toolbox: Any | None = None,
         cycle_id: str | None = None,
+        budgets: Any | None = None,
     ) -> tuple[EffectivePolicy, StrategyPolicyRow]:
+        # Checked here, not only by the callers: every path that authoring a
+        # new policy passes through must honour the monthly budget. A spent
+        # budget raises before the model is called, so nothing is billed.
+        check = getattr(budgets, "check_model", None)
+        if callable(check):
+            await check()
         memory: dict[str, Any] = {}
         load_memory = getattr(toolbox, "memory", None)
         # The deterministic stand-in ignores memory; loading it would cost
@@ -174,6 +195,8 @@ class PolicyService:
                 tool_calls=trace.get("tool_calls") if isinstance(trace, dict) else None,
                 usage=result.usage,
                 latency_ms=result.latency_ms,
+                # The model answered, so this attempt was billed.
+                priced_cost_usd=self._priced_cost(result.usage),
             )
             if failure is exc:
                 raise
@@ -193,6 +216,7 @@ class PolicyService:
             usage=result.usage,
             latency_ms=result.latency_ms,
             rationale=raw.rationale,
+            priced_cost_usd=self._priced_cost(result.usage),
             # Per-call turn numbers are already stored; these flags say how
             # the run ended so Agent Desk can narrate it.
             trace=_trace_flags(trace),
@@ -234,6 +258,7 @@ class PolicyService:
         tool_calls: Any = None,
         usage: dict[str, Any] | None = None,
         latency_ms: int = 0,
+        priced_cost_usd: Decimal | None = None,
     ) -> None:
         """Record a failed authoring attempt in the audit chain and journal."""
 
@@ -256,6 +281,7 @@ class PolicyService:
             usage=usage,
             latency_ms=latency_ms,
             error_code=str(error_code),
+            priced_cost_usd=priced_cost_usd,
         )
 
     async def _record_agent_run(
@@ -274,6 +300,7 @@ class PolicyService:
         rationale: str | None = None,
         error_code: str | None = None,
         trace: dict[str, bool] | None = None,
+        priced_cost_usd: Decimal | None = None,
     ) -> None:
         """Persist the agent journal entry; never fail a cycle for it."""
 
@@ -287,13 +314,23 @@ class PolicyService:
                 status=status,
                 turns=turns,
                 tool_calls=tool_calls if isinstance(tool_calls, list) else [],
-                usage=_with_trace_flags(usage, trace),
+                usage=_with_trace_flags(usage, trace, priced_cost_usd=priced_cost_usd),
                 latency_ms=latency_ms,
                 rationale=rationale,
                 error_code=error_code,
             )
         except Exception:  # noqa: BLE001 - observability must not break trading
             pass
+
+    def _priced_cost(self, usage: dict[str, Any] | None) -> Decimal:
+        """Cost of one run at the configured prices; 0 when unpriced."""
+
+        if self.settings is None:
+            return Decimal("0")
+        try:
+            return model_cost_usd(self.settings, usage)
+        except Exception:  # noqa: BLE001 - journal-only figure
+            return Decimal("0")
 
     async def get_active(self, mode: str) -> EffectivePolicy | None:
         row = await self.repo.get_active_policy()

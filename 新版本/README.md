@@ -72,7 +72,7 @@ Default posture is `paper`, synthetic market, simulated policy author + simulate
 auth disabled for localhost. The UI labels every synthetic/simulated surface.
 
 ```powershell
-pytest                     # 166 tests: policy, agent, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
+pytest                     # 180 tests: policy, agent, risk, execution, audit, API, TOTP, backtest, exits, migrations, balances
 ```
 
 Or run the whole local check in one step:
@@ -165,7 +165,7 @@ frontend/
                 Orders & Positions, Backtests, Models & Costs (incl. exchange
                 balances), Risk & Modes, Audit & Settings
   src/styles/   hand-drawn editorial tokens (paper/ink/terracotta/olive)
-tests/          166 deterministic tests
+tests/          180 deterministic tests
 docs/           architecture, API contract, runbook
 deploy/         Docker Compose, nginx, Kubernetes skeleton
 scripts/        dev.ps1 (local session), check.ps1 (tests + UI build)
@@ -232,6 +232,12 @@ contradict `JEV_APP_ENV=prod`.
   never returned, logged or audited, but they are stored as plain text in
   `system_state`; PostgreSQL's own access controls are the boundary. Venue keys remain
   environment-only.
+- **Paid-call budgets are enforced from the ledger.** Jev calls (per UTC day / month)
+  and the strategy agent's tokens (per UTC month) are counted on every paid call and
+  once per cycle; a spent budget blocks entries with `entries_blocked_reason =
+  jev_budget_exhausted` and skips authoring a new policy, while exits always run. USD
+  caps take effect only once the per-million-token price is configured, because an
+  unpriced provider reports 0 cost.
 - **Single-process deployment.** PostgreSQL + Redis Streams are supported by configuration;
   the split worker topology in the design is not yet packaged.
 

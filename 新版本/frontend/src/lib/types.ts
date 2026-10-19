@@ -144,6 +144,15 @@ export interface AgentRunDetail {
   usage: Record<string, unknown>;
 }
 
+export interface ProviderSpendView {
+  provider: string;
+  calls: number;
+  tokens: number;
+  cost_usd: string;
+  priced: boolean;
+  limits: Record<string, string | number | boolean>;
+}
+
 export interface SystemStatus {
   service: string;
   app_env: string;
@@ -156,6 +165,7 @@ export interface SystemStatus {
   account: AccountView;
   positions: PositionView[];
   policy: (PolicyView & { mode_scope: string[] }) | null;
+  budgets?: ProviderSpendView;
   server_limits: {
     max_position_notional_usdt: string;
     max_gross_exposure_pct: string;

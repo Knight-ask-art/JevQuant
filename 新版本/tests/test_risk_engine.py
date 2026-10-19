@@ -115,6 +115,53 @@ def test_exit_feasibility_precheck_rejects_unbuyable_position(server_limits):
     assert "REJECT_EXIT_MIN_NOTIONAL" in rules(decision)
 
 
+def test_stop_limit_must_survive_the_configured_stress_drawdown(server_limits):
+    policy = compiled_policy(server_limits)
+    ctx = make_context(policy, rules=symbol_rules(min_notional="50"))
+    # 100 USDT buys ~0.00147 BTC; after -3% - 10bps - 8bps it is worth ~97,
+    # which clears MIN_NOTIONAL 50, so the entry is approved.
+    decision = ENGINE.evaluate(make_intent(policy, ctx, quote_notional="100"), ctx)
+    assert decision.approved, decision.failed_rules
+
+    # Raise the stress move until the sellable remainder cannot clear
+    # MIN_NOTIONAL any more.
+    hard = make_context(
+        policy,
+        rules=symbol_rules(min_notional="95"),
+        exit_stress_drawdown_bps=Decimal("600"),
+    )
+    blocked = ENGINE.evaluate(make_intent(policy, hard, quote_notional="100"), hard)
+    assert not blocked.approved
+    assert "REJECT_EXIT_MIN_NOTIONAL" in rules(blocked)
+    detail = next(f for f in blocked.failed_rules if f.rule == "REJECT_EXIT_MIN_NOTIONAL")
+    assert detail.details["exit_stress_drawdown_bps"] == "600"
+
+
+def test_exit_stress_never_tightens_below_the_stop(server_limits):
+    """A stop wider than the stress move still assumes the stop's own move."""
+
+    policy = compiled_policy(server_limits)
+    ctx = make_context(
+        policy,
+        rules=symbol_rules(min_notional="90"),
+        exit_stress_drawdown_bps=Decimal("0"),
+    )
+    decision = ENGINE.evaluate(make_intent(policy, ctx, quote_notional="100"), ctx)
+    # The policy's stop-loss default is wider than 0bps, so the adverse move
+    # is the stop, not the (disabled) stress: 100 * (1 - stop - 10 - 8 bps).
+    assert decision.approved, decision.failed_rules
+
+
+def test_exit_stress_is_part_of_the_risk_snapshot_hash(server_limits):
+    policy = compiled_policy(server_limits)
+    base = make_context(policy)
+    stressed = make_context(policy, exit_stress_drawdown_bps=Decimal("500"))
+    intent = make_intent(policy, base)
+    # The same intent cannot be approved against a context it was not built for.
+    decision = ENGINE.evaluate(intent, stressed)
+    assert "risk_snapshot_mismatch" in rules(decision)
+
+
 def test_spread_above_policy_is_rejected(server_limits):
     policy = compiled_policy(server_limits)
     wide = market_snapshot(NOW, bid="67900", ask="68100")
