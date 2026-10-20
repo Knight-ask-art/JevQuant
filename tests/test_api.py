@@ -25,7 +25,6 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         "demo_mode": True,
         "auth_disabled": True,
         "admin_api_key": ADMIN,
-        "internal_execution_key": INTERNAL,
         "credential_encryption_key": FERNET_TEST_KEY,
     }
     values.update(overrides)
