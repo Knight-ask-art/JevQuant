@@ -631,7 +631,9 @@ class AgentToolbox:
         )
         prior = {
             "policy_id": policy_id,
-            "compiled_at": _iso(row.compiled_at),
+            # The table has no compiled_at column; the effective policy names
+            # generated_at, and that is what the previous compiles reported.
+            "compiled_at": _iso(row.generated_at),
             "expires_at": _iso(row.expires_at),
             "jev_gate": raw.get("jev_gate"),
             "universe": [

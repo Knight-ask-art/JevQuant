@@ -695,7 +695,7 @@ def _prior_policy(gate: dict[str, Any] | None = None) -> Any:
         # outcomes are keyed by the latter.
         id="row-0001",
         policy_id="policy-prev-0001",
-        compiled_at=NOW - timedelta(hours=2),
+        generated_at=NOW - timedelta(hours=2),
         expires_at=NOW + timedelta(hours=4),
         raw_json={
             "rationale": "range tape, wait for a sweep",
@@ -736,6 +736,7 @@ async def test_prior_strategy_tool_says_what_the_last_policy_produced():
     result = await toolbox(repo=repo).call("get_prior_strategy", {"lookback_hours": 24})
     data = result["data"]
     assert data["prior"]["policy_id"] == "policy-prev-0001"
+    assert data["prior"]["compiled_at"] == (NOW - timedelta(hours=2)).isoformat()
     assert data["prior"]["jev_gate"]["min_policy_fit"] == 0.34
     assert data["outcome"]["signals"] == 6
     assert data["outcome"]["jev_choices"] == {"reject": 6}
