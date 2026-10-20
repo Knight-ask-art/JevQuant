@@ -19,7 +19,7 @@ import type { SystemStatus } from "../lib/types";
 
 export function RiskModes() {
   const { t } = useI18n();
-  const status = useApi<SystemStatus>("/api/v1/system/status", 6000);
+  const status = useApi<SystemStatus>("/api/v1/system/status", 10000);
   const [armingOpen, setArmingOpen] = useState(false);
   const [reason, setReason] = useState("operator:disarm");
   const [error, setError] = useState<ApiError | null>(null);

@@ -91,7 +91,7 @@ function ToolCallRow({ call }: { call: AgentToolCall }) {
 
 export function AgentDesk() {
   const { t } = useI18n();
-  const status = useApi<SystemStatus>("/api/v1/system/status", 5000);
+  const status = useApi<SystemStatus>("/api/v1/system/status", 10000);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);

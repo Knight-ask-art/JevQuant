@@ -30,7 +30,7 @@ import type { CycleResult, PnlPoint, SignalView, SystemStatus } from "../lib/typ
 
 export function Overview() {
   const { t } = useI18n();
-  const status = useApi<SystemStatus>("/api/v1/system/status", 8000);
+  const status = useApi<SystemStatus>("/api/v1/system/status", 10000);
   const signals = useApi<{ items: SignalView[] }>("/api/v1/signals?limit=6", 8000);
   const pnl = useApi<{ items: PnlPoint[] }>("/api/v1/pnl?limit=120", 15000);
   const [cycle, setCycle] = useState<CycleResult | null>(null);

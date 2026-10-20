@@ -34,7 +34,7 @@ export function Layout() {
   useEffect(() => {
     window.localStorage.setItem("jev.nav.advanced", advancedOpen ? "1" : "0");
   }, [advancedOpen]);
-  const status = useApi<SystemStatus>("/api/v1/system/status", 8000);
+  const status = useApi<SystemStatus>("/api/v1/system/status", 10000);
   const [killError, setKillError] = useState<string | null>(null);
   const [lastEvent, setLastEvent] = useState<string>("");
   const socketRef = useRef<WebSocket | null>(null);

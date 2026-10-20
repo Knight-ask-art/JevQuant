@@ -36,7 +36,7 @@ type ChartInterval = (typeof CHART_INTERVALS)[number];
 
 export function Cockpit() {
   const { t } = useI18n();
-  const status = useApi<SystemStatus>("/api/v1/system/status", 5000);
+  const status = useApi<SystemStatus>("/api/v1/system/status", 10000);
   const pnl = useApi<{ items: PnlPoint[] }>("/api/v1/pnl?limit=120", 15000);
   const orders = useApi<{ items: OrderView[] }>("/api/v1/orders?limit=6", 10000);
   const universe = useApi<UniverseView>("/api/v1/market/universe", 30000);
