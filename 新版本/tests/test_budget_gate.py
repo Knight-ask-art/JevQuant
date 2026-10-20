@@ -142,18 +142,18 @@ def test_one_entry_spends_a_configured_share_of_cash():
     from jev_trading.config import Settings
     from jev_trading.services.orchestrator import entry_notional
 
-    account = SimpleNamespace(available_quote_usdt=Decimal("13.89"))
+    account = SimpleNamespace(available_quote_usdt=Decimal("14"))
     cap = SimpleNamespace(max_position_notional_usdt=Decimal("6"))
     rules = SimpleNamespace(min_notional=Decimal("5"))
 
-    # 13.89 * 0.25 = 3.47 < 5: nothing can be sized, so the cycle must say so.
+    # 14 * 0.25 = 3.5 < 5: nothing can be sized, so the cycle must say so.
     assert entry_notional(
         Settings(entry_budget_fraction=Decimal("0.25")), cap, account, rules
     ) == Decimal("0")
-    # 13.89 * 0.40 = 5.556: fundable, and inside the 6 USDT policy cap.
+    # 14 * 0.40 = 5.6: fundable, and inside the 6 USDT policy cap.
     assert entry_notional(
         Settings(entry_budget_fraction=Decimal("0.40")), cap, account, rules
-    ) == Decimal("5.556")
+    ) == Decimal("5.6")
     # The policy's per-symbol cap still wins when it is the tighter ceiling.
     assert entry_notional(
         Settings(entry_budget_fraction=Decimal("1")),

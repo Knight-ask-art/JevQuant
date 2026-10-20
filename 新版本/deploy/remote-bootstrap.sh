@@ -4,8 +4,8 @@
 # Run as the `ubuntu` user with passwordless sudo. Expects the deployment
 # archive at /tmp/jevquant-deploy.tar.gz:
 #
-#   scp data/jevquant-deploy.tar.gz instance-20260806:/tmp/
-#   ssh instance-20260806 'bash -s' < deploy/remote-bootstrap.sh
+#   scp data/jevquant-deploy.tar.gz <your-host>:/tmp/
+#   ssh <your-host> 'bash -s' < deploy/remote-bootstrap.sh
 #
 # Re-running is safe: Docker is only installed once, .env is only created once.
 set -euo pipefail
@@ -81,6 +81,6 @@ Next: fill the testnet credentials (and JEV_PAPER_STARTING_EQUITY) in .env:
   cd "$APP_DIR" && sudo docker compose up -d --force-recreate api
 
 UI over an SSH tunnel:
-  ssh -L 8080:127.0.0.1:8080 instance-20260806
+  ssh -L 8080:127.0.0.1:8080 <your-host>
   open http://127.0.0.1:8080 and paste the admin key in Audit & Settings
 EOF

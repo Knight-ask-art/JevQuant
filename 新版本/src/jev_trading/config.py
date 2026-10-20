@@ -102,7 +102,8 @@ class Settings(BaseSettings):
     # Share of available quote cash one entry may spend. Server side, so a
     # policy cannot size a position past what the account can lose on one
     # trade; on a small account it also decides whether an entry can clear the
-    # exchange minimum at all (13.89 USDT at 0.25 is 3.47, below Binance's 5).
+    # exchange minimum at all (a 14 USDT account at 0.25 is 3.5, below
+    # Binance's 5).
     entry_budget_fraction: Decimal = Field(default=Decimal("0.25"), gt=0, le=1)
     paper_seed: int = 42
 

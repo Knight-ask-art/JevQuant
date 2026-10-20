@@ -121,7 +121,7 @@ def entry_notional(settings, symbol_policy, account, rules) -> Decimal:
     available cash (``entry_budget_fraction``). The share is a server setting so
     no policy can risk more of the account than the operator allows, and on a
     small account it is what decides whether an entry is possible at all: a
-    quarter of a 13.89 USDT account is 3.47, under Binance's 5 USDT minimum.
+    quarter of a 14 USDT account is 3.5, under Binance's 5 USDT minimum.
     """
 
     budget = account.available_quote_usdt * settings.entry_budget_fraction
