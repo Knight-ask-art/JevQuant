@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     auth_disabled: bool = True
     admin_api_key: SecretStr = SecretStr("change-me-in-production")
     internal_execution_key: SecretStr = SecretStr("change-me-internal")
+    # Fernet key generated once, kept outside the database; required for UI key persistence.
+    credential_encryption_key: SecretStr | None = None
 
     # Hard risk envelope
     max_position_notional_usdt: Decimal = Decimal("500")
