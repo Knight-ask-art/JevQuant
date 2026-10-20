@@ -1583,9 +1583,9 @@ class TradingOrchestrator:
                 state = SignalState.POSITION_OPEN
             if state is not SignalState.POSITION_OPEN:
                 continue
-            if execute and await self.modes.kill_switch_active():
-                notes.append(f"{position.symbol}: exit deferred by kill switch on {position_mode.value}")
-                continue
+            # A kill switch is an entry circuit breaker, never an exit blocker.
+            # In particular, after a restart Live may be disarmed/reset to Paper,
+            # but any outstanding Live position still requires its native exit path.
 
             reason = self._exit_reason(position, snapshot, now) or position.exit_requested_reason
             if reason is None:
