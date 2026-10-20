@@ -440,6 +440,52 @@ class Repository:
             await session.flush()
             return row
 
+    async def list_agent_run_summaries(self, limit: int = 30) -> list[Any]:
+        """Recent runs without their tool trace, newest first.
+
+        A trace can be a hundred kilobytes of verbatim tool output, and the
+        status page needs the count, not the payload.
+        """
+
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(
+                            AgentRunRow.id,
+                            AgentRunRow.cycle_id,
+                            AgentRunRow.policy_id,
+                            AgentRunRow.mode,
+                            AgentRunRow.provider,
+                            AgentRunRow.model,
+                            AgentRunRow.status,
+                            AgentRunRow.turns,
+                            AgentRunRow.usage_json,
+                            AgentRunRow.latency_ms,
+                            AgentRunRow.rationale,
+                            AgentRunRow.error_code,
+                            AgentRunRow.created_at,
+                            func.coalesce(
+                                func.json_array_length(AgentRunRow.tool_calls_json), 0
+                            ).label("tool_count"),
+                        )
+                        .order_by(AgentRunRow.created_at.desc())
+                        .limit(limit)
+                    )
+                ).all()
+            )
+
+    async def agent_run_tools(self, run_id: str) -> list[Any]:
+        """One run's tool trace; callers fetch it per run, never in bulk."""
+
+        async with self.db.session() as session:
+            tools = (
+                await session.execute(
+                    select(AgentRunRow.tool_calls_json).where(AgentRunRow.id == run_id)
+                )
+            ).scalar_one_or_none()
+        return tools or []
+
     async def list_agent_runs(self, limit: int = 30) -> list[AgentRunRow]:
         async with self.db.session() as session:
             return list(

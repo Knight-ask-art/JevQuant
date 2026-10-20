@@ -832,7 +832,11 @@ class AppContainer:
             )
         )
         tools = sorted(AGENT_TOOL_NAMES)
-        runs = await self.repo.list_agent_runs(limit=limit)
+        # The journal stores every tool trace verbatim, and one run's trace is
+        # ~100 kB: loading twelve of them made /system/status take a minute.
+        # The tool trace is only shown for the latest run.
+        runs = await self.repo.list_agent_run_summaries(limit=limit)
+        latest_tools = await self.repo.agent_run_tools(runs[0].id) if runs else []
         policy_ids = [row.policy_id for row in runs if row.policy_id]
         signal_counts = await self.repo.signal_counts_for_policies(policy_ids)
         positions = await self.repo.closed_positions_for_policies(policy_ids)
@@ -847,6 +851,12 @@ class AppContainer:
         for index, row in enumerate(runs):
             counts = signal_counts.get(row.policy_id or "", {})
             outcome = pnl_by_policy.get(row.policy_id or "", {})
+            if index == 0:
+                tool_count = len(latest_tools)
+            elif row.tool_count is not None:
+                tool_count = row.tool_count
+            else:  # dialects without a JSON array length: read that one row
+                tool_count = len(await self.repo.agent_run_tools(row.id))
             items.append(
                 {
                     "id": row.id,
@@ -860,8 +870,8 @@ class AppContainer:
                     "latency_ms": row.latency_ms,
                     "usage": row.usage_json or {},
                     "rationale": row.rationale,
-                    "tools": row.tool_calls_json or [] if index == 0 else [],
-                    "tool_count": len(row.tool_calls_json or []),
+                    "tools": latest_tools if index == 0 else [],
+                    "tool_count": tool_count,
                     "policy_id": row.policy_id,
                     "cycle_id": row.cycle_id,
                     "signals": {
