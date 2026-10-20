@@ -64,6 +64,10 @@ sudo docker compose up -d db redis
 # Build sequentially: this host has ~1 GB RAM and a 2 GB swap file.
 sudo docker compose build api
 sudo docker compose build web
+# A container that was recreated over a still-running process (a restart that
+# never reaped it) is left "Created" and blocks the next `up`. Removing it is
+# safe: it is not serving anything.
+sudo docker compose rm -f --stop api >/dev/null 2>&1 || true
 sudo docker compose up -d
 sudo docker compose ps
 
