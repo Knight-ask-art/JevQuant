@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from jev_trading.adapters.models.base import PolicyGenerationResult
 from jev_trading.api.app import create_app
@@ -14,6 +15,7 @@ from jev_trading.config import Settings
 
 ADMIN = "test-admin-key"
 INTERNAL = "test-internal-key"
+FERNET_TEST_KEY = "J7GDQdV_ZVK-9RoVTmiEZpiDSWEEtXzEI_YcGsUuDmY="
 
 
 def make_settings(tmp_path: Path, **overrides) -> Settings:
@@ -22,6 +24,9 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         "synthetic_market": True,
         "demo_mode": True,
         "auth_disabled": True,
+        "admin_api_key": ADMIN,
+        "internal_execution_key": INTERNAL,
+        "credential_encryption_key": FERNET_TEST_KEY,
     }
     values.update(overrides)
     return Settings(**values)
@@ -278,7 +283,12 @@ def test_internal_execution_identity_is_separate(tmp_path):
 
 def test_websocket_exposes_open_event(tmp_path):
     with client(tmp_path, auth_disabled=False, admin_api_key=ADMIN, internal_execution_key=INTERNAL) as api:
-        with api.websocket_connect(f"/ws/events?api_key={ADMIN}") as socket:
+        with pytest.raises(WebSocketDisconnect):
+            with api.websocket_connect(f"/ws/events?api_key={ADMIN}") as socket:
+                socket.receive_json()
+        login = api.post("/api/v1/auth/login", json={"api_key": ADMIN})
+        assert login.status_code == 200
+        with api.websocket_connect("/ws/events") as socket:
             event = socket.receive_json()
             assert event["payload"]["event"] == "stream.open"
 
@@ -308,6 +318,13 @@ def test_model_settings_are_write_only_and_kept_on_later_saves(open_client):
     # The secret goes in and never comes back out.
     assert "secret-llm-key" not in response.text
     assert "secret-jev-key" not in response.text
+    # The underlying system_state must contain ciphertext, not model secrets.
+    container = open_client.app.state.container
+    persisted = open_client.portal.call(container.repo.get_state, "runtime_credentials")
+    assert persisted["llm"]["api_key"].startswith("fernet:v1:")
+    assert persisted["jev"]["api_key"].startswith("fernet:v1:")
+    assert "secret-llm-key" not in str(persisted)
+    assert "secret-jev-key" not in str(persisted)
     assert "api_key" not in body["models"]["llm"]
 
     # An omitted api_key keeps the stored secret, because the client cannot
