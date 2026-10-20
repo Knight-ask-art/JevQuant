@@ -690,3 +690,27 @@ def test_health_probes_are_shared_bounded_and_cached(tmp_path):
         )
         assert cached == market_1
         assert calls["market"] == 1
+
+
+def test_automation_waits_for_the_next_run_it_advertises(tmp_path):
+    """The countdown the UI shows is the clock the cycle runs on."""
+
+    from datetime import UTC, datetime, timedelta
+
+    with client(tmp_path) as api:
+        container = api.app.state.container
+        automation = api.put(
+            "/api/v1/settings/automation",
+            json={"enabled": True, "interval_seconds": 600},
+        ).json()
+        advertised = datetime.fromisoformat(automation["next_run_at"])
+        # Within a second of the interval the operator chose, not sooner.
+        assert timedelta(minutes=5) < advertised - datetime.now(UTC) <= timedelta(minutes=10)
+
+        remaining, _ = container._cycle_countdown()
+        assert remaining is not None and 0 < remaining <= 600
+
+        # A stopped clock advertises "expired" and the loop must not skip.
+        container._next_cycle_at = datetime.now(UTC) - timedelta(seconds=5)
+        remaining, target = container._cycle_countdown()
+        assert remaining is None and target is not None

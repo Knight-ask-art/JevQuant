@@ -588,6 +588,15 @@ class AppContainer:
         )
         return self.automation_status()
 
+    def _cycle_countdown(self) -> tuple[float | None, datetime | None]:
+        """(seconds until the next cycle, that instant): the only schedule clock."""
+
+        target = self._next_cycle_at
+        if target is None:
+            return None, None
+        remaining = (target - datetime.now(UTC)).total_seconds()
+        return (max(0.0, remaining), target) if remaining > 0 else (None, target)
+
     def _start_auto_loop(self, interval_seconds: int) -> None:
         interval = max(10, int(interval_seconds))
         if self._cycle_task is not None and not self._cycle_task.done():
@@ -618,10 +627,15 @@ class AppContainer:
         """
         while True:
             try:
-                interval = max(10, self._auto_interval)
-                await asyncio.sleep(interval)
+                # Sleep to the advertised instant, so the countdown the UI
+                # shows and the moment the cycle runs are the same clock.
+                await asyncio.sleep(self._cycle_countdown()[0] or 0.0)
                 if not self._automation_enabled:
                     return
+                if self._cycle_countdown()[0] is not None:
+                    # The interval was changed while this tick was sleeping;
+                    # wait out the clock the operator was shown.
+                    continue
                 self._next_cycle_at = None
                 result = await self.run_cycle(wait=False)
                 logger.info(
