@@ -103,26 +103,39 @@ class BudgetService:
         self.repo = repo
         self.settings = settings
 
-    async def _jev_rows(self, since: datetime) -> list[JevEvaluationRow]:
+    async def _jev_rows(self, since: datetime) -> list[Any]:
+        """One line per evaluation in the window: when, the error, the tokens.
+
+        The request and response bodies are kilobytes each; only their usage
+        is read here, so those two columns never leave the database.
+        """
+
         async with self.repo.db.session() as session:
             return list(
                 (
                     await session.execute(
-                        select(JevEvaluationRow)
-                        .where(JevEvaluationRow.created_at >= since)
-                        .order_by(JevEvaluationRow.created_at)
+                        select(
+                            JevEvaluationRow.created_at,
+                            JevEvaluationRow.error_code,
+                            JevEvaluationRow.response_json["usage"].label("usage"),
+                        ).where(JevEvaluationRow.created_at >= since)
                     )
-                ).scalars()
+                ).all()
             )
 
-    async def _agent_rows(self, since: datetime) -> list[AgentRunRow]:
+    async def _agent_rows(self, since: datetime) -> list[Any]:
+        """One line per run in the window; the transcript stays in the row."""
+
         async with self.repo.db.session() as session:
             return list(
                 (
                     await session.execute(
-                        select(AgentRunRow).where(AgentRunRow.created_at >= since)
+                        select(
+                            AgentRunRow.created_at,
+                            AgentRunRow.usage_json,
+                        ).where(AgentRunRow.created_at >= since)
                     )
-                ).scalars()
+                ).all()
             )
 
     # -- Jev ---------------------------------------------------------------
@@ -130,19 +143,19 @@ class BudgetService:
         now = now or datetime.now(UTC)
         rows = await self._jev_rows(month_start(now))
         today = day_start(now)
-        calls_today = 0
+        settings = self.settings
         calls_month = 0
+        calls_today = 0
         cost = Decimal("0")
         for row in rows:
             # A request that never left the process (transport failure with no
             # response) is the one outcome that is certainly unbilled.
-            if row.error_code == "DEPENDENCY_UNAVAILABLE" and not row.response_json:
+            if row.error_code == "DEPENDENCY_UNAVAILABLE" and not row.usage:
                 continue
             calls_month += 1
             if row.created_at >= today:
                 calls_today += 1
-            cost += jev_cost_usd(self.settings, (row.response_json or {}).get("usage"))
-        settings = self.settings
+            cost += jev_cost_usd(self.settings, row.usage)
         return ProviderSpend(
             provider="jev",
             calls=calls_month,

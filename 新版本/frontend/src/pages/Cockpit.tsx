@@ -5,7 +5,7 @@ import { CandleChart, INDICATOR_COLORS } from "../components/CandleChart";
 import { EquityChart } from "../components/charts";
 import { ModelSettingsModal } from "../components/ModelSettingsModal";
 import { SymbolPicker } from "../components/SymbolPicker";
-import { EmptyState, ErrorNote, PaperCard, Pill, ScribbleUnderline, Stat } from "../components/ui";
+import { EmptyState, ErrorNote, Loading, PaperCard, Pill, ScribbleUnderline, Stat } from "../components/ui";
 import { useApi } from "../hooks/useApi";
 import { useI18n } from "../i18n";
 import { ApiError, api } from "../lib/api";
@@ -217,6 +217,8 @@ export function Cockpit() {
 
       {error && <ErrorNote error={error} />}
       {notice && <div className="callout olive">{notice}</div>}
+
+      {!view && <Loading what={t("common.status")} />}
 
       <div className={`venue-banner ${currentMode === "testnet" ? "testnet" : "paper"}`}>
         <span className="venue-badge">

@@ -223,6 +223,10 @@ contradict `JEV_APP_ENV=prod`.
   `JEV_CYCLE_REQUIRES_NEW_CANDLE=0` to disable); combined with the daily call cap, a 60-second
   cycle no longer spends the budget on the same candle. A restart never resumes unattended
   cycles on its own; the UI switch is persisted with an `origin` so a restart cannot flip it.
+- **Status is re-probed, not cached.** `/api/v1/system/status` pings Binance, the
+  testnet venue, the model provider and Jev on every read (concurrently), because a
+  health figure is only worth showing if it is current. The dashboard reads it every
+  few seconds, so an outage shows up as a slower page rather than a stale "healthy".
 - **Backtests are synthetic replays.** The engine is deterministic and discloses its
   assumptions; it is not evidence of edge and does not use historical exchange data.
 - **Hummingbot fill reconciliation is partial.** Order state is mapped and unknown states

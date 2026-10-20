@@ -33,6 +33,13 @@ from ..storage.db import Database
 from ..storage.repository import Repository
 from .agent_tools import TOOL_NAMES as AGENT_TOOL_NAMES
 from .audit import AuditService
+
+
+async def _no_execution() -> dict[str, Any]:
+    """Health for a mode with no adapter: reported, never raised."""
+
+    return {"healthy": False}
+
 from .balance_sync import BalanceSyncScheduler, BalanceSyncService
 from .budgets import BudgetService
 from .events import EventBroker
@@ -643,12 +650,16 @@ class AppContainer:
     async def dependencies(self) -> dict[str, Any]:
         mode = await self.modes.current_mode()
         adapter = self.execution_for_mode.get(mode)
-        market_health = await self.market.health()
-        execution_health = (
-            await adapter.health() if adapter is not None else {"healthy": False}
+        # Each probe reaches an external service. Sequentially they summed to
+        # seconds per status read, and the dashboard asks for status every few
+        # seconds, so the page spent most of its time waiting on five round
+        # trips in a row.
+        market_health, execution_health, model_health, jev_health = await asyncio.gather(
+            self.market.health(),
+            adapter.health() if adapter is not None else _no_execution(),
+            self.policy_generator.health(),
+            self.jev.health(),
         )
-        model_health = await self.policy_generator.health()
-        jev_health = await self.jev.health()
         try:
             await self.repo.get_state("mode")
             db_healthy = True
@@ -666,14 +677,30 @@ class AppContainer:
         }
 
     async def status(self) -> dict[str, Any]:
-        mode_status = await self.modes.status()
-        dependencies = await self.dependencies()
-        marks = await self.repo.latest_market_marks()
-        account = await self.repo.account_snapshot(self.account_id, marks)
-        positions = await self.repo.get_open_positions(self.account_id)
         now = datetime.now(UTC)
-        policy_row = await self.repo.get_active_policy()
-        latest_policy = policy_row or await self.repo.get_latest_policy()
+        # Nothing below depends on anything above it; in sequence this was a
+        # dozen round trips (five of them to other services) per render.
+        (
+            mode_status,
+            dependencies,
+            marks,
+            positions,
+            policy_row,
+            fallback_policy,
+            spend,
+            agent,
+        ) = await asyncio.gather(
+            self.modes.status(),
+            self.dependencies(),
+            self.repo.latest_market_marks(),
+            self.repo.get_open_positions(self.account_id),
+            self.repo.get_active_policy(),
+            self.repo.get_latest_policy(),
+            self.budgets.snapshot(),
+            self.agent_status(),
+        )
+        account = await self.repo.account_snapshot(self.account_id, marks)
+        latest_policy = policy_row or fallback_policy
         active_policy = bool(dependencies.get("policy_fresh"))
         policy_expired = latest_policy is not None and latest_policy.expires_at <= now
         policy_state = {
@@ -701,7 +728,6 @@ class AppContainer:
                 else None
             ),
         }
-        spend = await self.budgets.snapshot()
         policy_payload = None
         if policy_row is not None and active_policy:
             policy_payload = {
@@ -784,7 +810,7 @@ class AppContainer:
             "execution_backend": self.settings.execution_backend,
             "automation": self.automation_status(),
             "models": self.model_settings(),
-            "agent": await self.agent_status(),
+            "agent": agent,
         }
 
     # ------------------------------------------------------------------
