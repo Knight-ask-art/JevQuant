@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jev-config
+  namespace: jev-trading
+data:
+  JEV_APP_ENV: "prod"
+  JEV_EXECUTION_BACKEND: "paper"
+  JEV_TRADING_MODE: "paper"
+  JEV_ENABLE_LIVE_TRADING: "false"
+  JEV_SYNTHETIC_MARKET: "false"
+  JEV_DEMO_MODE: "false"
+  JEV_AUTH_DISABLED: "false"
+  JEV_AUTO_CYCLE_SECONDS: "60"
+  JEV_MAX_POSITION_NOTIONAL_USDT: "500"
+  JEV_MAX_GROSS_EXPOSURE_PCT: "20"
+  JEV_MAX_DAILY_LOSS_PCT: "2"
+  JEV_MAX_POSITIONS: "3"
+  JEV_REQUIRE_IP_RESTRICT: "true"
+  JEV_REQUIRE_WITHDRAWALS_DISABLED: "true"
