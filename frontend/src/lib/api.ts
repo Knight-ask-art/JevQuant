@@ -1,6 +1,9 @@
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 // CSRF token is short-lived and held in memory only. The actual login token
 // is an HttpOnly, SameSite=Strict cookie set by the control plane.
+// Clean up the old operator key left by previous versions of the UI.
+try { window.localStorage.removeItem("jev.apiKey"); } catch { /* non-browser or restricted storage */ }
+
 let csrfToken: string | null = null;
 export function setCsrfToken(value: string | null): void {
   csrfToken = value;
