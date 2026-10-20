@@ -8,27 +8,19 @@ read-only and carries the same payloads as the Redis streams.
 from __future__ import annotations
 
 import asyncio
-import secrets
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from .security import websocket_authorized
 
 router = APIRouter()
 
 HEARTBEAT_SECONDS = 15.0
 
 
-def _authorized(websocket: WebSocket) -> bool:
-    settings = websocket.app.state.container.settings
-    if settings.auth_disabled:
-        return True
-    supplied = websocket.query_params.get("api_key", "")
-    expected = settings.admin_api_key.get_secret_value()
-    return bool(supplied) and secrets.compare_digest(supplied, expected)
-
-
 @router.websocket("/ws/events")
 async def events(websocket: WebSocket) -> None:
-    if not _authorized(websocket):
+    if not await websocket_authorized(websocket):
         await websocket.close(code=4401, reason="unauthorized")
         return
     container = websocket.app.state.container
