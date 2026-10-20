@@ -406,8 +406,9 @@ async def test_kill_switch_never_blocks_cross_route_exit(
     _exits, notes = await orchestrator._manage_exits(
         policy=policy, snapshot_map={snapshot.symbol: snapshot}, system=system_snapshot()
     )
-    assert live.submitted == []
-    assert any("kill switch" in note for note in notes)
+    assert len(live.submitted) == 1
+    assert live.submitted[0].intent.mode is Mode.LIVE
+    assert not any("kill switch" in note for note in notes)
 
 
 async def test_same_route_exits_still_run_under_the_kill_switch(repo, server_limits):
