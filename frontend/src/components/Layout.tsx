@@ -6,7 +6,7 @@ import { isHealthy, label, timeAgo } from "../lib/format";
 import { useApi } from "../hooks/useApi";
 import { LanguageSwitch, useI18n } from "../i18n";
 import type { SystemStatus } from "../lib/types";
-import { Pill } from "./ui";
+import { Pill, ScribbleUnderline } from "./ui";
 
 const ADVANCED = [
   ["/overview", "nav.overview"],
