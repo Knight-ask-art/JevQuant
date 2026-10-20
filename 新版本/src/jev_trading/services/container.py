@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -33,6 +34,11 @@ from ..storage.db import Database
 from ..storage.repository import Repository
 from .agent_tools import TOOL_NAMES as AGENT_TOOL_NAMES
 from .audit import AuditService
+
+# Health probes: one shared round trip per service, reused briefly, and bounded
+# so one slow provider cannot hold the status page open.
+PROBE_TTL_SECONDS = 3.0
+PROBE_TIMEOUT_SECONDS = 2.5
 
 
 async def _no_execution() -> dict[str, Any]:
@@ -83,6 +89,8 @@ class AppContainer:
             settings=settings,
         )
         self.budgets = BudgetService(self.repo, settings)
+        self._probes: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.policy_generator = self._build_policy_generator()
         self.jev = self._build_jev()
         self.risk_engine = RiskEngine()
@@ -647,18 +655,62 @@ class AppContainer:
                         seconds=max(10, self._auto_interval)
                     )
 
+    async def _probe(self, name: str, probe: Any) -> dict[str, Any]:
+        """One external health probe, shared by everyone asking at once.
+
+        Status is read every few seconds from several places; each reader used
+        to start its own round trip. One probe per name runs at a time and its
+        result is reused for PROBE_TTL_SECONDS; a probe that does not answer
+        within PROBE_TIMEOUT_SECONDS reports unhealthy with the previous
+        answer as ``last_healthy``, instead of holding the page open.
+        """
+
+        task = self._probes.get(name)
+        if task is not None and not task.done():
+            return await asyncio.shield(task)
+        cached = self._probe_cache.get(name)
+        if cached is not None and time.monotonic() - cached[0] < PROBE_TTL_SECONDS:
+            return cached[1]
+
+        async def run() -> dict[str, Any]:
+            try:
+                result = dict(
+                    await asyncio.wait_for(probe(), timeout=PROBE_TIMEOUT_SECONDS)
+                )
+            except asyncio.TimeoutError:
+                result = {
+                    "healthy": False,
+                    "error": "TIMEOUT",
+                    "detail": f"no answer within {PROBE_TIMEOUT_SECONDS:g}s",
+                }
+            except Exception as exc:  # noqa: BLE001 - health must never raise
+                result = {"healthy": False, "error": type(exc).__name__}
+            result["checked_at"] = datetime.now(UTC).isoformat()
+            previous = self._probe_cache.get(name)
+            if previous is not None:
+                result["last_healthy"] = previous[1].get("healthy")
+            self._probe_cache[name] = (time.monotonic(), result)
+            return result
+
+        task = asyncio.ensure_future(run())
+        self._probes[name] = task
+        return await asyncio.shield(task)
+
     async def dependencies(self) -> dict[str, Any]:
         mode = await self.modes.current_mode()
         adapter = self.execution_for_mode.get(mode)
-        # Each probe reaches an external service. Sequentially they summed to
+        # Each probe reaches an external service, so they run concurrently and
+        # are shared between readers (see _probe). Sequentially they summed to
         # seconds per status read, and the dashboard asks for status every few
-        # seconds, so the page spent most of its time waiting on five round
-        # trips in a row.
+        # seconds.
         market_health, execution_health, model_health, jev_health = await asyncio.gather(
-            self.market.health(),
-            adapter.health() if adapter is not None else _no_execution(),
-            self.policy_generator.health(),
-            self.jev.health(),
+            self._probe("market", self.market.health),
+            self._probe(
+                "execution",
+                adapter.health if adapter is not None else _no_execution,
+            ),
+            self._probe("model", self.policy_generator.health),
+            self._probe("jev", self.jev.health),
         )
         try:
             await self.repo.get_state("mode")

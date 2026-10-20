@@ -642,3 +642,51 @@ def test_a_rejected_policy_is_still_journaled(open_client):
         "output_tokens": 3,
         "__cost_usd__": "0",
     }
+
+
+def test_health_probes_are_shared_bounded_and_cached(tmp_path):
+    """Several readers share one round trip, and a slow service cannot hold the page."""
+
+    import asyncio
+
+    from jev_trading.services import container as container_module
+
+    calls = {"market": 0, "jev": 0}
+
+    async def slow_jev() -> dict[str, object]:
+        calls["jev"] += 1
+        await asyncio.sleep(10)
+        return {"healthy": True, "provider": "jev"}
+
+    async def flaky_market() -> dict[str, object]:
+        calls["market"] += 1
+        return {"healthy": calls["market"] == 1, "source": "test"}
+
+    with TestClient(create_app(make_settings(tmp_path))) as api:
+        container = api.app.state.container
+        container._probe_cache.clear()
+        container._probes.clear()
+        object.__setattr__(container.market, "health", flaky_market)
+        object.__setattr__(container.jev, "health", slow_jev)
+
+        async def read() -> list[dict[str, object]]:
+            return await asyncio.gather(
+                container._probe("market", container.market.health),
+                container._probe("market", container.market.health),
+                container._probe("jev", container.jev.health),
+                container._probe("jev", container.jev.health),
+            )
+
+        market_1, market_2, jev_1, jev_2 = api.portal.call(read)
+        # Two readers, one round trip each.
+        assert calls == {"market": 1, "jev": 1}
+        assert market_1["healthy"] is True and market_2 == market_1
+        # The slow service is reported unhealthy instead of hanging the page.
+        assert jev_1["healthy"] is False and jev_1["error"] == "TIMEOUT"
+        assert jev_2 == jev_1
+        # A cached answer is reused until it ages out.
+        cached = api.portal.call(
+            lambda: container._probe("market", container.market.health)
+        )
+        assert cached == market_1
+        assert calls["market"] == 1
