@@ -102,6 +102,7 @@ async def generate_policy(
             symbols=container.settings.allowed_symbols,
             snapshots=snapshots,
             now=now,
+            settings=container.settings,
         )
         effective, row = await container.policy_service.generate(
             generator=generator,

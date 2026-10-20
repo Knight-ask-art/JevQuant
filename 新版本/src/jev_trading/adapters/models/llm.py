@@ -63,8 +63,15 @@ Rules:
   level that in practice sits far below 5, and policy_fit is a probability.
   A minimum above the observed values rejects every setup, so pick thresholds
   a genuinely good setup can clear.
+- Size against get_account_state.sizing, not against the account total. A
+  symbol's max_position_notional_usdt must be at least its
+  min_feasible_entry_notional_usdt, or no entry can be exited after an adverse
+  move and every buy is rejected before it reaches the venue; it may not exceed
+  max_entry_notional_usdt, which is what one entry is allowed to spend.
 - Start from memory.prior_strategy: it is the policy you wrote last and what
-  it produced. Read its outcome.gate_state before changing anything:
+  it produced. jev_gate there is what the server enforced, and clamps lists
+  every field it changed; proposed_jev_gate is what you asked for. Read its
+  outcome.gate_state before changing anything:
   blocked_by_jev_choice means Jev never said buy, so tightening or loosening
   thresholds cannot help and the setup itself must change; blocked_by_thresholds
   means Jev wanted in but your minimums held it, so lower the failing leg;

@@ -136,6 +136,33 @@ async def test_a_spent_jev_budget_blocks_entries_without_a_signal(tmp_path, monk
     assert await repo.list_signals(limit=10) == []
 
 
+def test_one_entry_spends_a_configured_share_of_cash():
+    from types import SimpleNamespace
+
+    from jev_trading.config import Settings
+    from jev_trading.services.orchestrator import entry_notional
+
+    account = SimpleNamespace(available_quote_usdt=Decimal("13.89"))
+    cap = SimpleNamespace(max_position_notional_usdt=Decimal("6"))
+    rules = SimpleNamespace(min_notional=Decimal("5"))
+
+    # 13.89 * 0.25 = 3.47 < 5: nothing can be sized, so the cycle must say so.
+    assert entry_notional(
+        Settings(entry_budget_fraction=Decimal("0.25")), cap, account, rules
+    ) == Decimal("0")
+    # 13.89 * 0.40 = 5.556: fundable, and inside the 6 USDT policy cap.
+    assert entry_notional(
+        Settings(entry_budget_fraction=Decimal("0.40")), cap, account, rules
+    ) == Decimal("5.556")
+    # The policy's per-symbol cap still wins when it is the tighter ceiling.
+    assert entry_notional(
+        Settings(entry_budget_fraction=Decimal("1")),
+        SimpleNamespace(max_position_notional_usdt=Decimal("5.2")),
+        account,
+        rules,
+    ) == Decimal("5.2")
+
+
 class _CountingJev:
     """Answers one BUY that passes the test policy's gate."""
 

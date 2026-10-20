@@ -92,10 +92,30 @@ class FakeMarket:
     def __init__(self, candles: list[Candle] | None = None) -> None:
         self.requested: list[tuple[str, str, int]] = []
         self.candles = candles or []
+        self.filter_calls: list[str] = []
 
     async def klines(self, symbol: str, interval: str = "1m", limit: int = 120, warmup: int = 0):
         self.requested.append((symbol, interval, limit))
         return self.candles
+
+    async def entry_filters(self, symbol: str) -> SymbolFilters:
+        from jev_trading.domain.market import SymbolFilters as _Filters
+
+        self.filter_calls.append(symbol)
+        return _Filters(
+            symbol=symbol,
+            status="TRADING",
+            base_asset=symbol.removesuffix("USDT"),
+            quote_asset="USDT",
+            min_qty=Decimal("0.00001"),
+            max_qty=Decimal("9000"),
+            step_size=Decimal("0.00001"),
+            min_price=Decimal("0.01"),
+            max_price=Decimal("1000000"),
+            tick_size=Decimal("0.01"),
+            min_notional=Decimal("5"),
+            taker_fee_bps=Decimal("10"),
+        )
 
 
 class FakeToolbox:
@@ -382,7 +402,11 @@ def candles(count: int = 80) -> list[Candle]:
     ]
 
 
-def toolbox(repo: FakeRepo | None = None, market: FakeMarket | None = None) -> Toolbox:
+def toolbox(
+    repo: FakeRepo | None = None,
+    market: FakeMarket | None = None,
+    settings: Any | None = None,
+) -> Toolbox:
     return Toolbox(
         repo=repo or FakeRepo(),
         market=market or FakeMarket(candles()),
@@ -391,6 +415,7 @@ def toolbox(repo: FakeRepo | None = None, market: FakeMarket | None = None) -> T
         symbols=["BTCUSDT", "ETHUSDT"],
         snapshots=[market_snapshot(NOW)],
         now=NOW,
+        settings=settings,
     )
 
 
@@ -416,6 +441,32 @@ async def test_tools_reject_symbols_outside_the_universe():
         await toolbox().call("get_candles", {"symbol": "DOGEUSDT"})
     with pytest.raises(ValueError, match="unknown tool"):
         await toolbox().call("place_order", {})
+
+
+async def test_account_state_reports_the_sizing_envelope():
+    """A cap the account cannot fund is invisible unless the floor is stated."""
+
+    from jev_trading.config import Settings
+
+    settings = Settings(entry_budget_fraction=Decimal("0.40"))
+    market = FakeMarket(candles())
+    data = (await toolbox(market=market, settings=settings).call("get_account_state", {}))[
+        "data"
+    ]
+    sizing = data["sizing"]
+    # 250 USDT available * 0.40, under the 500 USDT server ceiling.
+    assert Decimal(sizing["max_entry_notional_usdt"]) == Decimal("100")
+    assert sizing["entry_budget_fraction"] == "0.40"
+    floor = Decimal(sizing["symbols"]["BTCUSDT"]["min_feasible_entry_notional_usdt"])
+    assert Decimal(sizing["symbols"]["BTCUSDT"]["min_notional_usdt"]) == Decimal("5")
+    # 5 / (1 - (300 + 10 + 8) / 10000) = 5.1643: below this a buy cannot be exited.
+    assert floor == Decimal("5.1643")
+    assert market.filter_calls == ["BTCUSDT", "ETHUSDT"]
+
+
+async def test_a_toolbox_without_settings_omits_sizing_rather_than_guessing():
+    data = (await toolbox().call("get_account_state", {}))["data"]
+    assert "sizing" not in data
 
 
 async def test_tool_budget_is_enforced():
@@ -777,6 +828,34 @@ async def test_prior_strategy_separates_choice_from_thresholds():
     repo.positions = []
     data = (await toolbox(repo=repo).call("get_prior_strategy", {}))["data"]
     assert data["outcome"]["gate_state"] == "blocked_by_thresholds"
+
+
+async def test_prior_strategy_reports_the_gate_the_server_enforced():
+    """The proposal alone misleads: the server floors raise the gate it applied."""
+
+    row = _prior_policy()
+    row.effective_json = {
+        "jev_gate": {
+            "entry_choice": "buy",
+            "min_choice_probability": 0.5,
+            "min_policy_fit": 0.5,
+            "min_quality_score": 1.45,
+        },
+        "portfolio": {"max_position_notional_usdt": 5},
+    }
+    row.clamps_json = [
+        {"field": "jev_gate.min_policy_fit", "proposed": 0.34, "effective": 0.5}
+    ]
+    repo = FakeRepo()
+    repo.policies = [row]
+
+    data = (await toolbox(repo=repo).call("get_prior_strategy", {}))["data"]
+    prior = data["prior"]
+    assert prior["jev_gate"]["min_policy_fit"] == 0.5
+    assert prior["proposed_jev_gate"]["min_policy_fit"] == 0.34
+    assert prior["clamps"] == [
+        {"field": "jev_gate.min_policy_fit", "proposed": 0.34, "effective": 0.5}
+    ]
 
 
 async def test_prior_strategy_before_the_first_policy_is_not_an_error():

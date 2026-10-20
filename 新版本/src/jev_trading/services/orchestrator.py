@@ -114,6 +114,21 @@ def _marketable_sell_price(bid: Decimal, rules) -> Decimal:
     return rules.quantize_price(price)
 
 
+def entry_notional(settings, symbol_policy, account, rules) -> Decimal:
+    """What one entry may spend, or zero when that is below the exchange minimum.
+
+    Two ceilings apply: the policy's per-symbol limit, and the server's share of
+    available cash (``entry_budget_fraction``). The share is a server setting so
+    no policy can risk more of the account than the operator allows, and on a
+    small account it is what decides whether an entry is possible at all: a
+    quarter of a 13.89 USDT account is 3.47, under Binance's 5 USDT minimum.
+    """
+
+    budget = account.available_quote_usdt * settings.entry_budget_fraction
+    notional = min(symbol_policy.max_position_notional_usdt, budget)
+    return notional if notional >= rules.min_notional else ZERO
+
+
 class CycleResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -480,6 +495,7 @@ class TradingOrchestrator:
             symbols=self.settings.allowed_symbols,
             snapshots=snapshots,
             now=now,
+            settings=self.settings,
         )
         effective, _row = await self.policy_service.generate(
             generator=self.policy_generator,
@@ -572,6 +588,11 @@ class TradingOrchestrator:
             and jev_result.entry_quality.score >= gate.min_quality_score
         )
         return passed, details
+
+    def _entry_notional(self, symbol_policy, account, rules) -> Decimal:
+        """What one entry may spend, or zero when that is below the exchange minimum."""
+
+        return entry_notional(self.settings, symbol_policy, account, rules)
 
     def _entry_limit_price(self, snapshot: MarketSnapshot, rules):
         slippage = self.settings.slippage_bps / Decimal("10000")
@@ -834,9 +855,8 @@ class TradingOrchestrator:
             notes.append(f"{symbol}: duplicate intent suppressed")
             return
 
-        budget = account.available_quote_usdt * Decimal("0.25")
-        quote_notional = min(symbol_policy.max_position_notional_usdt, budget)
-        if quote_notional < rules.min_notional:
+        quote_notional = self._entry_notional(symbol_policy, account, rules)
+        if quote_notional <= ZERO:
             await self.repo.transition_signal(
                 signal_id,
                 SignalState.EXPIRED,

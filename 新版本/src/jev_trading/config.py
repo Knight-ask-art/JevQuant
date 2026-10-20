@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     min_quality_score: float = 0.0
 
     paper_starting_equity: Decimal = Decimal("10000")
+    # Share of available quote cash one entry may spend. Server side, so a
+    # policy cannot size a position past what the account can lose on one
+    # trade; on a small account it also decides whether an entry can clear the
+    # exchange minimum at all (13.89 USDT at 0.25 is 3.47, below Binance's 5).
+    entry_budget_fraction: Decimal = Field(default=Decimal("0.25"), gt=0, le=1)
     paper_seed: int = 42
 
     binance_base_url: str = "https://api.binance.com"
@@ -252,6 +257,7 @@ class Settings(BaseSettings):
                 "max_daily_loss_pct": str(self.max_daily_loss_pct),
                 "max_positions": self.max_positions,
                 "max_drawdown_pct": str(self.max_drawdown_pct),
+                "entry_budget_fraction": str(self.entry_budget_fraction),
                 "allowed_symbols": self.allowed_symbols,
             },
             "budgets": {

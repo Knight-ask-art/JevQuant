@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 import asyncio
 from collections import Counter
 from datetime import timedelta
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
 from typing import Any, Sequence
 
 from ..domain.enums import PositionStatus
@@ -79,7 +79,10 @@ GET_ACCOUNT_STATE = {
     "name": "get_account_state",
     "description": (
         "Equity, available quote cash, gross exposure, daily realized PnL, "
-        "drawdown and the number of open positions."
+        "drawdown and the number of open positions, plus the sizing envelope: "
+        "what one entry may spend and, per symbol, the smallest notional that "
+        "can still be exited after an adverse move. A per-symbol cap below "
+        "that floor can never become an order."
     ),
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }
@@ -240,11 +243,15 @@ class AgentToolbox:
         symbols: Sequence[str],
         snapshots: Sequence[Any] | None = None,
         now: datetime | None = None,
+        settings: Any | None = None,
     ) -> None:
         self.repo = repo
         self.market = market
         self.account_id = account_id
         self.mode = mode
+        # Server settings the model must size against. Optional so the toolbox
+        # still works where only reads are exercised.
+        self.settings = settings
         self.symbols = sorted({symbol.strip().upper() for symbol in symbols if symbol.strip()})
         self._snapshots = {snapshot.symbol: snapshot for snapshot in (snapshots or [])}
         self._now = now or datetime.now(UTC)
@@ -408,11 +415,61 @@ class AgentToolbox:
             "drawdown_pct": canonical_str(account.drawdown_pct),
             "mode": self.mode,
         }
+        sizing = await self._sizing(account)
+        if sizing is not None:
+            data["sizing"] = sizing
         summary = (
             f"equity {data['equity_usdt']} USDT, cash {data['available_quote_usdt']}, "
             f"{account.open_positions} open, daily PnL {data['daily_realized_pnl_pct']}%"
         )
+        if sizing is not None:
+            summary += f", max entry {sizing['max_entry_notional_usdt']} USDT"
         return {"summary": summary, "data": data}
+
+    async def _sizing(self, account) -> dict[str, Any] | None:
+        """The sizing envelope the model must author against.
+
+        Reports what one entry may spend and, per symbol, the smallest entry
+        whose adverse exit still clears the exchange minimum. Without the
+        second number a policy can set a per-symbol cap that silently makes
+        every entry infeasible.
+        """
+
+        settings = self.settings
+        if settings is None:
+            return None
+        budget = account.available_quote_usdt * settings.entry_budget_fraction
+        ceiling = min(budget, settings.max_position_notional_usdt)
+        symbols: dict[str, Any] = {}
+        for symbol in self.symbols:
+            try:
+                rules = await self.market.entry_filters(symbol)
+            except Exception:  # noqa: BLE001 - sizing detail, never a hard fail
+                continue
+            adverse_bps = (
+                settings.exit_stress_drawdown_bps
+                + rules.taker_fee_bps
+                + settings.exit_slippage_bps
+            )
+            rate = adverse_bps / Decimal("10000")
+            floor = (
+                rules.min_notional
+                if rate >= 1
+                else rules.min_notional / (Decimal("1") - rate)
+            )
+            # Rounded up: the venue truncates the exit quantity to step size, so
+            # an entry sitting exactly on the analytic floor is rejected.
+            symbols[symbol] = {
+                "min_notional_usdt": canonical_str(rules.min_notional),
+                "min_feasible_entry_notional_usdt": canonical_str(
+                    floor.quantize(Decimal("0.0001"), rounding=ROUND_UP)
+                ),
+            }
+        return {
+            "entry_budget_fraction": str(settings.entry_budget_fraction),
+            "max_entry_notional_usdt": canonical_str(ceiling.quantize(Decimal("0.0001"))),
+            "symbols": symbols,
+        }
 
     async def _tool_get_open_positions(self) -> dict[str, Any]:
         positions = await self.repo.get_open_positions(self.account_id)
@@ -607,6 +664,11 @@ class AgentToolbox:
         # the table row's primary key.
         policy_id = row.policy_id
         raw = row.raw_json if isinstance(row.raw_json, dict) else {}
+        # What the compiler actually enforced. The raw proposal is kept beside
+        # it: a model that only sees its own numbers calibrates against a gate
+        # the server raised, and concludes the wrong leg is binding.
+        effective_json = getattr(row, "effective_json", None)
+        effective = effective_json if isinstance(effective_json, dict) else {}
         since = self._now - timedelta(hours=hours)
         signals = [
             signal
@@ -635,7 +697,10 @@ class AgentToolbox:
             # generated_at, and that is what the previous compiles reported.
             "compiled_at": _iso(row.generated_at),
             "expires_at": _iso(row.expires_at),
-            "jev_gate": raw.get("jev_gate"),
+            "jev_gate": effective.get("jev_gate") or raw.get("jev_gate"),
+            "proposed_jev_gate": raw.get("jev_gate"),
+            "portfolio": effective.get("portfolio") or raw.get("portfolio"),
+            "clamps": getattr(row, "clamps_json", None) or [],
             "universe": [
                 item.get("symbol") for item in raw.get("universe") or [] if isinstance(item, dict)
             ],
