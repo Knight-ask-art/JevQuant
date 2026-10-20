@@ -659,3 +659,76 @@ def test_a_rejected_policy_is_still_journaled(open_client):
         "output_tokens": 3,
         "__cost_usd__": "0",
     }
+
+
+
+def test_operator_session_requires_csrf_for_mutations(tmp_path):
+    with client(tmp_path, auth_disabled=False) as api:
+        assert api.get("/api/v1/system/status").status_code == 401
+        login = api.post("/api/v1/auth/login", json={"api_key": ADMIN})
+        assert login.status_code == 200
+        assert "httponly" in login.headers["set-cookie"].lower()
+        assert "samesite=strict" in login.headers["set-cookie"].lower()
+        status = api.get("/api/v1/auth/status").json()
+        assert status["enabled"] is True
+        assert status["authenticated"] is True
+        assert api.get("/api/v1/system/status").status_code == 200
+        assert api.post("/api/v1/demo/cycle").status_code == 403
+        assert api.post(
+            "/api/v1/demo/cycle", headers={"X-CSRF-Token": status["csrf_token"]}
+        ).status_code == 200
+
+
+def test_local_operator_auth_toggle_requires_verified_key_and_csrf(tmp_path):
+    with client(tmp_path) as api:
+        status = api.get("/api/v1/auth/status").json()
+        assert status["enabled"] is False and status["can_disable"] is True
+        denied = api.put("/api/v1/auth/settings", json={"enabled": True})
+        assert denied.status_code == 403
+        login = api.post("/api/v1/auth/login", json={"api_key": ADMIN})
+        assert login.status_code == 200
+        token = login.json()["csrf_token"]
+        enabled = api.put(
+            "/api/v1/auth/settings",
+            json={"enabled": True, "admin_key": ADMIN},
+            headers={"X-CSRF-Token": token},
+        )
+        assert enabled.status_code == 200
+        assert api.get("/api/v1/auth/status").json()["enabled"] is True
+        assert api.put("/api/v1/auth/settings", json={"enabled": False}).status_code == 403
+        off = api.put(
+            "/api/v1/auth/settings",
+            json={"enabled": False},
+            headers={"X-CSRF-Token": token},
+        )
+        assert off.status_code == 200
+        assert api.get("/api/v1/auth/status").json()["enabled"] is False
+    # The operator's decision survives a restart.
+    with client(tmp_path) as api:
+        assert api.get("/api/v1/auth/status").json()["enabled"] is False
+
+
+def test_provider_key_persistence_without_encryption_key_is_forbidden(tmp_path):
+    with client(tmp_path, credential_encryption_key=None) as api:
+        response = api.put(
+            "/api/v1/settings/models",
+            json={"llm": {"base_url": "https://example.org", "model": "m", "api_key": "secret"}},
+        )
+        assert response.status_code == 403
+
+
+def test_auth_cannot_be_disabled_on_testnet_even_if_development(tmp_path):
+    with client(tmp_path, auth_disabled=False) as api:
+        login = api.post("/api/v1/auth/login", json={"api_key": ADMIN})
+        token = login.json()["csrf_token"]
+        container = api.app.state.container
+        from jev_trading.domain.enums import Mode
+        assert container.settings.app_env == "dev"
+        # Use the policy function directly so no exchange connectivity is required.
+        from jev_trading.api.security import local_auth_off_allowed
+        assert local_auth_off_allowed(container.settings, Mode.TESTNET) is False
+        assert local_auth_off_allowed(container.settings, Mode.LIVE) is False
+        assert api.put(
+            "/api/v1/auth/settings", json={"enabled": False},
+            headers={"X-CSRF-Token": token},
+        ).status_code == 200  # Local PAPER is the only permitted opt-out.
