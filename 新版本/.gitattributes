@@ -1,0 +1,4 @@
+# Shell scripts run on the Linux host and inside the containers: a CRLF would
+# turn "set -euo pipefail" into an invalid option, so keep them LF even when the
+# working tree is checked out with core.autocrlf=true on Windows.
+*.sh text eol=lf

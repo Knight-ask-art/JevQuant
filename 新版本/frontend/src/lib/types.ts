@@ -189,6 +189,7 @@ export interface SystemStatus {
     max_daily_loss_pct: string;
     max_positions: number;
     max_drawdown_pct: string;
+    entry_budget_fraction: string;
     allowed_symbols: string[];
   };
   execution_backend: string;

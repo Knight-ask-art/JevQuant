@@ -778,6 +778,7 @@ class AppContainer:
                 "max_daily_loss_pct": str(self.settings.max_daily_loss_pct),
                 "max_positions": self.settings.max_positions,
                 "max_drawdown_pct": str(self.settings.max_drawdown_pct),
+                "entry_budget_fraction": str(self.settings.entry_budget_fraction),
                 "allowed_symbols": list(self.settings.allowed_symbols),
             },
             "execution_backend": self.settings.execution_backend,

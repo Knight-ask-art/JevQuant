@@ -364,6 +364,10 @@ export function Overview() {
                 <div className="kv">
                   <dt>{t("overview.maxPosition")}</dt>
                   <dd className="mono">{limits.max_position_notional_usdt} USDT</dd>
+                  <dt>{t("overview.entryBudget")}</dt>
+                  <dd className="mono">
+                    {pct(Number(limits.entry_budget_fraction) * 100, 0)}
+                  </dd>
                   <dt>{t("overview.dailyLossCap")}</dt>
                   <dd className="mono">{limits.max_daily_loss_pct}%</dd>
                   <dt>{t("overview.universe")}</dt>
