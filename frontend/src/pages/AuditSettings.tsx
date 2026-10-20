@@ -3,7 +3,7 @@ import { useState } from "react";
 import { EmptyState, ErrorNote, Field, PaperCard, Pill, ScribbleUnderline } from "../components/ui";
 import { useApi } from "../hooks/useApi";
 import { useI18n } from "../i18n";
-import { ApiError, api, getApiKey, setApiKey } from "../lib/api";
+import { ApiError, api, setCsrfToken } from "../lib/api";
 import { clock, label, shortId } from "../lib/format";
 import type { AuditEvent } from "../lib/types";
 
@@ -15,7 +15,7 @@ interface VerifyResult {
 }
 
 export function AuditSettings() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const audit = useApi<{ items: AuditEvent[] }>("/api/v1/audit?limit=120", 15000);
   const config = useApi<{
     config: Record<string, unknown>;
@@ -25,8 +25,9 @@ export function AuditSettings() {
   const [verify, setVerify] = useState<VerifyResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
-  const [key, setKey] = useState(getApiKey());
-  const [saved, setSaved] = useState<string | null>(null);
+  const auth = useApi<{ enabled: boolean; authenticated: boolean; can_disable: boolean }>("/api/v1/auth/status", 0);
+  const [key, setKey] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [typeFilter, setTypeFilter] = useState("");
 
   async function runVerify() {
@@ -41,9 +42,28 @@ export function AuditSettings() {
     }
   }
 
-  function saveKey() {
-    setApiKey(key.trim());
-    setSaved(key.trim() ? t("audit.keyStored") : t("audit.keyCleared"));
+  async function toggleAuthentication(enabled: boolean) {
+    setAuthBusy(true);
+    setError(null);
+    try {
+      if (enabled) {
+        const login = await api.post<{ csrf_token: string }>("/api/v1/auth/login", { api_key: key });
+        setCsrfToken(login.csrf_token);
+      }
+      await api.put("/api/v1/auth/settings", { enabled, ...(enabled ? { admin_key: key } : {}) });
+      setKey("");
+      window.location.reload();
+    } catch (caught) {
+      setError(caught as ApiError);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    await api.post("/api/v1/auth/logout");
+    setCsrfToken(null);
+    window.location.reload();
   }
 
   const rows = (audit.data?.items ?? []).filter((event) =>
@@ -147,39 +167,34 @@ export function AuditSettings() {
         </PaperCard>
 
         <div className="stack">
-          <PaperCard eyebrow={t("audit.operatorIdentity")} title={t("audit.apiKey")}>
+          <PaperCard eyebrow={t("audit.operatorIdentity")} title={lang === "zh" ? "网页访问认证" : "Web operator authentication"}>
             <p className="small" style={{ marginBottom: 10, color: "var(--ink-soft)" }}>
-              {t("audit.apiKeyBody")}
+              {lang === "zh"
+                ? "本机合成行情模拟盘可关闭认证；测试网、实盘和生产环境始终需要认证。密钥不保存在浏览器存储中。"
+                : "Optional for local synthetic paper trading. Always required for testnet, live and production. Your key is never saved in browser storage."}
             </p>
-            <Field label={t("audit.operatorKey")} hint={t("audit.operatorKeyHint")}>
-              <input
-                className="input"
-                type="password"
-                value={key}
-                onChange={(event) => setKey(event.target.value)}
-                autoComplete="off"
-              />
-            </Field>
-            <div className="row" style={{ marginTop: 10 }}>
-              <button className="button small" onClick={saveKey}>
-                {t("audit.saveKey")}
-              </button>
-              <button
-                className="button ghost small"
-                onClick={() => {
-                  setKey("");
-                  setApiKey("");
-                  setSaved(t("audit.keyCleared"));
-                }}
-              >
-                {t("audit.clear")}
-              </button>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <Pill tone={auth.data?.enabled ? "olive" : "yellow"}>
+                {auth.data?.enabled ? (lang === "zh" ? "已开启" : "Enabled") : (lang === "zh" ? "已关闭" : "Disabled")}
+              </Pill>
+              <label className="row small">
+                <input type="checkbox" aria-label="Enable operator authentication"
+                  checked={auth.data?.enabled ?? false}
+                  disabled={authBusy || !auth.data || (auth.data.enabled && !auth.data.can_disable)}
+                  onChange={(event) => void toggleAuthentication(event.target.checked)} />
+                {lang === "zh" ? "开启认证" : "Require login"}
+              </label>
             </div>
-            {saved && (
-              <p className="hand" style={{ marginTop: 8 }}>
-                {saved}
-              </p>
+            {!auth.data?.enabled && (
+              <Field label={t("audit.operatorKey")} hint={lang === "zh" ? "开启认证前输入 .env 中配置的管理员密钥" : "Enter your configured administrator key before enabling"}>
+                <input className="input" type="password" value={key} onChange={(event) => setKey(event.target.value)} autoComplete="new-password" />
+              </Field>
             )}
+            {auth.data?.enabled && <button className="button ghost small" style={{ marginTop: 12 }}
+              onClick={() => void signOut()}>{lang === "zh" ? "退出登录" : "Sign out"}</button>}
+            {!auth.data?.can_disable && <p className="hand" style={{ marginTop: 10 }}>
+              {lang === "zh" ? "当前运行环境禁止关闭认证。" : "Authentication cannot be disabled in this environment."}
+            </p>}
           </PaperCard>
 
           <PaperCard eyebrow={t("audit.redactedConfig")} title={t("audit.runtimeSettings")}>
