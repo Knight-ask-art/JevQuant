@@ -383,7 +383,7 @@ async def test_live_position_exits_through_live_route_after_restart_to_paper(
     assert paper_route.submitted == []
 
 
-async def test_kill_switch_defers_cross_route_exit_but_keeps_local_exits(
+async def test_kill_switch_never_blocks_cross_route_exit(
     repo, server_limits
 ):
     account, policy, ctx, engine, signal, position, _paper = await open_position(
