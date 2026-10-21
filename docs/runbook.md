@@ -146,6 +146,15 @@ named in the hypotheses.
 The report does not change `JEV_FEE_BPS` / slippage settings. Use it to decide, then
 change them deliberately.
 
+## Shadow edge evaluator
+
+`GET /api/v1/activity/edge-shadow` returns the recent verdicts. Until a cohort
+has `edge_min_samples` fully-elapsed peers, every verdict is
+`insufficient_evidence` with `sample_size = 0` — that is the expected state for
+a while, not a failure. To find out how far off it is, compare
+`counterfactual_rows` with the cohort strings: a large number of rows spread
+across many cohorts keeps every cohort thin.
+
 ## Schema migrations
 
 `jev migrate` (or `python -m jev_trading.migrations`, or starting the service) applies
@@ -160,6 +169,7 @@ pending migrations in order and records them in `schema_migrations`:
 | `0005_counterfactual_path` | adds `mfe_bps` / `mae_bps` / `holding_seconds` / `gap_seconds` / `is_synthetic` to `counterfactual_outcomes` |
 | `0006_counterfactual_timing` | adds `time_to_mfe_seconds` / `time_to_mae_seconds` / `round_trip_cost_bps` |
 | `0007_fill_fee_amount` | adds `fills.fee_amount` so a fee charged in the base asset or BNB is not lost; existing rows are backfilled from `fee_quote` |
+| `0008_edge_shadow` | adds `edge_shadow_decisions` (what the shadow edge evaluator would have decided) |
 
 - `jev migrate --dry-run` lists pending versions without changing anything.
 - A database is upgraded in place; the ledger rows are preserved.

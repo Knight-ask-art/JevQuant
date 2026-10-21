@@ -53,6 +53,7 @@ from .features import build_features
 from .market_service import MarketService
 from .modes import ModeManager
 from .counterfactual import CounterfactualService
+from .edge_evaluator import EdgeEvaluator
 from .orchestrator import TradingOrchestrator
 from .policy_service import PolicyService, policy_display_status
 
@@ -233,6 +234,11 @@ class AppContainer:
             market=self.market,
             audit=self.audit,
         )
+        self.edge_evaluator = (
+            EdgeEvaluator.from_settings(self.settings, self.repo)
+            if self.settings.edge_shadow_enabled
+            else None
+        )
         self.orchestrator = TradingOrchestrator(
             settings=self.settings,
             repo=self.repo,
@@ -248,6 +254,7 @@ class AppContainer:
             account_id=self.account_id,
             budgets=self.budgets,
             counterfactual=self.counterfactual,
+            edge_evaluator=self.edge_evaluator,
         )
         await self.audit.record(
             "system.started",

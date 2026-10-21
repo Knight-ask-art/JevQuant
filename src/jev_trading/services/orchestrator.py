@@ -25,6 +25,7 @@ from ..domain.enums import (
     Side,
     SignalState,
 )
+from ..domain.costs import CostModel
 from ..domain.enums import ErrorCode, PositionStatus
 from ..domain.errors import AppError, ReconciliationRequiredError, RiskRejectedError
 from ..domain.intent import ApprovedTradeIntent, Provenance, TradeIntent
@@ -40,6 +41,7 @@ from .events import EventBroker
 from .market_service import MarketService
 from .modes import ModeManager
 from .policy_service import PolicyService
+from .edge_evaluator import EdgeEvaluator
 from .regime_gate import RegimeGate
 
 DEFAULT_INTENT_TTL_SECONDS = 15
@@ -185,11 +187,16 @@ class TradingOrchestrator:
         budgets: Any | None = None,
         counterfactual: Any | None = None,
         regime_gate: Any | None = None,
+        edge_evaluator: Any | None = None,
     ) -> None:
         self.settings = settings
         self.budgets = budgets
         self.counterfactual = counterfactual
         self.regime_gate = regime_gate or RegimeGate.from_settings(settings)
+        self.cost_model = CostModel.from_settings(settings)
+        self.edge_evaluator = edge_evaluator
+        if self.edge_evaluator is None and getattr(settings, "edge_shadow_enabled", True):
+            self.edge_evaluator = EdgeEvaluator.from_settings(settings, repo)
         self.repo = repo
         self.policy_service = policy_service
         self.market = market
@@ -901,6 +908,40 @@ class TradingOrchestrator:
                 signal.id,
                 {"symbol": symbol, **gate_detail},
             )
+
+        # The edge evaluator asks a different question from either gate: have
+        # trades in this cohort actually paid after costs? It is computed for
+        # every signal that reaches ELIGIBLE and never blocks one -- there is
+        # not enough history for its verdict to earn that right yet. A failure
+        # here is audited and the trade proceeds: data collection must not be
+        # able to stop trading.
+        if self.edge_evaluator is not None:
+            try:
+                edge = await self.edge_evaluator.evaluate(
+                    signal_id=signal.id,
+                    symbol=symbol,
+                    features=dict(snapshot.features or {}),
+                    probability=jev_result.entry_probability,
+                    horizon_seconds=policy.exit_defaults.max_holding_seconds,
+                    round_trip_cost_bps=self.cost_model.round_trip_bps,
+                    now=datetime.now(UTC),
+                )
+            except Exception as exc:  # noqa: BLE001 - shadow only
+                await self.audit.record(
+                    "edge.shadow_error",
+                    "signal",
+                    signal.id,
+                    {"symbol": symbol, "error": type(exc).__name__},
+                )
+            else:
+                gate_detail = {**gate_detail, **edge.as_detail()}
+                if edge.blocked:
+                    await self.audit.record(
+                        "edge.shadow_block",
+                        "signal",
+                        signal.id,
+                        {"symbol": symbol, **edge.as_detail()},
+                    )
 
         await self.repo.transition_signal(signal.id, SignalState.ELIGIBLE, gate_detail)
         counters["signals_eligible"] += 1

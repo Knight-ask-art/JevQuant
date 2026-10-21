@@ -37,6 +37,7 @@ from .models import (
     BacktestRunRow,
     BalanceSnapshotRow,
     CounterfactualRow,
+    EdgeShadowRow,
     FillRow,
     JevEvaluationRow,
     MarketSnapshotRow,
@@ -138,6 +139,26 @@ class RealisedFill:
     fee_amount: Decimal
     filled_at: datetime
     reference_price: Decimal | None
+
+
+@dataclass(frozen=True)
+class EdgeSample:
+    """One decided candidate, as the edge evaluator needs to see it.
+
+    The cohort is *not* stored on the counterfactual row: bands are a reading
+    of the features, and fixing them at write time would make an improvement
+    to the bands look like old data rather than a new question.
+    """
+
+    symbol: str
+    features: dict[str, float]
+    entry_probability: float
+    horizon_seconds: int
+    round_trip_cost_bps: Decimal
+    net_bps: Decimal | None
+    gap_seconds: int | None
+    method: str
+    decided_at: datetime
 
 
 class Repository:
@@ -633,6 +654,81 @@ class Repository:
                 .limit(limit)
             )
             return list((await session.execute(statement)).scalars())
+
+    async def list_edge_samples(self, limit: int = 5000) -> list[EdgeSample]:
+        """Counterfactual outcomes joined to the features they were decided on."""
+
+        stmt = (
+            select(CounterfactualRow, MarketSnapshotRow)
+            .join(SignalRow, CounterfactualRow.signal_id == SignalRow.id)
+            .join(MarketSnapshotRow, SignalRow.snapshot_id == MarketSnapshotRow.id)
+            .order_by(CounterfactualRow.decided_at.desc())
+            .limit(max(1, limit))
+        )
+        async with self.db.session() as session:
+            rows = list((await session.execute(stmt)).all())
+        return [
+            EdgeSample(
+                symbol=outcome.symbol,
+                features=dict(snapshot.features_json or {}),
+                entry_probability=float(outcome.entry_probability or 0.0),
+                horizon_seconds=int(outcome.horizon_seconds),
+                round_trip_cost_bps=outcome.round_trip_cost_bps
+                if outcome.round_trip_cost_bps is not None
+                else Decimal("0"),
+                net_bps=outcome.net_bps,
+                gap_seconds=outcome.gap_seconds,
+                method=outcome.method,
+                decided_at=outcome.decided_at,
+            )
+            for outcome, snapshot in rows
+        ]
+
+    async def counterfactual_lookup_counts(self) -> dict[str, int]:
+        """How many replays exist, split by outcome.
+
+        Read by the edge evaluator only to explain an empty cohort: "no
+        evidence" and "we have been recording for an hour" look identical in a
+        verdict, and only one of them is a reason to wait.
+        """
+
+        async with self.db.session() as session:
+            total = (
+                await session.execute(select(func.count()).select_from(CounterfactualRow))
+            ).scalar_one()
+            decided = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(CounterfactualRow)
+                    .where(CounterfactualRow.net_bps.is_not(None))
+                )
+            ).scalar_one()
+        return {"counterfactual_rows": int(total), "decided_rows": int(decided)}
+
+    async def insert_edge_shadow(self, **fields: Any) -> EdgeShadowRow:
+        """Record one verdict from the shadow evaluator.
+
+        Not idempotent on purpose: two verdicts for one signal is itself a fact
+        worth keeping, and nothing downstream reads it as an instruction.
+        """
+
+        async with self.db.session() as session:
+            row = EdgeShadowRow(**fields)
+            session.add(row)
+            await session.flush()
+            return row
+
+    async def list_edge_shadows(self, limit: int = 500) -> list[EdgeShadowRow]:
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(EdgeShadowRow)
+                        .order_by(EdgeShadowRow.decided_at.desc())
+                        .limit(max(1, limit))
+                    )
+                ).scalars()
+            )
 
     async def insert_counterfactual(self, **fields: Any) -> CounterfactualRow:
         """One replay row per signal; a repeated call returns the first one."""

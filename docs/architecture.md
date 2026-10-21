@@ -200,6 +200,45 @@ blocked               = expected < required   (or no ATR at all)
   signal the regime gate refused, so the two gates are judged on separate cohorts. The
   verdict itself is read back from the signal event, because ATR is not on the score.
 
+## Shadow edge evaluator
+
+The Jev gate asks whether a candidate is good; neither it nor the regime gate
+asks whether candidates *like this one* have paid after costs. Jev's probability
+is a confidence over its own choices, and treating it as a probability of profit
+is a different claim altogether.
+
+`services/edge_evaluator.py` asks the second question from the record: the mean
+net bps of past candidates in the same cohort, with a bootstrap lower confidence
+bound that must clear a safety margin.
+
+```text
+cohort = symbol | volatility band | confidence band | horizon | cost band
+verdict = blocked unless  lower_bound(mean net bps) > safety margin
+```
+
+- **Past only.** A sample counts only once its *holding window* had closed at the
+  decision instant, not merely once it was decided earlier. Anything else leaks
+  the outcome it is supposed to predict.
+- **Missing windows count as zero.** A replay that never saw the window
+  (`no_data`) is not evidence of profit, so it enters the mean as 0 and its count
+  is reported. Replays whose gaps exceed `edge_max_gap_minutes` are not used at
+  all, and say so by their absence.
+- **The bound is a bootstrapped percentile**, not the normal approximation:
+  stop/target/timeout returns are lumpy. The seed is fixed, so the same record
+  always produces the same verdict.
+- **Bands, not quantiles.** Cohort thresholds are fixed absolute values, so a
+  trade's cohort does not depend on when it was evaluated.
+- **Shadow only.** Every signal that reaches `ELIGIBLE` gets a verdict, stored in
+  `edge_shadow_decisions` and audited as `edge.shadow_block` when it would have
+  refused; the trade proceeds. A failure inside the evaluator is audited as
+  `edge.shadow_error` and never stops a trade.
+- `edge_min_samples` (default 30) is the sample floor. The literature default of
+  100 per cohort is not reachable in weeks at one Jev call per symbol per candle;
+  lowering the floor is how a small sample is presented honestly, not by dropping
+  the bound.
+
+Read the verdicts at `GET /api/v1/activity/edge-shadow`.
+
 ## Counterfactual outcomes
 
 A blocked entry is only evidence about the gate if its outcome is measured. After the

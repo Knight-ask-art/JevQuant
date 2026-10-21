@@ -72,6 +72,8 @@ $env:PYTHONPATH="src"
   holding window vs the round trip. Records its verdict on every signal; can refuse one.
 - `domain/costs.py` — the one definition of a round trip (fees + impact), and the
   pricing of a venue commission into the quote asset.
+- `services/edge_evaluator.py` — shadow statistical gate: past cohort net bps,
+  bootstrapped lower bound. Records verdicts, never blocks yet.
 - `services/cost_report.py` — realised fees/slippage from the fills, next to the model.
   Read-only; see `docs/architecture.md`.
 - `services/counterfactual.py` — replays **blocked** buys over 1m bars so the gate can be

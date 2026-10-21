@@ -337,6 +337,33 @@ class CounterfactualRow(Base):
     evaluated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
+class EdgeShadowRow(Base):
+    """What the shadow edge evaluator said about one signal, and why.
+
+    Written once per signal at decision time, whether or not enough past
+    outcomes existed to say anything. Storing the uninformative verdicts is
+    the point: "we had no evidence yet" becomes a cohort that can be counted,
+    rather than a gap in the record that looks like agreement.
+    """
+
+    __tablename__ = "edge_shadow_decisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    signal_id: Mapped[str] = mapped_column(String(36), index=True)
+    cohort: Mapped[str] = mapped_column(String(64), index=True)
+    decided_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str] = mapped_column(String(48))
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    expected_net_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    lower_ci_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    upper_ci_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    required_net_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    confidence: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    estimator: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
 class TradeIntentRow(Base):
     __tablename__ = "trade_intents"
 

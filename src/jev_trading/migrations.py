@@ -165,6 +165,43 @@ async def up_0007_fill_fee_amount(
         )
 
 
+async def up_0008_edge_shadow(
+    conn: AsyncConnection,
+) -> None:
+    """Shadow edge verdicts: what the statistical gate would have done."""
+
+    if await _has_table(conn, "edge_shadow_decisions"):
+        return
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE edge_shadow_decisions (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                signal_id VARCHAR(36) NOT NULL,
+                cohort VARCHAR(64) NOT NULL,
+                decided_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                blocked BOOLEAN NOT NULL DEFAULT FALSE,
+                reason VARCHAR(48) NOT NULL,
+                sample_size INTEGER NOT NULL DEFAULT 0,
+                expected_net_bps NUMERIC(28, 12),
+                lower_ci_bps NUMERIC(28, 12),
+                upper_ci_bps NUMERIC(28, 12),
+                required_net_bps NUMERIC(28, 12),
+                confidence NUMERIC(28, 12),
+                estimator VARCHAR(32) NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL
+            )
+            """
+        )
+    )
+    await conn.execute(
+        text("CREATE INDEX ix_edge_shadow_signal ON edge_shadow_decisions (signal_id)")
+    )
+    await conn.execute(
+        text("CREATE INDEX ix_edge_shadow_cohort ON edge_shadow_decisions (cohort)")
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_baseline", "record the pre-migration schema", up_0001_baseline),
     Migration("0002_positions_mode", "positions carry their execution route", up_0002_positions_mode),
@@ -192,6 +229,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         "0007_fill_fee_amount",
         "fills keep the commission in the asset the venue charged it in",
         up_0007_fill_fee_amount,
+    ),
+    Migration(
+        "0008_edge_shadow",
+        "record what the shadow edge evaluator would have decided",
+        up_0008_edge_shadow,
     ),
 )
 
