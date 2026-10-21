@@ -668,21 +668,24 @@ class Repository:
         async with self.db.session() as session:
             rows = list((await session.execute(stmt)).all())
         return [
-            EdgeSample(
-                symbol=outcome.symbol,
-                features=dict(snapshot.features_json or {}),
-                entry_probability=float(outcome.entry_probability or 0.0),
-                horizon_seconds=int(outcome.horizon_seconds),
-                round_trip_cost_bps=outcome.round_trip_cost_bps
-                if outcome.round_trip_cost_bps is not None
-                else Decimal("0"),
-                net_bps=outcome.net_bps,
-                gap_seconds=outcome.gap_seconds,
-                method=outcome.method,
-                decided_at=outcome.decided_at,
-            )
-            for outcome, snapshot in rows
+            self._edge_sample(outcome, snapshot) for outcome, snapshot in rows
         ]
+
+    @staticmethod
+    def _edge_sample(outcome: CounterfactualRow, snapshot: MarketSnapshotRow) -> EdgeSample:
+        return EdgeSample(
+            symbol=outcome.symbol,
+            features=dict(snapshot.features_json or {}),
+            entry_probability=float(outcome.entry_probability or 0.0),
+            horizon_seconds=int(outcome.horizon_seconds),
+            round_trip_cost_bps=outcome.round_trip_cost_bps
+            if outcome.round_trip_cost_bps is not None
+            else Decimal("0"),
+            net_bps=outcome.net_bps,
+            gap_seconds=outcome.gap_seconds,
+            method=outcome.method,
+            decided_at=outcome.decided_at,
+        )
 
     async def counterfactual_lookup_counts(self) -> dict[str, int]:
         """How many replays exist, split by outcome.
@@ -934,6 +937,31 @@ class Repository:
             if state is not None:
                 query = query.where(SignalRow.state == state.value)
             return list((await session.execute(query)).scalars())
+
+    async def list_walk_forward_rows(
+        self, *, since: datetime, until: datetime, limit: int = 50000
+    ) -> list[CounterfactualRow]:
+        """Replay rows inside a window, oldest first.
+
+        The walk-forward splits the range itself, so it needs the whole range
+        rather than the newest page: a burst of recent signals would otherwise
+        crowd out the start and silently shift every fold boundary.
+        """
+
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(CounterfactualRow)
+                        .where(
+                            CounterfactualRow.decided_at >= since,
+                            CounterfactualRow.decided_at <= until,
+                        )
+                        .order_by(CounterfactualRow.decided_at)
+                        .limit(max(1, limit))
+                    )
+                ).scalars()
+            )
 
     async def list_signals_for_policy(self, policy_id: str, limit: int = 200) -> list[SignalRow]:
         async with self.db.session() as session:

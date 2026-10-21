@@ -50,13 +50,20 @@ from ..storage.repository import Repository
 from .counterfactual import Replay, simulate
 from .features import aggregate, sma
 from .klines import fetch_minute_range
+from ..walk_forward import load_samples as load_walk_forward_samples
 from .market_service import MarketService
+from .walk_forward import DEFAULT_MIN_TRADES as DEFAULT_WF_MIN_TRADES
+from .walk_forward import build_report as build_walk_forward_report
+from .walk_forward import format_report as format_walk_forward
 
 DEFAULT_EXITS = ExitDefaults(
     stop_loss_bps=Decimal("40"),
     take_profit_bps=Decimal("60"),
     max_holding_seconds=5400,
 )
+#: Fewest samples per fold segment before a walk-forward verdict is more
+#: than a description of the procedure.
+DEFAULT_WF_MIN_TRADES = 10
 
 
 @dataclass(frozen=True)
@@ -448,6 +455,39 @@ class ExperimentRunner:
             },
         }
 
+    async def walk_forward(
+        self,
+        *,
+        days: int = 28,
+        fold_count: int = 4,
+        min_trades: int = DEFAULT_WF_MIN_TRADES,
+        symbols: tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Walk-forward over the same recorded outcomes this report replays.
+
+        Shares the loader and the cost model, so a fold and the per-signal
+        section above agree about what a candidate returned. Nothing is
+        written: the result is a document for a person to act on.
+        """
+
+        end = datetime.now(UTC)
+        start = end - timedelta(days=max(1, days))
+        samples = await load_walk_forward_samples(
+            self.repo, start=start, end=end, symbols=tuple(symbols or ())
+        )
+        horizon = timedelta(
+            minutes=max((s.window_minutes for s in samples), default=60)
+        )
+        return build_walk_forward_report(
+            samples,
+            start=start,
+            end=end,
+            horizon=horizon,
+            cost=self.cost,
+            fold_count=max(1, fold_count),
+            min_trades=max(2, min_trades),
+        )
+
     async def _baseline(
         self,
         spec: ExperimentSpec,
@@ -578,6 +618,9 @@ def format_report(report: dict[str, Any]) -> str:
         f"Blocked BUYs that would have won: {blocked['wins']} / {blocked['trades']} "
         "(each judged alone; drawdown is not meaningful for this set)"
     )
+    if report.get("walk_forward"):
+        lines.append("")
+        lines.append(format_walk_forward(report["walk_forward"]))
     lines.append("Assumptions:")
     for item in report["assumptions"]:
         lines.append(f"- {item}")
@@ -635,7 +678,9 @@ def _row(name: str, group: dict[str, Any]) -> str:
     )
 
 
-async def run_experiment(spec: ExperimentSpec) -> dict[str, Any]:
+async def run_experiment(
+    spec: ExperimentSpec, *, walk_forward: bool = False, folds: int = 4
+) -> dict[str, Any]:
     """Build the small stack an offline replay needs, then run it."""
 
     from ..adapters.market.binance import BinanceMarketDataProvider
@@ -648,7 +693,14 @@ async def run_experiment(spec: ExperimentSpec) -> dict[str, Any]:
         await database.create_all()
         repo = Repository(database)
         runner = ExperimentRunner(settings=settings, repo=repo, market=MarketService(provider))
-        return await runner.run(spec)
+        report = await runner.run(spec)
+        if walk_forward:
+            report["walk_forward"] = await runner.walk_forward(
+                days=spec.days,
+                fold_count=folds,
+                symbols=spec.symbols,
+            )
+        return report
     finally:
         await provider.close()
         await database.dispose()
@@ -659,12 +711,18 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--days", type=int, default=3)
     parser.add_argument("--symbols", default="BTCUSDT,ETHUSDT")
     parser.add_argument("--json", action="store_true", help="print the raw report")
+    parser.add_argument(
+        "--walk-forward",
+        action="store_true",
+        help="add rolling train/validation/test folds and a plateau verdict",
+    )
+    parser.add_argument("--folds", type=int, default=4)
     args = parser.parse_args(list(argv) if argv is not None else None)
     spec = ExperimentSpec(
         symbols=tuple(symbol.strip().upper() for symbol in args.symbols.split(",")),
         days=max(1, args.days),
     )
-    report = asyncio.run(run_experiment(spec))
+    report = asyncio.run(run_experiment(spec, walk_forward=args.walk_forward, folds=args.folds))
     print(json.dumps(report, indent=2) if args.json else format_report(report))
 
 

@@ -200,6 +200,42 @@ blocked               = expected < required   (or no ATR at all)
   signal the regime gate refused, so the two gates are judged on separate cohorts. The
   verdict itself is read back from the signal event, because ATR is not on the score.
 
+## Walk-forward
+
+`services/walk_forward.py` asks whether an exit geometry survives out of
+sample. The protocol, not the number, is the deliverable:
+
+```text
+| train | validation | test |  ->  slide one test width, repeat
+```
+
+- **Purge.** A sample counts for a segment only if its whole holding window
+  (plus an embargo) sits inside it. A sample decided just before a boundary
+  would otherwise share its price path across it.
+- **Calendar segments.** Equal parts of the requested range, not equal trade
+  counts; a quiet stretch is thin evidence and each fold prints its own counts.
+- **Selection in two steps.** Every cell of the stop x take x hold grid needs
+  `min_trades` samples of its own; the centre is an *interior* cell that is
+  positive at cost-plus-margin together with most of its neighbours; the choice
+  is then the centre's **region** (itself plus one-step neighbours), whose
+  samples are pooled for validation and test. Pooling a region is what lets a
+  small sample say something about a parameter; picking a region's best corner
+  would just pick the luckiest cell in it.
+- **A plateau, not a point.** A single profitable cell whose neighbours lose is
+  treated as overfitting, however good the cell is.
+- **The test segment is read once, after the choice is made.** Walk-forward
+  cannot run without the answer key; it can refuse to let the selection see it.
+
+The command shares the experiment runner's loader and cost model:
+
+```
+python -m jev_trading.experiment --days 28 --walk-forward
+python -m jev_trading.walk_forward --days 28 [--folds 4] [--min-trades 10]
+```
+
+It writes nothing. A parameter is chosen by a person with the fold record in
+hand, never by the report itself.
+
 ## Shadow edge evaluator
 
 The Jev gate asks whether a candidate is good; neither it nor the regime gate

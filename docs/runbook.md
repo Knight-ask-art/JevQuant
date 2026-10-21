@@ -155,6 +155,18 @@ a while, not a failure. To find out how far off it is, compare
 `counterfactual_rows` with the cohort strings: a large number of rows spread
 across many cohorts keeps every cohort thin.
 
+## Walk-forward
+
+```
+python -m jev_trading.experiment --days 28 --walk-forward [--folds 4]
+python -m jev_trading.walk_forward --days 28 --json
+```
+
+Read `sample_adequacy` first. While it says `insufficient`, the fold table
+describes the procedure, not the strategy: there is not yet enough record to
+tell an edge from noise. A `plateau_confirmed` verdict on an `insufficient`
+sample is not a result.
+
 ## Schema migrations
 
 `jev migrate` (or `python -m jev_trading.migrations`, or starting the service) applies
