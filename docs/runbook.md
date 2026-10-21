@@ -139,7 +139,9 @@ python -m jev_trading.exit_diagnostics --limit 500
 `cost_report` prices every venue fill (`fee_quote` over the traded notional) and
 measures slippage against the snapshot the decision used. Paper fills are excluded:
 their commission is the model's own arithmetic echoed back. A fee charged in an asset
-with no quote (BNB) is counted as *unpriced*, never as free — the hypothesis says so.
+with no quote (BNB) is counted as *unpriced*, never as free, and a fill recorded with
+no fee at all is excluded from the fee median rather than read as 0 bps — both are
+named in the hypotheses.
 
 The report does not change `JEV_FEE_BPS` / slippage settings. Use it to decide, then
 change them deliberately.

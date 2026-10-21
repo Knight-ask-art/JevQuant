@@ -104,13 +104,27 @@ class CostReport:
     def _venue(self) -> list[Any]:
         return [fill for fill in self._traded() if fill.mode not in MODELLED_ONLY_MODES]
 
+    @staticmethod
+    def _zero_fee(fill: Any) -> bool:
+        """A fill recorded with no fee at all, in any asset.
+
+        Ambiguous by nature: it is either a genuinely free fill or one whose
+        commission an older parser dropped. Counting it as a 0 bps measurement
+        would drag the median down and, at ten of them, claim the model charges
+        more than the venue does -- the opposite of the truth.
+        """
+
+        return fill.fee_quote <= ZERO and fill.fee_amount <= ZERO
+
     # -- reports ---------------------------------------------------------
     def fee_report(self) -> dict[str, Any]:
         venue = self._venue()
-        modelled = [self.fee_bps(fill) for fill in venue]
+        measured = [fill for fill in venue if not self._zero_fee(fill)]
+        modelled = [self.fee_bps(fill) for fill in measured]
         unpriced = [
             fill for fill in venue if fill.fee_quote <= ZERO and fill.fee_amount > ZERO
         ]
+        zero_fee = [fill for fill in venue if self._zero_fee(fill)]
         by_asset: dict[str, int] = {}
         for fill in venue:
             by_asset[fill.fee_asset] = by_asset.get(fill.fee_asset, 0) + 1
@@ -119,6 +133,7 @@ class CostReport:
             "priced_fills": sum(1 for value in modelled if value is not None),
             "unpriced_fills": len(unpriced),
             "unpriced_assets": sorted({fill.fee_asset for fill in unpriced}),
+            "zero_fee_fills": len(zero_fee),
             "fee_assets": by_asset,
             "median_fee_bps": _median(modelled),
             "mean_fee_bps": _mean(modelled),
@@ -144,7 +159,7 @@ class CostReport:
         """Realised fee and slippage on both sides, the cost the gate compares to."""
 
         venue = self._venue()
-        fees = [self.fee_bps(fill) for fill in venue]
+        fees = [self.fee_bps(fill) for fill in venue if not self._zero_fee(fill)]
         slips = [self.slippage_bps(fill) for fill in venue]
         fee_median = _median(fees)
         slip_median = _median(slips)
@@ -175,6 +190,18 @@ class CostReport:
                         "any net figure"
                     ),
                     "would_test": "hold BNB to pay fees (or disable it) so the cost is visible",
+                }
+            )
+
+        if fee["zero_fee_fills"]:
+            out.append(
+                {
+                    "hypothesis": "fills_recorded_without_a_fee",
+                    "reading": (
+                        f"{fee['zero_fee_fills']} fills carry no fee at all; they are "
+                        "excluded from the fee median rather than read as 0 bps"
+                    ),
+                    "would_test": "nothing: newer fills record the asset and amount",
                 }
             )
 
@@ -257,7 +284,7 @@ def format_report(report: dict[str, Any]) -> str:
     assets = fees["fee_assets"] or "none"
     lines = [
         f"fills: {report['fills']}  venue fills priced: {fees['priced_fills']}  "
-        f"unpriced: {fees['unpriced_fills']}",
+        f"unpriced: {fees['unpriced_fills']}  no fee at all: {fees['zero_fee_fills']}",
         f"fee assets charged: {assets}",
         "",
         f"Fee per side: realised median {fees['median_fee_bps']} bps "

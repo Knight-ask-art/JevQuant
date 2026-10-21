@@ -200,3 +200,29 @@ def test_the_round_trip_report_adds_both_sides():
     # 10 bps fee each way, no measured slippage against the reference.
     assert round_trip["realised_round_trip_bps"] == pytest.approx(20.0, abs=0.01)
     assert round_trip["modelled_round_trip_bps"] == 30.0
+
+
+def test_a_fill_recorded_without_a_fee_is_not_a_zero_bps_measurement():
+    """Fills written before the fee was priced correctly carry no amount.
+
+    Reading them as 0 bps would drag the median down and, at ten of them,
+    claim the venue charges less than the model -- the opposite of the bug.
+    """
+
+    report = CostReport(model=CostModel(), fills=[fill(fee_quote="0")] * 12)
+
+    fees = report.fee_report()
+    assert fees["zero_fee_fills"] == 12
+    assert fees["priced_fills"] == 0
+    names = [item["hypothesis"] for item in report.hypotheses()]
+    assert "fills_recorded_without_a_fee" in names
+    assert "fees_lower_than_modelled" not in names
+
+
+def test_one_measured_fill_is_not_enough_however_many_empty_ones_there_are():
+    fills = [fill(fee_quote="0")] * 12 + [fill(fee_quote="0.3")]
+
+    report = CostReport(model=CostModel(), fills=fills)
+
+    assert report.fee_report()["priced_fills"] == 1
+    assert "not_enough_fills" in [item["hypothesis"] for item in report.hypotheses()]
