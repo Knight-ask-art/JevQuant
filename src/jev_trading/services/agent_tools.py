@@ -16,13 +16,12 @@ show *what the agent looked at* without replaying full payloads.
 
 from __future__ import annotations
 
-from collections import Counter
-from datetime import UTC, datetime
 import asyncio
 from collections import Counter
-from datetime import timedelta
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_UP, Decimal
-from typing import Any, Sequence
+from typing import Any
 
 from ..domain.enums import PositionStatus
 from ..domain.money import canonical_str
@@ -179,6 +178,24 @@ GET_PRIOR_STRATEGY = {
     },
 }
 
+GET_BLOCKED_SIGNALS = {
+    "name": "get_blocked_signals",
+    "description": (
+        "Buy signals the gate blocked, with what they would have returned if "
+        "they had been taken: entry at the ask plus slippage, the exits the "
+        "policy carried at the time, fees paid on both sides, and the stop "
+        "assumed to win whenever one bar touches both levels. Use it to judge "
+        "whether jev_gate thresholds are too strict or about right."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}
+        },
+        "additionalProperties": False,
+    },
+}
+
 TOOL_SPECS: tuple[dict[str, Any], ...] = (
     MARKET_OVERVIEW,
     GET_CANDLES,
@@ -189,6 +206,7 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
     GET_RECENT_TRADES,
     GET_PERFORMANCE,
     GET_PRIOR_STRATEGY,
+    GET_BLOCKED_SIGNALS,
 )
 TOOL_NAMES = frozenset(spec["name"] for spec in TOOL_SPECS)
 
@@ -728,6 +746,60 @@ class AgentToolbox:
             f"{outcome['wins']} wins"
         )
         return {"summary": summary, "data": {"prior": prior, "outcome": outcome}}
+
+    async def _tool_get_blocked_signals(self, limit: int = 20) -> dict[str, Any]:
+        limit = _clamp_int(limit, 20, 1, 50)
+        rows = await self.repo.list_counterfactuals(limit=limit)
+        decided = [row for row in rows if row.net_bps is not None]
+        wins = [row for row in decided if row.net_bps > 0]
+        net = sum(
+            (row.pnl_usdt for row in decided if row.pnl_usdt is not None),
+            Decimal("0"),
+        )
+        average_bps = (
+            sum((row.net_bps for row in decided), Decimal("0")) / len(decided)
+            if decided
+            else Decimal("0")
+        )
+        by_rule: dict[str, int] = {}
+        for row in rows:
+            by_rule[row.blocked_rule] = by_rule.get(row.blocked_rule, 0) + 1
+        timeouts = [row for row in decided if row.exit_reason == "timeout"]
+        covered = (
+            round(sum((row.mfe_bps or 0) for row in timeouts) / len(timeouts), 2)
+            if timeouts
+            else None
+        )
+        data = {
+            "blocked_signals": len(rows),
+            "would_have_won": len(wins),
+            "net_pnl_usdt": canonical_str(net),
+            "average_net_bps": round(float(average_bps), 2),
+            "by_blocked_rule": dict(sorted(by_rule.items())),
+            "timeout_average_mfe_bps": covered,
+            "recent": [
+                {
+                    "symbol": row.symbol,
+                    "decided_at": _iso(row.decided_at),
+                    "entry_probability": _num(row.entry_probability),
+                    "policy_fit": _num(row.policy_fit),
+                    "quality_score": _num(row.quality_score),
+                    "blocked_rule": row.blocked_rule,
+                    "exit_reason": row.exit_reason,
+                    "net_bps": _num(row.net_bps, 2),
+                    "mfe_bps": _num(row.mfe_bps, 2),
+                    "mae_bps": _num(row.mae_bps, 2),
+                    "pnl_usdt": canonical_str(row.pnl_usdt) if row.pnl_usdt is not None else None,
+                }
+                for row in rows[: min(limit, 10)]
+            ],
+            "method": "1m-conservative-v1",
+        }
+        summary = (
+            f"{len(rows)} blocked buys replayed, {len(wins)} would have won, "
+            f"average {data['average_net_bps']} bps net, total {data['net_pnl_usdt']} USDT"
+        )
+        return {"summary": summary, "data": data}
 
     async def _tool_get_performance_summary(self) -> dict[str, Any]:
         rows = await self._closed_positions(200)

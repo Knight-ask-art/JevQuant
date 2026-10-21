@@ -552,6 +552,7 @@ def test_agent_journal_records_what_the_strategy_layer_decided(open_client):
     assert body["provider"] == "simulated"
     assert sorted(body["tools"]) == [
         "get_account_state",
+        "get_blocked_signals",
         "get_candles",
         "get_market_overview",
         "get_open_positions",
@@ -642,3 +643,75 @@ def test_a_rejected_policy_is_still_journaled(open_client):
         "output_tokens": 3,
         "__cost_usd__": "0",
     }
+
+
+def test_health_probes_are_shared_bounded_and_cached(tmp_path):
+    """Several readers share one round trip, and a slow service cannot hold the page."""
+
+    import asyncio
+
+    from jev_trading.services import container as container_module
+
+    calls = {"market": 0, "jev": 0}
+
+    async def slow_jev() -> dict[str, object]:
+        calls["jev"] += 1
+        await asyncio.sleep(10)
+        return {"healthy": True, "provider": "jev"}
+
+    async def flaky_market() -> dict[str, object]:
+        calls["market"] += 1
+        return {"healthy": calls["market"] == 1, "source": "test"}
+
+    with TestClient(create_app(make_settings(tmp_path))) as api:
+        container = api.app.state.container
+        container._probe_cache.clear()
+        container._probes.clear()
+        object.__setattr__(container.market, "health", flaky_market)
+        object.__setattr__(container.jev, "health", slow_jev)
+
+        async def read() -> list[dict[str, object]]:
+            return await asyncio.gather(
+                container._probe("market", container.market.health),
+                container._probe("market", container.market.health),
+                container._probe("jev", container.jev.health),
+                container._probe("jev", container.jev.health),
+            )
+
+        market_1, market_2, jev_1, jev_2 = api.portal.call(read)
+        # Two readers, one round trip each.
+        assert calls == {"market": 1, "jev": 1}
+        assert market_1["healthy"] is True and market_2 == market_1
+        # The slow service is reported unhealthy instead of hanging the page.
+        assert jev_1["healthy"] is False and jev_1["error"] == "TIMEOUT"
+        assert jev_2 == jev_1
+        # A cached answer is reused until it ages out.
+        cached = api.portal.call(
+            lambda: container._probe("market", container.market.health)
+        )
+        assert cached == market_1
+        assert calls["market"] == 1
+
+
+def test_automation_waits_for_the_next_run_it_advertises(tmp_path):
+    """The countdown the UI shows is the clock the cycle runs on."""
+
+    from datetime import UTC, datetime, timedelta
+
+    with client(tmp_path) as api:
+        container = api.app.state.container
+        automation = api.put(
+            "/api/v1/settings/automation",
+            json={"enabled": True, "interval_seconds": 600},
+        ).json()
+        advertised = datetime.fromisoformat(automation["next_run_at"])
+        # Within a second of the interval the operator chose, not sooner.
+        assert timedelta(minutes=5) < advertised - datetime.now(UTC) <= timedelta(minutes=10)
+
+        remaining, _ = container._cycle_countdown()
+        assert remaining is not None and 0 < remaining <= 600
+
+        # A stopped clock advertises "expired" and the loop must not skip.
+        container._next_cycle_at = datetime.now(UTC) - timedelta(seconds=5)
+        remaining, target = container._cycle_countdown()
+        assert remaining is None and target is not None

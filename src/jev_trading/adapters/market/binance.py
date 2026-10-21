@@ -214,21 +214,32 @@ class BinanceMarketDataProvider:
         ]
 
     async def klines(
-        self, symbol: str, interval: str = "1m", limit: int = 120, warmup: int = 0
+        self,
+        symbol: str,
+        interval: str = "1m",
+        limit: int = 120,
+        warmup: int = 0,
+        start: datetime | None = None,
     ) -> list[Candle]:
         """Closed candles for charting. The last, still-forming bar is dropped.
 
         ``warmup`` extra bars are prepended so a caller can compute an
         indicator over history and then show only the last ``limit`` bars.
+        ``start`` asks for the first bars at or after that instant, which is
+        what an offline replay needs to walk a past window.
         """
 
         if interval not in INTERVALS:
             raise DependencyBadResponseError(f"unsupported kline interval {interval!r}")
         wanted = int(limit) + max(0, int(warmup))
-        rows = await self._request(
-            "/api/v3/klines",
-            {"symbol": symbol, "interval": interval, "limit": min(wanted + 1, 1000)},
-        )
+        params: dict[str, Any] = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": min(wanted + 1, 1000),
+        }
+        if start is not None:
+            params["startTime"] = int(start.timestamp() * 1000)
+        rows = await self._request("/api/v3/klines", params)
         if not isinstance(rows, list):
             raise DependencyBadResponseError("klines response was not a list.")
         now = datetime.now(UTC)
@@ -250,9 +261,7 @@ class BinanceMarketDataProvider:
                     )
                 )
             except (IndexError, TypeError, ValueError) as exc:
-                raise DependencyBadResponseError(
-                    f"klines row malformed for {symbol}"
-                ) from exc
+                raise DependencyBadResponseError(f"klines row malformed for {symbol}") from exc
         return candles[-wanted:]
 
     async def health(self) -> dict[str, object]:

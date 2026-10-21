@@ -112,6 +112,21 @@ async def up_0004_positions_exit_request(conn: AsyncConnection) -> None:
     await _add_column(conn, "positions", "exit_requested_reason", "VARCHAR(32)", null=True)
 
 
+async def up_0005_counterfactual_path(
+    conn: AsyncConnection,
+) -> None:
+    """Counterfactual replays also record the price path and data quality."""
+
+    for name, type_sql in (
+        ("mfe_bps", "NUMERIC(28, 12)"),
+        ("mae_bps", "NUMERIC(28, 12)"),
+        ("holding_seconds", "INTEGER"),
+        ("gap_seconds", "INTEGER"),
+        ("is_synthetic", "BOOLEAN"),
+    ):
+        await _add_column(conn, "counterfactual_outcomes", name, type_sql)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_baseline", "record the pre-migration schema", up_0001_baseline),
     Migration("0002_positions_mode", "positions carry their execution route", up_0002_positions_mode),
@@ -124,6 +139,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         "0004_positions_exit_request",
         "positions record an operator-requested close",
         up_0004_positions_exit_request,
+    ),
+    Migration(
+        "0005_counterfactual_path",
+        "counterfactual replays record MFE/MAE, holding time and data gaps",
+        up_0005_counterfactual_path,
     ),
 )
 
