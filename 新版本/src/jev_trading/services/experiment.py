@@ -552,11 +552,32 @@ def format_report(report: dict[str, Any]) -> str:
     blocked = report["blocked_buys"]
     lines.append(_row("blocked_buys", blocked))
     lines.append("")
+    lines.append("Signal level (each BUY replayed alone, gate ignored):")
+    level = report["signal_level"]
+    for key in ("all", "gate_passed", "gate_blocked"):
+        part = level[key]
+        lines.append(
+            f"- {key}: {part['signals']} signals, {part['wins']} would have won, "
+            f"avg {part['average_net_bps']} bps (stdev {part['stdev_net_bps']})"
+        )
+    for key in ("timeout_path_gate_passed", "timeout_path_gate_blocked"):
+        part = level[key]
+        if part.get("timeouts"):
+            lines.append(
+                f"- {key}: {part['timeouts']} timeouts, MFE avg {part['average_mfe_bps']} bps, "
+                f"MAE avg {part['average_mae_bps']} bps, "
+                f"{part['timeouts_that_peaked_above_40_bps']} peaked above 40 bps"
+            )
+    lines.append("")
     lines.append(f"Blocked BUYs that would have won: {blocked['wins']} / {blocked['trades']}")
     lines.append("Assumptions:")
     for item in report["assumptions"]:
         lines.append(f"- {item}")
     return "\n".join(lines)
+
+
+def _money(value: str) -> str:
+    return f"{Decimal(value):.4f}"
 
 
 def _row(name: str, group: dict[str, Any]) -> str:
@@ -565,7 +586,7 @@ def _row(name: str, group: dict[str, Any]) -> str:
     return (
         f"| {name} | {group['trades']} | "
         f"{'-' if win_rate is None else f'{win_rate}%'} | "
-        f"{group['net_pnl_usdt']} | {group['return_pct']} | "
+        f"{_money(group['net_pnl_usdt'])} | {group['return_pct']} | "
         f"{group['average_net_bps']} | {'-' if pf is None else pf} | "
         f"{group['max_drawdown_pct']} |"
     )
