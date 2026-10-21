@@ -36,6 +36,7 @@ from .models import (
     AuditEventRow,
     BacktestRunRow,
     BalanceSnapshotRow,
+    CounterfactualRow,
     FillRow,
     JevEvaluationRow,
     MarketSnapshotRow,
@@ -572,6 +573,76 @@ class Repository:
             session.add(row)
             await session.flush()
             return row
+
+    async def get_market_snapshot(self, snapshot_id: str) -> MarketSnapshotRow | None:
+        async with self.db.session() as session:
+            return await session.get(MarketSnapshotRow, snapshot_id)
+
+    async def list_rejected_signals_without_counterfactual(
+        self, *, since: datetime, until: datetime, limit: int = 60
+    ) -> list[SignalRow]:
+        """Blocked signals that have no replayed outcome yet, oldest first."""
+
+        async with self.db.session() as session:
+            statement = (
+                select(SignalRow)
+                .outerjoin(
+                    CounterfactualRow, CounterfactualRow.signal_id == SignalRow.id
+                )
+                .where(
+                    SignalRow.state == SignalState.REJECTED.value,
+                    SignalRow.created_at >= since,
+                    SignalRow.created_at <= until,
+                    CounterfactualRow.id.is_(None),
+                )
+                .order_by(SignalRow.created_at)
+                .limit(limit)
+            )
+            return list((await session.execute(statement)).scalars())
+
+    async def insert_counterfactual(self, **fields: Any) -> CounterfactualRow:
+        """One replay row per signal; a repeated call returns the first one."""
+
+        signal_id = fields["signal_id"]
+        async with self.db.session() as session:
+            existing = (
+                await session.execute(
+                    select(CounterfactualRow).where(
+                        CounterfactualRow.signal_id == signal_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing
+            row = CounterfactualRow(**fields)
+            session.add(row)
+            try:
+                await session.flush()
+            except IntegrityError:
+                await session.rollback()
+                existing = (
+                    await session.execute(
+                        select(CounterfactualRow).where(
+                            CounterfactualRow.signal_id == signal_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    raise
+                return existing
+            return row
+
+    async def list_counterfactuals(self, limit: int = 50) -> list[CounterfactualRow]:
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(CounterfactualRow)
+                        .order_by(CounterfactualRow.decided_at.desc())
+                        .limit(limit)
+                    )
+                ).scalars()
+            )
 
     async def list_market_snapshots(self, limit: int = 100) -> list[MarketSnapshotRow]:
         async with self.db.session() as session:

@@ -552,6 +552,7 @@ def test_agent_journal_records_what_the_strategy_layer_decided(open_client):
     assert body["provider"] == "simulated"
     assert sorted(body["tools"]) == [
         "get_account_state",
+        "get_blocked_signals",
         "get_candles",
         "get_market_overview",
         "get_open_positions",

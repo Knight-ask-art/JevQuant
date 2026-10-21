@@ -16,6 +16,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -284,6 +285,40 @@ class SignalEventRow(Base):
     state: Mapped[str] = mapped_column(String(32))
     detail_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class CounterfactualRow(Base):
+    """What a blocked buy would have returned under the exit rules in force.
+
+    Rejected signals never reach the order path, so the only outcomes the
+    system could otherwise observe are the ones the gate let through. One row
+    per blocked signal, written once the full holding window has elapsed; the
+    notional is a replay assumption, never a real position.
+    """
+
+    __tablename__ = "counterfactual_outcomes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    signal_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("signals.id"), unique=True, index=True
+    )
+    policy_id: Mapped[str] = mapped_column(String(36), index=True)
+    symbol: Mapped[str] = mapped_column(String(24), index=True)
+    decided_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    entry_choice: Mapped[str] = mapped_column(String(16))
+    entry_probability: Mapped[float] = mapped_column(Float)
+    policy_fit: Mapped[float] = mapped_column(Float)
+    quality_score: Mapped[float] = mapped_column(Float)
+    blocked_rule: Mapped[str] = mapped_column(String(32))
+    assumed_notional_usdt: Mapped[Decimal] = mapped_column(MONEY)
+    entry_price: Mapped[Decimal] = mapped_column(MONEY)
+    exit_price: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
+    exit_reason: Mapped[str] = mapped_column(String(24))
+    net_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    pnl_usdt: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
+    horizon_seconds: Mapped[int] = mapped_column(Integer)
+    method: Mapped[str] = mapped_column(String(48))
+    evaluated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class TradeIntentRow(Base):

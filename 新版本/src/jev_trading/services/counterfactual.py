@@ -1,0 +1,253 @@
+"""Counterfactual outcomes for buy signals the Jev gate blocked.
+
+A rejected signal leaves no ledger row, so the only outcomes the system can
+observe are the ones the gate admitted. That makes "is the gate too strict?"
+unanswerable from the record: a blocked idea that would have paid is
+indistinguishable from one that would have stopped out.
+
+This service replays each blocked buy against the candles that followed, under
+the exit rules its policy actually carried, and stores the result. It never
+places an order and never touches the trading path.
+
+The replay is deliberately pessimistic, so a finding of "the gate cost us
+money" cannot come from optimistic assumptions:
+
+- entry pays the ask plus entry slippage, at the snapshot captured for the
+  signal;
+- only bars after the signal minute are examined, so the bar in which the
+  entry would have happened can never be used to reach the target;
+- when a single 1m bar touches both the stop and the target, the stop wins;
+- every exit pays exit slippage and both sides pay the taker fee.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Any
+
+from ..domain.market import Candle
+from ..domain.money import ZERO
+from ..domain.policy import EffectivePolicy, ExitDefaults
+from .features import closed_candles
+
+SIMULATION_METHOD = "1m-conservative-v1"
+#: Binance returns at most 1000 one-minute bars, so a signal older than this
+#: can no longer be replayed faithfully.
+LOOKBACK = timedelta(hours=14)
+MAX_CANDLES = 1000
+
+
+@dataclass(frozen=True)
+class Replay:
+    entry_price: Decimal
+    exit_price: Decimal
+    exit_reason: str
+    net_bps: Decimal
+    pnl_usdt: Decimal
+    exit_time: datetime | None = None
+
+
+def simulate(
+    *,
+    candles: Sequence[Candle],
+    entry_price: Decimal,
+    exit_rules: ExitDefaults,
+    horizon_end: datetime,
+    taker_fee_bps: Decimal,
+    exit_slippage_bps: Decimal,
+    notional: Decimal,
+) -> Replay | None:
+    """Replay one long entry over ``candles``; ``None`` when they prove nothing.
+
+    ``candles`` must already be restricted to the bars that follow the entry
+    minute. The result is expressed net of fees and exit slippage.
+    """
+
+    if not candles or entry_price <= ZERO:
+        return None
+    slippage = exit_slippage_bps / Decimal("10000")
+    stop_price = entry_price * (Decimal("1") - exit_rules.stop_loss_bps / Decimal("10000"))
+    target_price = entry_price * (Decimal("1") + exit_rules.take_profit_bps / Decimal("10000"))
+
+    exit_price: Decimal | None = None
+    exit_reason = "timeout"
+    exit_time: datetime | None = None
+    last_close: Decimal | None = None
+    for candle in candles:
+        if candle.close_time > horizon_end:
+            break
+        last_close = Decimal(str(candle.close))
+        low = Decimal(str(candle.low))
+        high = Decimal(str(candle.high))
+        if low <= stop_price:
+            # One bar can touch both levels; assuming the stop removes any
+            # benefit of hindsight from intra-bar ordering we cannot see.
+            exit_price = stop_price * (Decimal("1") - slippage)
+            exit_reason = "stop_loss"
+            exit_time = candle.close_time
+            break
+        if high >= target_price:
+            exit_price = target_price * (Decimal("1") - slippage)
+            exit_reason = "take_profit"
+            exit_time = candle.close_time
+            break
+    if exit_price is None:
+        if last_close is None:
+            return None
+        exit_price = last_close * (Decimal("1") - slippage)
+        exit_time = candles[-1].close_time
+
+    gross_bps = (exit_price / entry_price - Decimal("1")) * Decimal("10000")
+    net_bps = gross_bps - taker_fee_bps * Decimal("2")
+    pnl = notional * net_bps / Decimal("10000")
+    return Replay(
+        entry_price=entry_price,
+        exit_price=exit_price,
+        exit_reason=exit_reason,
+        net_bps=net_bps,
+        pnl_usdt=pnl,
+        exit_time=exit_time,
+    )
+
+
+def blocked_rule(policy: EffectivePolicy, score: dict[str, Any]) -> str:
+    """Which leg of the gate held this buy signal shut."""
+
+    gate = policy.jev_gate
+    if str(score.get("entry_choice")) != gate.entry_choice.value:
+        return "entry_choice"
+    if float(score.get("entry_probability") or 0.0) < gate.min_choice_probability:
+        return "min_choice_probability"
+    if float(score.get("policy_fit") or 0.0) < gate.min_policy_fit:
+        return "min_policy_fit"
+    if float(score.get("quality_score") or 0.0) < gate.min_quality_score:
+        return "min_quality_score"
+    return "unknown"
+
+
+class CounterfactualService:
+    """Replays blocked buy signals once their holding window has elapsed."""
+
+    def __init__(self, *, settings, repo, market, audit: Any | None = None) -> None:
+        self.settings = settings
+        self.repo = repo
+        self.market = market
+        self.audit = audit
+
+    async def evaluate_pending(
+        self,
+        now: datetime | None = None,
+        *,
+        available_quote_usdt: Decimal | None = None,
+    ) -> int:
+        """Write any outcomes that are now fully determined. Returns the count.
+
+        Per-signal failures are swallowed and retried next cycle: a replay that
+        cannot fetch candles must never interrupt trading or lose the record
+        permanently.
+        """
+
+        now = now or datetime.now(UTC)
+        candidates = await self.repo.list_rejected_signals_without_counterfactual(
+            since=now - LOOKBACK, until=now
+        )
+        written = 0
+        for signal in candidates:
+            try:
+                row = await self._evaluate(signal, now, available_quote_usdt)
+            except Exception as exc:  # noqa: BLE001 - replay is best-effort
+                if self.audit is not None:
+                    await self.audit.record(
+                        "counterfactual.error",
+                        "signal",
+                        signal.id,
+                        {"symbol": signal.symbol, "error": type(exc).__name__},
+                    )
+                continue
+            if row is not None:
+                written += 1
+        return written
+
+    async def _evaluate(
+        self, signal: Any, now: datetime, available_quote_usdt: Decimal | None
+    ) -> Any | None:
+        score = dict(signal.score_json or {})
+        if str(score.get("entry_choice")) != "buy":
+            return None
+
+        policy_row = await self.repo.get_policy_by_policy_id(signal.policy_id)
+        if policy_row is None:
+            return None
+        policy = EffectivePolicy.model_validate(policy_row.effective_json)
+        symbol_policy = policy.symbol_policy(signal.symbol)
+        if symbol_policy is None:
+            return None
+
+        horizon_end = signal.created_at + timedelta(
+            seconds=policy.exit_defaults.max_holding_seconds
+        )
+        if horizon_end > now:
+            # The replay would still be guessing at the tail of the window.
+            return None
+
+        snapshot = await self.repo.get_market_snapshot(signal.snapshot_id)
+        if snapshot is None:
+            return None
+        rules = await self.market.filters(signal.symbol)
+
+        requested = min(
+            symbol_policy.max_position_notional_usdt,
+            self.settings.max_position_notional_usdt,
+        )
+        if available_quote_usdt is not None:
+            requested = min(
+                requested,
+                available_quote_usdt * self.settings.entry_budget_fraction,
+            )
+        notional = requested if requested >= rules.min_notional else ZERO
+
+        entry_price = snapshot.ask * (Decimal("1") + self.settings.slippage_bps / Decimal("10000"))
+        entry_price = rules.quantize_price(entry_price)
+
+        candles = await self.market.klines(signal.symbol, interval="1m", limit=MAX_CANDLES)
+        # Bars that opened before the signal can carry price action from
+        # before the entry existed; start with the first full minute after it.
+        window = [
+            candle
+            for candle in closed_candles(candles, now)
+            if candle.open_time > signal.created_at and candle.close_time <= horizon_end
+        ]
+        replay = simulate(
+            candles=window,
+            entry_price=entry_price,
+            exit_rules=policy.exit_defaults,
+            horizon_end=horizon_end,
+            taker_fee_bps=rules.taker_fee_bps,
+            exit_slippage_bps=self.settings.exit_slippage_bps,
+            notional=notional,
+        )
+        if replay is None:
+            return None
+
+        return await self.repo.insert_counterfactual(
+            signal_id=signal.id,
+            policy_id=signal.policy_id,
+            symbol=signal.symbol,
+            decided_at=signal.created_at,
+            entry_choice=str(score.get("entry_choice")),
+            entry_probability=float(score.get("entry_probability") or 0.0),
+            policy_fit=float(score.get("policy_fit") or 0.0),
+            quality_score=float(score.get("quality_score") or 0.0),
+            blocked_rule=blocked_rule(policy, score),
+            assumed_notional_usdt=notional,
+            entry_price=replay.entry_price,
+            exit_price=replay.exit_price,
+            exit_reason=replay.exit_reason,
+            net_bps=replay.net_bps,
+            pnl_usdt=replay.pnl_usdt if notional > ZERO else None,
+            horizon_seconds=policy.exit_defaults.max_holding_seconds,
+            method=SIMULATION_METHOD,
+        )

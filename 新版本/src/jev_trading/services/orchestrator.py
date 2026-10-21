@@ -172,9 +172,11 @@ class TradingOrchestrator:
         broker: EventBroker,
         account_id: str,
         budgets: Any | None = None,
+        counterfactual: Any | None = None,
     ) -> None:
         self.settings = settings
         self.budgets = budgets
+        self.counterfactual = counterfactual
         self.repo = repo
         self.policy_service = policy_service
         self.market = market
@@ -415,6 +417,20 @@ class TradingOrchestrator:
             daily_realized_pnl_usdt=daily,
             drawdown_pct=final_account.drawdown_pct,
         )
+
+        if self.counterfactual is not None:
+            # Reads only: replays blocked buys that have now played out. A
+            # failure here is audited inside the service and never blocks
+            # the cycle result.
+            try:
+                replayed = await self.counterfactual.evaluate_pending(
+                    datetime.now(UTC),
+                    available_quote_usdt=final_account.available_quote_usdt,
+                )
+                if replayed:
+                    notes.append(f"counterfactual outcomes recorded: {replayed}")
+            except Exception:  # noqa: BLE001 - data collection only
+                notes.append("counterfactual replay failed")
 
         finished = datetime.now(UTC)
         finished_result = CycleResult(
@@ -666,6 +682,25 @@ class TradingOrchestrator:
     ) -> None:
         now = datetime.now(UTC)
         symbol = symbol_policy.symbol
+        # Pace before a signal exists: a symbol Jev may not be asked about
+        # again yet has not produced a signal, and creating one only to leave
+        # it dangling in a state the machine cannot express is worse than not
+        # creating it at all.
+        paused = await self._jev_pace_wait(symbol, now)
+        if paused > 0:
+            counters["entries_blocked"] += 1
+            notes.append(f"{symbol}: Jev paced, next call in {int(paused)}s")
+            await self.audit.record(
+                "signal.paced",
+                "symbol",
+                symbol,
+                {
+                    "reason": "jev_candle_pacing",
+                    "min_interval_seconds": self.settings.jev_min_call_interval_seconds,
+                    "wait_seconds": int(paused),
+                },
+            )
+            return
         signal = await self.repo.create_signal(
             symbol=symbol,
             policy_id=str(policy.policy_id),
@@ -696,26 +731,6 @@ class TradingOrchestrator:
             # Jev error).
             if self.budgets is not None:
                 await self.budgets.check_jev()
-            paused = await self._jev_pace_wait(symbol, now)
-            if paused > 0:
-                await self.repo.transition_signal(
-                    signal.id,
-                    SignalState.HOLD,
-                    {"reason": "jev_candle_pacing", "wait_seconds": int(paused)},
-                )
-                counters["entries_blocked"] += 1
-                await self.audit.record(
-                    "signal.paced",
-                    "signal",
-                    signal.id,
-                    {
-                        "symbol": symbol,
-                        "reason": "jev_candle_pacing",
-                        "min_interval_seconds": self.settings.jev_min_call_interval_seconds,
-                        "wait_seconds": int(paused),
-                    },
-                )
-                return
             jev_result = await self.jev.evaluate(state, questions, signal_id=signal.id)
         except AppError as exc:
             await self.repo.insert_jev_evaluation(

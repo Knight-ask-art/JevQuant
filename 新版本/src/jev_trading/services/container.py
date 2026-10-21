@@ -52,6 +52,7 @@ from .events import EventBroker
 from .features import build_features
 from .market_service import MarketService
 from .modes import ModeManager
+from .counterfactual import CounterfactualService
 from .orchestrator import TradingOrchestrator
 from .policy_service import PolicyService, policy_display_status
 
@@ -226,6 +227,12 @@ class AppContainer:
         )
         self.account_id = account.id
         self.modes.account_id = account.id
+        self.counterfactual = CounterfactualService(
+            settings=self.settings,
+            repo=self.repo,
+            market=self.market,
+            audit=self.audit,
+        )
         self.orchestrator = TradingOrchestrator(
             settings=self.settings,
             repo=self.repo,
@@ -240,6 +247,7 @@ class AppContainer:
             broker=self.broker,
             account_id=self.account_id,
             budgets=self.budgets,
+            counterfactual=self.counterfactual,
         )
         await self.audit.record(
             "system.started",
