@@ -367,8 +367,6 @@ class ExperimentRunner:
                 blocked_rule=None,
                 group=group.name,
             )
-            if trade is not None:
-                signal_level_rows.append(trade.as_dict())
             return trade
 
         busy_until: dict[str, datetime] = {}
@@ -388,33 +386,17 @@ class ExperimentRunner:
                     continue
                 group.trades.append(trade)
                 busy_until[group.name] = trade.exit_time
-            if not gate_passed:
-                # Blocked set: judged one signal at a time, no overlap filter.
-                policy = await policy_for(row.policy_id)
-                snapshot = await self.repo.get_market_snapshot(row.snapshot_id)
-                if policy is not None and snapshot is not None and row.symbol in bars:
-                    horizon_end = row.created_at + timedelta(
-                        seconds=policy.exit_defaults.max_holding_seconds
-                    )
-                    if horizon_end <= end:
-                        entry_price = snapshot.ask * (
-                            Decimal("1") + self.settings.slippage_bps / Decimal("10000")
-                        )
-                        trade = self._replay(
-                            symbol=row.symbol,
-                            bars=bars[row.symbol],
-                            entered_at=row.created_at,
-                            entry_price=entry_price,
-                            exits=policy.exit_defaults,
-                            notional=self._notional(policy, row.symbol),
-                            signal_id=row.id,
-                            gate="blocked",
-                            probability=float(row.score_json.get("entry_probability") or 0.0),
-                            blocked_rule=None,
-                            group="blocked_buys",
-                        )
-                        if trade is not None:
-                            blocked.append(trade)
+        # Signal level, second pass: every BUY judged on its own, with no
+        # one-position rule. This is what the blocked set means, and it is the
+        # only view in which Jev's selection can be compared like for like --
+        # the portfolio groups above skip whatever arrives mid-trade.
+        for row in sorted(buys, key=lambda item: item.created_at):
+            trade = await replay_signal(row, groups["jev_all_buys"])
+            if trade is None:
+                continue
+            signal_level_rows.append(trade.as_dict())
+            if row.state == "REJECTED":
+                blocked.append(trade)
 
         baseline = await self._baseline(spec, start, end, bars)
         return {
@@ -457,7 +439,10 @@ class ExperimentRunner:
                 **baseline,
             },
             "blocked_buys": {
-                "description": "blocked BUYs replayed independently",
+                "description": (
+                    "blocked BUYs, each replayed on its own (same rows as "
+                    "signal_level.gate_blocked)"
+                ),
                 **summarize(blocked, spec.starting_equity_usdt),
             },
             "signal_level": {
