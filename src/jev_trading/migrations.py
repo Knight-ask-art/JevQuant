@@ -146,6 +146,25 @@ async def up_0006_counterfactual_timing(
         await _add_column(conn, "counterfactual_outcomes", name, type_sql)
 
 
+async def up_0007_fill_fee_amount(
+    conn: AsyncConnection,
+) -> None:
+    """Fills keep the commission in the asset the venue charged it in.
+
+    ``fee_quote`` alone loses a spot buy's fee: the venue takes it out of the
+    base asset, so a reader that only understands quote fees saw zero and the
+    ledger understated costs by one side of the round trip. Existing rows are
+    backfilled with ``fee_quote``, which is the correct amount whenever that
+    column was populated.
+    """
+
+    await _add_column(conn, "fills", "fee_amount", "NUMERIC(28, 12)")
+    if await _has_column(conn, "fills", "fee_amount"):
+        await conn.execute(
+            text("UPDATE fills SET fee_amount = fee_quote WHERE fee_amount IS NULL")
+        )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_baseline", "record the pre-migration schema", up_0001_baseline),
     Migration("0002_positions_mode", "positions carry their execution route", up_0002_positions_mode),
@@ -168,6 +187,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         "0006_counterfactual_timing",
         "counterfactual replays record time-to-MFE/MAE and the cost charged",
         up_0006_counterfactual_timing,
+    ),
+    Migration(
+        "0007_fill_fee_amount",
+        "fills keep the commission in the asset the venue charged it in",
+        up_0007_fill_fee_amount,
     ),
 )
 

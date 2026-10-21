@@ -41,6 +41,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from ..domain.costs import CostModel
 from ..domain.enums import SignalState
 from ..domain.market import Candle
 from ..domain.money import ZERO
@@ -222,6 +223,7 @@ class CounterfactualService:
 
     def __init__(self, *, settings, repo, market, audit: Any | None = None) -> None:
         self.settings = settings
+        self.cost = CostModel.from_settings(settings)
         self.repo = repo
         self.market = market
         self.audit = audit
@@ -342,7 +344,7 @@ class CounterfactualService:
             )
         notional = requested if requested >= rules.min_notional else ZERO
 
-        entry_price = snapshot.ask * (Decimal("1") + self.settings.slippage_bps / Decimal("10000"))
+        entry_price = self.cost.entry_price(snapshot.ask)
         entry_price = rules.quantize_price(entry_price)
 
         # Ask for the window itself: the provider returns the *latest* 1000
@@ -359,7 +361,7 @@ class CounterfactualService:
             exit_rules=policy.exit_defaults,
             horizon_end=horizon_end,
             taker_fee_bps=rules.taker_fee_bps,
-            exit_slippage_bps=self.settings.exit_slippage_bps,
+            exit_slippage_bps=self.cost.exit_slippage_bps,
             notional=notional,
         )
         if replay is None:

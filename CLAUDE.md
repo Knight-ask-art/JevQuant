@@ -70,6 +70,10 @@ $env:PYTHONPATH="src"
   per-symbol Jev evaluation → gate → intent → risk → dispatch → exits → PnL.
 - `services/regime_gate.py` — deterministic cost gate: expected move over the policy's
   holding window vs the round trip. Records its verdict on every signal; can refuse one.
+- `domain/costs.py` — the one definition of a round trip (fees + impact), and the
+  pricing of a venue commission into the quote asset.
+- `services/cost_report.py` — realised fees/slippage from the fills, next to the model.
+  Read-only; see `docs/architecture.md`.
 - `services/counterfactual.py` — replays **blocked** buys over 1m bars so the gate can be
   judged on outcomes. Read-only and best-effort; see `docs/architecture.md`.
 - `services/experiment.py` + `experiment.py` — offline A/B/C comparison runner

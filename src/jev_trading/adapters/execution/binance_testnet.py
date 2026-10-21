@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import httpx
 
+from ...domain.costs import quote_commission
 from ...domain.enums import IntentType, OrderStatus, SignalState
 from ...domain.errors import (
     DependencyBadResponseError,
@@ -166,10 +167,14 @@ class BinanceTestnetExecutionAdapter:
             params["timeInForce"] = "GTC"
             params["price"] = canonical_str(approved.approved_limit_price or market.ask)
         data = await self._request("POST", "/api/v3/order", params)
-        return await self._record_response(approved, order_id, data)
+        return await self._record_response(approved, order_id, data, rules)
 
     async def _record_response(
-        self, approved: ApprovedTradeIntent, order_id: str, data: dict[str, Any]
+        self,
+        approved: ApprovedTradeIntent,
+        order_id: str,
+        data: dict[str, Any],
+        rules: SymbolFilters,
     ) -> ExecutionReceipt:
         raw_status = str(data.get("status", "")).upper()
         status = STATUS_MAP.get(raw_status)
@@ -186,13 +191,24 @@ class BinanceTestnetExecutionAdapter:
                 commission = Decimal(str(item.get("commission", "0")))
             except Exception:  # noqa: BLE001
                 raise ReconciliationRequiredError("Binance Testnet fill was malformed.")
-            fee_quote = (
-                commission
-                if str(item.get("commissionAsset", "")).upper() == "USDT"
-                else ZERO
+            # A spot buy is charged in the base asset, a sell in the quote;
+            # recording only the quote case silently zeroed every entry fee.
+            fee = quote_commission(
+                amount=commission,
+                asset=str(item.get("commissionAsset", "")),
+                price=price,
+                symbol=approved.intent.symbol,
+                base_asset=rules.base_asset,
+                quote_asset=rules.quote_asset,
             )
             fills.append(
-                ExecutionFill(qty=qty, price=price, fee_quote=fee_quote, fee_asset="USDT")
+                ExecutionFill(
+                    qty=qty,
+                    price=price,
+                    fee_quote=fee.quote_value or ZERO,
+                    fee_asset=fee.asset or rules.quote_asset or "USDT",
+                    fee_amount=fee.amount,
+                )
             )
         executed_qty = Decimal(str(data.get("executedQty", "0")))
         cummulative_quote = Decimal(str(data.get("cummulativeQuoteQty", "0")))
@@ -205,7 +221,7 @@ class BinanceTestnetExecutionAdapter:
                     qty=executed_qty,
                     price=avg_price,
                     fee_quote=ZERO,
-                    fee_asset="USDT",
+                    fee_asset=rules.quote_asset or "USDT",
                 )
             ]
         order, position = await self.repo.record_execution(
@@ -304,7 +320,7 @@ class BinanceTestnetExecutionAdapter:
                 notes.append(f"{order.id}: filled quantity without a quote amount")
                 continue
             try:
-                fee_quote = await self._ingest_fills(order.id, data)
+                fee_quote = await self._ingest_fills(order.id, data, order.symbol)
                 # The account ledger must use the same weighted average the
                 # order row shows, otherwise reconciliation PnL is inconsistent.
                 fills = await self.repo.list_fills_for_order(order.id)
@@ -340,8 +356,15 @@ class BinanceTestnetExecutionAdapter:
             notes=notes,
         )
 
-    async def _ingest_fills(self, order_id: str, data: dict[str, Any]) -> Decimal:
-        """Persist the venue's individual trades exactly once; return their fees."""
+    async def _ingest_fills(
+        self, order_id: str, data: dict[str, Any], symbol: str
+    ) -> Decimal:
+        """Persist the venue's individual trades exactly once; return their fees.
+
+        Only fills the system can price in the quote asset contribute to the
+        returned total; an unpriced one (BNB) is still stored, with its amount
+        and asset, so the cost report can say how much is missing.
+        """
 
         trades = data.get("fills")
         if not isinstance(trades, list):
@@ -358,20 +381,24 @@ class BinanceTestnetExecutionAdapter:
                     "Binance Testnet fill list is not the expected schema."
                 )
             commission = Decimal(str(trade.get("commission", "0")))
-            fee_quote = (
-                commission
-                if str(trade.get("commissionAsset", "")).upper() == "USDT"
-                else ZERO
+            price = Decimal(str(trade.get("price", "0")))
+            fee = quote_commission(
+                amount=commission,
+                asset=str(trade.get("commissionAsset", "")),
+                price=price,
+                symbol=symbol,
             )
             trade_id = trade.get("id") or trade.get("tradeId") or f"{order_id}:{index}"
             await self.repo.add_exchange_fill(
                 order_id=order_id,
                 trade_id=str(trade_id),
                 qty=Decimal(str(trade.get("qty", "0"))),
-                price=Decimal(str(trade.get("price", "0"))),
-                fee_quote=fee_quote,
+                price=price,
+                fee_quote=fee.quote_value or ZERO,
+                fee_asset=fee.asset or "USDT",
+                fee_amount=fee.amount,
             )
-            total_fee += fee_quote
+            total_fee += fee.quote_value or ZERO
         return total_fee
 
     async def fetch_balances(self) -> BalanceView | None:

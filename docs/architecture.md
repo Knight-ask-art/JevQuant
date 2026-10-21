@@ -148,6 +148,33 @@ If the resulting quantity or notional cannot satisfy `LOT_SIZE` / `MIN_NOTIONAL`
 intent is rejected with `REJECT_EXIT_MIN_NOTIONAL`. A position the system could not legally
 sell is never opened.
 
+## Cost model
+
+What a round trip costs is defined once, in `domain/costs.py`, and consumed by the
+entry gate, the replay, the experiment runner and the cost report. Before that, the
+fee lived in three places with three defaults and the analysis could disagree with
+the execution path about the very thing it was judging.
+
+```text
+round_trip_bps = 2 x fee_bps + entry_slippage_bps + exit_slippage_bps   (30 by default)
+entry_price    = ask  x (1 + entry_slippage)
+exit_price     = bid  x (1 - exit_slippage)
+```
+
+Slippage here is impact **beyond the quoted touch**; the spread is already inside the
+prices, so charging it again would double-count it.
+
+Fees come back from the venue with each fill, and the asset they are charged in
+matters: Binance spot takes a **buy's** commission out of the base asset and a sell's
+out of the quote. `fills.fee_amount` + `fills.fee_asset` keep the commission as
+charged; `fee_quote` is its value in the quote asset. A fee paid in an asset with no
+quote (BNB) stays unpriced rather than becoming zero — otherwise realised P&L is
+better than reality by exactly one side of the round trip.
+
+`services/cost_report.py` compares the model with the fills (median fee per side,
+slippage against the decision quote) and names a hypothesis; it never changes the
+model itself. See the runbook for the command.
+
 ## Regime gate
 
 The Jev gate answers "is this candidate good"; it says nothing about whether the move

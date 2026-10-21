@@ -127,6 +127,23 @@ Drift is a signal, not an instruction: the ledger is never rewritten from a bala
 difference. Investigate with `POST /api/v1/execution/reconcile`; if that does not
 explain the gap, compare the fills manually before touching anything.
 
+## Cost reports
+
+Two read-only reports answer "where did the money go" without touching policy:
+
+```
+python -m jev_trading.cost_report --days 30      # realised fees/slippage vs the model
+python -m jev_trading.exit_diagnostics --limit 500
+```
+
+`cost_report` prices every venue fill (`fee_quote` over the traded notional) and
+measures slippage against the snapshot the decision used. Paper fills are excluded:
+their commission is the model's own arithmetic echoed back. A fee charged in an asset
+with no quote (BNB) is counted as *unpriced*, never as free — the hypothesis says so.
+
+The report does not change `JEV_FEE_BPS` / slippage settings. Use it to decide, then
+change them deliberately.
+
 ## Schema migrations
 
 `jev migrate` (or `python -m jev_trading.migrations`, or starting the service) applies
@@ -140,6 +157,7 @@ pending migrations in order and records them in `schema_migrations`:
 | `0004_positions_exit_request` | adds the exit-request bookkeeping columns |
 | `0005_counterfactual_path` | adds `mfe_bps` / `mae_bps` / `holding_seconds` / `gap_seconds` / `is_synthetic` to `counterfactual_outcomes` |
 | `0006_counterfactual_timing` | adds `time_to_mfe_seconds` / `time_to_mae_seconds` / `round_trip_cost_bps` |
+| `0007_fill_fee_amount` | adds `fills.fee_amount` so a fee charged in the base asset or BNB is not lost; existing rows are backfilled from `fee_quote` |
 
 - `jev migrate --dry-run` lists pending versions without changing anything.
 - A database is upgraded in place; the ledger rows are preserved.

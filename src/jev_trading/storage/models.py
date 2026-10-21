@@ -425,6 +425,12 @@ class FillRow(Base):
     price: Mapped[Decimal] = mapped_column(MONEY)
     fee_quote: Mapped[Decimal] = mapped_column(MONEY)
     fee_asset: Mapped[str] = mapped_column(String(16), default="USDT")
+    # The commission exactly as the venue charged it, in ``fee_asset``.
+    # ``fee_quote`` is its value in the quote asset; the two differ for a spot
+    # buy, whose fee is taken out of the base asset. Keeping both means a fee
+    # that cannot be priced (BNB) is visible as a number instead of being
+    # rounded to zero in the ledger.
+    fee_amount: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
     __table_args__ = (

@@ -41,6 +41,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from ..domain.costs import CostModel
 from ..domain.market import Candle
 from ..domain.money import ZERO, canonical_str
 from ..domain.policy import EffectivePolicy, ExitDefaults
@@ -225,6 +226,7 @@ def summarize_signal_level(
 class ExperimentRunner:
     def __init__(self, *, settings, repo: Repository, market: MarketService) -> None:
         self.settings = settings
+        self.cost = CostModel.from_settings(settings)
         self.repo = repo
         self.market = market
 
@@ -265,8 +267,8 @@ class ExperimentRunner:
             entry_price=entry_price,
             exit_rules=exits,
             horizon_end=horizon_end,
-            taker_fee_bps=Decimal("10"),
-            exit_slippage_bps=self.settings.exit_slippage_bps,
+            taker_fee_bps=self.cost.fee_bps,
+            exit_slippage_bps=self.cost.exit_slippage_bps,
             notional=notional,
         )
         if replay is None or replay.exit_time is None:
@@ -345,9 +347,7 @@ class ExperimentRunner:
             if horizon_end > end:
                 skipped_young += 1
                 return None
-            entry_price = snapshot.ask * (
-                Decimal("1") + self.settings.slippage_bps / Decimal("10000")
-            )
+            entry_price = self.cost.entry_price(snapshot.ask)
             trade = self._replay(
                 symbol=row.symbol,
                 bars=symbol_bars,
@@ -499,8 +499,8 @@ class ExperimentRunner:
                     skipped_overlap += 1
                     continue
                 exits = exits_at(entered_at, symbol)
-                entry_price = Decimal(str(hourly[index].close)) * (
-                    Decimal("1") + self.settings.slippage_bps / Decimal("10000")
+                entry_price = self.cost.entry_price(
+                    Decimal(str(hourly[index].close))
                 )
                 trade = self._replay(
                     symbol=symbol,

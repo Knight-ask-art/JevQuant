@@ -368,3 +368,55 @@ async def test_fills_are_written_after_their_order_under_foreign_keys(
         assert len(fills) == 1
     finally:
         await db.dispose()
+
+
+async def test_a_base_asset_commission_is_priced_instead_of_dropped(repo):
+    """Binance charges a spot buy in the base asset, a sell in the quote.
+
+    The parser kept only quote commissions, so an entry fee paid in BTC was
+    recorded as zero -- understating every entry by one side of the round trip
+    and making realised P&L look better than it was.
+    """
+
+    order_id = str(uuid4())
+    async with repo.db.session() as session:
+        session.add(
+            OrderRow(
+                id=order_id,
+                intent_id=str(uuid4()),
+                exchange_order_id="3003",
+                symbol="BTCUSDT",
+                side="BUY",
+                order_type="MARKET",
+                qty=Decimal("0.1"),
+                price=None,
+                status="FILLED",
+                filled_qty=Decimal("0.1"),
+                avg_fill_price=Decimal("60000"),
+                fee_quote=ZERO,
+                mode="testnet",
+                is_simulated=True,
+            )
+        )
+        await session.commit()
+    adapter = make_adapter(repo, [])
+    data = {
+        "fills": [
+            {
+                "tradeId": 5,
+                "price": "60000",
+                "qty": "0.1",
+                "commission": "0.001",
+                "commissionAsset": "BTC",
+            }
+        ]
+    }
+
+    total = await adapter._ingest_fills(order_id, data, "BTCUSDT")
+
+    fills = await repo.list_fills_for_order(order_id)
+    assert len(fills) == 1
+    assert fills[0].fee_asset == "BTC"
+    assert fills[0].fee_amount == Decimal("0.001")
+    assert fills[0].fee_quote == Decimal("60")
+    assert total == Decimal("60")

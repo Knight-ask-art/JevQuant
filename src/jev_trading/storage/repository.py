@@ -111,6 +111,33 @@ class ExecutionFill:
     price: Decimal
     fee_quote: Decimal
     fee_asset: str = "USDT"
+    #: The commission in ``fee_asset``, as the venue charged it. Defaults to
+    #: the quote value for backends that only know that (paper).
+    fee_amount: Decimal = ZERO
+
+
+@dataclass(frozen=True)
+class RealisedFill:
+    """A fill, the route it belongs to, and the price it was judged against.
+
+    The reference price is the snapshot the entry (or exit) decision was made
+    on, so slippage can be measured as "what we paid" against "what we saw",
+    not against a later quote that the decision could not have used.
+    """
+
+    fill_id: str
+    order_id: str
+    symbol: str
+    side: str
+    intent_type: str
+    mode: str
+    qty: Decimal
+    price: Decimal
+    fee_quote: Decimal
+    fee_asset: str
+    fee_amount: Decimal
+    filled_at: datetime
+    reference_price: Decimal | None
 
 
 class Repository:
@@ -1152,6 +1179,11 @@ class Repository:
                         price=fill.price,
                         fee_quote=fill.fee_quote,
                         fee_asset=fill.fee_asset,
+                        fee_amount=(
+                            fill.fee_amount
+                            if fill.fee_amount > ZERO
+                            else fill.fee_quote
+                        ),
                     )
                 )
             session.add(
@@ -1312,6 +1344,50 @@ class Repository:
                 ).scalars()
             )
 
+    async def list_realised_fills(
+        self, *, since: datetime | None = None, limit: int = 500
+    ) -> list[RealisedFill]:
+        """Fills with the context needed to price what they actually cost."""
+
+        stmt = (
+            select(FillRow, OrderRow, TradeIntentRow, SignalRow, MarketSnapshotRow)
+            .join(OrderRow, FillRow.order_id == OrderRow.id)
+            .join(TradeIntentRow, OrderRow.intent_id == TradeIntentRow.id)
+            .outerjoin(SignalRow, TradeIntentRow.signal_id == SignalRow.id)
+            .outerjoin(MarketSnapshotRow, SignalRow.snapshot_id == MarketSnapshotRow.id)
+            .order_by(FillRow.created_at.desc())
+            .limit(max(1, limit))
+        )
+        if since is not None:
+            stmt = stmt.where(FillRow.created_at >= since)
+        async with self.db.session() as session:
+            rows = list((await session.execute(stmt)).all())
+        out: list[RealisedFill] = []
+        for fill, order, intent, _signal, snapshot in rows:
+            reference = None
+            if snapshot is not None:
+                reference = (
+                    snapshot.ask if str(intent.side).upper() == "BUY" else snapshot.bid
+                )
+            out.append(
+                RealisedFill(
+                    fill_id=fill.id,
+                    order_id=order.id,
+                    symbol=order.symbol,
+                    side=str(order.side).upper(),
+                    intent_type=str(intent.intent_type).upper(),
+                    mode=str(order.mode),
+                    qty=fill.qty,
+                    price=fill.price,
+                    fee_quote=fill.fee_quote,
+                    fee_asset=fill.fee_asset,
+                    fee_amount=fill.fee_amount,
+                    filled_at=fill.created_at,
+                    reference_price=reference,
+                )
+            )
+        return out
+
     async def add_exchange_fill(
         self,
         *,
@@ -1321,6 +1397,7 @@ class Repository:
         price: Decimal,
         fee_quote: Decimal,
         fee_asset: str = "USDT",
+        fee_amount: Decimal | None = None,
         created_at: datetime | None = None,
     ) -> FillRow | None:
         """Append one exchange-reported fill exactly once.
@@ -1342,6 +1419,7 @@ class Repository:
                 price=price,
                 fee_quote=fee_quote,
                 fee_asset=fee_asset,
+                fee_amount=fee_amount if fee_amount is not None else fee_quote,
                 created_at=created_at or utcnow(),
             )
             session.add(row)

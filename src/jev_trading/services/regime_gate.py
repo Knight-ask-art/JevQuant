@@ -30,6 +30,8 @@ from decimal import Decimal
 from math import sqrt
 from typing import Any
 
+from ..domain.costs import CostModel
+
 ZERO = Decimal("0")
 BPS = Decimal("10000")
 
@@ -37,12 +39,11 @@ BPS = Decimal("10000")
 #: true range of a 5-minute bar, so it scales from there.
 ATR_WINDOW_MINUTES = 5
 
-# Mirrors the Settings defaults, for callers that pass a partial settings
-# object (tests build a stub with only the fields their path touches).
+# Mirrors the Settings default, for callers that pass a partial settings object
+# (tests build a stub with only the fields their path touches). The fee and
+# slippage sides come from ``CostModel`` so the gate compares against the same
+# round trip the execution path and the replay charge.
 DEFAULT_COST_MULTIPLIER = Decimal("1.5")
-DEFAULT_FEE_BPS = Decimal("10")
-DEFAULT_SLIPPAGE_BPS = Decimal("2")
-DEFAULT_EXIT_SLIPPAGE_BPS = Decimal("8")
 
 
 @dataclass(frozen=True)
@@ -128,19 +129,18 @@ class RegimeGate:
         """Build from a Settings object, tolerating a partial one.
 
         Tests construct a settings stub with only the fields the code path they
-        exercise needs. A missing fee field is not a reason to fail there, so
-        the defaults below mirror the real ones.
+        exercise needs; ``CostModel`` supplies the same defaults the full
+        settings carry.
         """
 
+        cost = CostModel.from_settings(settings)
         return cls(
             cost_multiplier=getattr(
                 settings, "regime_cost_multiplier", DEFAULT_COST_MULTIPLIER
             ),
-            fee_bps=getattr(settings, "fee_bps", DEFAULT_FEE_BPS),
-            entry_slippage_bps=getattr(settings, "slippage_bps", DEFAULT_SLIPPAGE_BPS),
-            exit_slippage_bps=getattr(
-                settings, "exit_slippage_bps", DEFAULT_EXIT_SLIPPAGE_BPS
-            ),
+            fee_bps=cost.fee_bps,
+            entry_slippage_bps=cost.entry_slippage_bps,
+            exit_slippage_bps=cost.exit_slippage_bps,
         )
 
     def evaluate(self, *, features: dict[str, float], horizon_seconds: int) -> RegimeDecision:
