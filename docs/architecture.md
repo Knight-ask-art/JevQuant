@@ -237,7 +237,7 @@ verdict = blocked unless  lower_bound(mean net bps) > safety margin
   lowering the floor is how a small sample is presented honestly, not by dropping
   the bound.
 
-Read the verdicts at `GET /api/v1/activity/edge-shadow`.
+Read the verdicts at `GET /api/v1/edge-shadow`.
 
 ## Counterfactual outcomes
 

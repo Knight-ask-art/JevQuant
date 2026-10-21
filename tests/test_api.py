@@ -54,6 +54,19 @@ def test_health_and_status(open_client):
     assert "get_candles" in body["agent"]["tools"]
 
 
+def test_edge_shadow_route_lives_where_the_docs_say_it_does(open_client):
+    """The route is under the activity router's own prefix.
+
+    Documented once as ``/api/v1/activity/edge-shadow`` and shipped without
+    it; a path that silently 404s is worse in a runbook than no path at all.
+    """
+
+    assert open_client.get("/api/v1/activity/edge-shadow").status_code == 404
+    listed = open_client.get("/api/v1/edge-shadow")
+    assert listed.status_code == 200
+    assert listed.json() == {"items": []}
+
+
 def test_demo_cycle_produces_signals_and_audit(open_client):
     response = open_client.post("/api/v1/demo/cycle")
     assert response.status_code == 200

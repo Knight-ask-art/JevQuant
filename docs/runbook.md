@@ -148,7 +148,7 @@ change them deliberately.
 
 ## Shadow edge evaluator
 
-`GET /api/v1/activity/edge-shadow` returns the recent verdicts. Until a cohort
+`GET /api/v1/edge-shadow` returns the recent verdicts. Until a cohort
 has `edge_min_samples` fully-elapsed peers, every verdict is
 `insufficient_evidence` with `sample_size = 0` — that is the expected state for
 a while, not a failure. To find out how far off it is, compare
