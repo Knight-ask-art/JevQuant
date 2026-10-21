@@ -321,6 +321,13 @@ class CounterfactualRow(Base):
     # how far it ever went in favour (MFE) and against (MAE).
     mfe_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
     mae_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    # Seconds from the signal to the bar that set MFE / MAE, so "price never
+    # paid" can be told apart from "price paid and we gave it back".
+    time_to_mfe_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    time_to_mae_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Round-trip cost charged to this replay (both fees + exit slippage). Stored
+    # rather than re-derived: the fee schedule in force is part of the record.
+    round_trip_cost_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
     holding_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Minutes with no 1m bar inside the window. A large gap means the replay
     # saw less of the path than it claims to have judged.

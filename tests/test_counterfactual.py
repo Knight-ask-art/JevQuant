@@ -280,6 +280,78 @@ async def test_reject_choices_do_not_take_the_replay_slots(
     assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
 
 
+async def test_a_signal_with_a_long_horizon_is_still_replayed_later(
+    repo, server_limits, settings
+):
+    """The lookback must cover the longest holding window a policy may carry.
+
+    It used to be a flat 14 h, justified by the venue's 1000-bar page limit --
+    but the fetcher pages around that limit, so the bound was stale. Any policy
+    with a holding window longer than the lookback produced signals that could
+    never be replayed at all: they aged out before their horizon elapsed.
+    """
+
+    exits = ExitDefaults(
+        stop_loss_bps=Decimal("120"),
+        take_profit_bps=Decimal("240"),
+        max_holding_seconds=20 * 3600,
+    )
+    policy = compiled_policy(server_limits, now=NOW).model_copy(
+        update={"exit_defaults": exits}
+    )
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    await _blocked_signal(repo, policy)
+    service = CounterfactualService(
+        settings=settings,
+        repo=repo,
+        market=FakeMarket([bar(1, low=98.0)]),
+    )
+
+    # Still inside its window: not replayed yet, and not written off either.
+    assert await service.evaluate_pending(NOW + timedelta(hours=10)) == 0
+    assert await repo.list_counterfactuals() == []
+
+    # Past the horizon, and well past the old 14 h bound.
+    assert await service.evaluate_pending(NOW + timedelta(hours=21)) == 1
+
+
+async def test_a_signal_that_can_never_be_replayed_does_not_block_the_queue(
+    repo, server_limits, settings
+):
+    """A row with no policy would otherwise return None forever, at the head.
+
+    It writes nothing, so it is re-selected every cycle; enough of them and the
+    per-cycle budget never reaches a signal that could produce an outcome.
+    """
+
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    for offset in range(8):
+        await _blocked_signal(
+            repo, policy, created_at=NOW - timedelta(hours=8) + timedelta(minutes=offset)
+        )
+    # Point every stored signal at a policy that does not exist, so each one
+    # returns None without writing a row.
+    from sqlalchemy import update
+
+    from jev_trading.storage.models import SignalRow
+
+    async with repo.db.session() as session:
+        await session.execute(update(SignalRow).values(policy_id="missing-policy"))
+        await session.commit()
+
+    await _blocked_signal(repo, policy)
+    service = CounterfactualService(
+        settings=settings,
+        repo=repo,
+        market=FakeMarket([bar(1, low=98.0)]),
+    )
+
+    assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
+    rows = await repo.list_counterfactuals()
+    assert len(rows) == 1
+
+
 async def test_a_window_with_no_bars_is_recorded_as_no_data(repo, server_limits, settings):
     policy = compiled_policy(server_limits, now=NOW)
     await repo.insert_policy(policy, source="test", is_simulated=True)

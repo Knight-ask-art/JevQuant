@@ -110,7 +110,8 @@ the trace records `tool_fallback`.
 
 Replayed outcomes for blocked buys live in `counterfactual_outcomes` (one row per
 signal; see the counterfactual section in `architecture.md`). They are exposed through
-the `get_blocked_signals` agent tool rather than a public route.
+the `get_blocked_signals` agent tool rather than a public route. For a hypothesis-level
+read of the same rows, run `python -m jev_trading.exit_diagnostics`.
 
 ## Execution and ledger
 

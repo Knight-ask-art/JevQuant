@@ -161,13 +161,29 @@ that have played out and stores one row per signal in `counterfactual_outcomes`.
   slippage are charged; `method` records the model (`1m-conservative-v1`).
 - `mfe_bps` / `mae_bps` record how far price ever went each way, so "the gate was right"
   and "the exit geometry was wrong" can be told apart.
-- Coverage is bounded by `LOOKBACK` (14 h); older signals are not replayed. A window with
-  no bars is stored as `exit_reason="no_data"` so it is never rescanned.
-- The per-cycle budget is `MAX_REPLAYS_PER_CYCLE` (6), and only `entry_choice == "buy"`
-  is queued — anything else was never a candidate trade and would burn the budget
-  without producing a row.
+- Coverage is bounded by the longest holding window a policy may carry plus a margin
+  (`replay_lookback`); a lookback shorter than that horizon would drop every long-horizon
+  signal permanently. A signal older than the bound is not recorded at all.
+- A window with no bars is stored as `exit_reason="no_data"` so it is never rescanned.
+- The per-cycle budget is `MAX_REPLAYS_PER_CYCLE` (6) **attempted** replays, and only
+  `entry_choice == "buy"` is queued. A signal that cannot produce a row — not yet past its
+  horizon, or its policy/snapshot is gone — is skipped without consuming a slot; otherwise
+  a run of them starves the signals behind them, which is what happened in production.
 - Replay is read-only and best-effort: a failure is audited as `counterfactual.error`
   and retried next cycle; it never affects trading.
+
+### Exit diagnostics
+
+`services/exit_diagnostics.py` reads the recorded outcomes and names a hypothesis rather
+than proposing a parameter. It separates two readings that a plain P&L cannot:
+
+- a timeout whose MFE never covered its round-trip cost is `market_never_offered_the_trade`
+  — no exit rule could have saved it;
+- a timeout that peaked above 40 bps and still timed out is
+  `profit_was_available_and_given_back` — that is an exit-geometry question.
+
+It also reports `capture_ratio` (realised gross over MFE), giveback, the median cost, and
+`time_to_mfe_seconds`. Run it with `python -m jev_trading.exit_diagnostics`.
 
 `GET /api/v1/...`-style access is via the `GET_BLOCKED_SIGNALS` agent tool, which reports
 counts, average `net_bps`, per-rule attribution and timeout-path MFE.

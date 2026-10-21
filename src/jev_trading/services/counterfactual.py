@@ -26,9 +26,11 @@ gap visible instead of hidden: ``gap_seconds`` counts the minutes of the
 window that no bar covered, and a window with no bars at all is stored as
 ``no_data`` rather than as a flat timeout.
 
-Coverage is bounded: only signals inside ``LOOKBACK`` are replayed, because
-the venue serves at most 1000 one-minute bars per request. A signal older
-than that is not recorded at all -- it is not retried forever.
+Coverage is bounded by the longest holding window a policy may carry plus a
+margin (``replay_lookback``): a signal is only replayed once its horizon has
+elapsed, and a lookback shorter than that horizon would drop it permanently.
+A signal older than the bound is not recorded at all -- it is not retried
+forever.
 """
 
 from __future__ import annotations
@@ -45,12 +47,29 @@ from ..domain.policy import EffectivePolicy, ExitDefaults
 from .klines import fetch_minute_range
 
 SIMULATION_METHOD = "1m-conservative-v1"
-#: Binance returns at most 1000 one-minute bars, so a signal older than this
-#: can no longer be replayed faithfully.
-LOOKBACK = timedelta(hours=14)
+#: Extra slack on top of the longest holding window a policy may carry. A
+#: signal becomes replayable only once its horizon has elapsed, and cycles are
+#: hourly, so without slack a signal could age out between becoming ready and
+#: being picked up.
+LOOKBACK_MARGIN = timedelta(hours=6)
 #: Signals replayed per cycle. Each one costs a klines walk; a backlog is
 #: picked up by the next cycle, so this only bounds the work in one cycle.
 MAX_REPLAYS_PER_CYCLE = 6
+
+
+def replay_lookback(max_holding_seconds: int) -> timedelta:
+    """How far back to look for signals that can now be replayed.
+
+    The bound has to cover the longest horizon a policy may carry: a signal
+    with a 24 h holding window cannot be replayed until 24 h after it was
+    created, so any shorter lookback silently drops it forever. This used to
+    be a hardcoded 14 h, justified by the venue's 1000-bar page limit -- but
+    ``fetch_minute_range`` pages around that limit, so the justification was
+    stale and the bound lost every long-horizon signal.
+    """
+
+    return timedelta(seconds=max_holding_seconds) + LOOKBACK_MARGIN
+
 
 
 @dataclass(frozen=True)
@@ -63,6 +82,12 @@ class Replay:
     exit_time: datetime | None = None
     mfe_bps: Decimal = ZERO
     mae_bps: Decimal = ZERO
+    # When the path set MFE / MAE, so a timeout can be read as "never paid"
+    # versus "paid and gave it back" rather than only by its final value.
+    highest_at: datetime | None = None
+    lowest_at: datetime | None = None
+    # Both taker fees plus exit slippage, in bps. Gross = net + this.
+    round_trip_cost_bps: Decimal = ZERO
     minutes_judged: int = 0
     gap_seconds: int = 0
 
@@ -95,6 +120,8 @@ def simulate(
     last_close: Decimal | None = None
     highest = entry_price
     lowest = entry_price
+    highest_at: datetime | None = None
+    lowest_at: datetime | None = None
     minutes_judged = 0
     for candle in candles:
         if candle.close_time > horizon_end:
@@ -103,8 +130,18 @@ def simulate(
         last_close = Decimal(str(candle.close))
         low = Decimal(str(candle.low))
         high = Decimal(str(candle.high))
-        highest = max(highest, high, last_close)
-        lowest = min(lowest, low, last_close)
+        if high > highest:
+            highest = high
+            highest_at = candle.close_time
+        if low < lowest:
+            lowest = low
+            lowest_at = candle.close_time
+        if last_close > highest:
+            highest = last_close
+            highest_at = candle.close_time
+        if last_close < lowest:
+            lowest = last_close
+            lowest_at = candle.close_time
         if low <= stop_price:
             # One bar can touch both levels; assuming the stop removes any
             # benefit of hindsight from intra-bar ordering we cannot see.
@@ -124,6 +161,10 @@ def simulate(
         exit_time = candles[-1].close_time
 
     gross_bps = (exit_price / entry_price - Decimal("1")) * Decimal("10000")
+    # Exit slippage is already inside ``exit_price``; only the two taker fees
+    # remain to be charged. ``round_trip_cost_bps`` records the total friction
+    # applied to the un-slipped exit, for reporting rather than arithmetic.
+    round_trip_cost_bps = taker_fee_bps * Decimal("2") + exit_slippage_bps
     net_bps = gross_bps - taker_fee_bps * Decimal("2")
     pnl = notional * net_bps / Decimal("10000")
     return Replay(
@@ -135,6 +176,9 @@ def simulate(
         exit_time=exit_time,
         mfe_bps=(highest / entry_price - Decimal("1")) * Decimal("10000"),
         mae_bps=(lowest / entry_price - Decimal("1")) * Decimal("10000"),
+        highest_at=highest_at,
+        lowest_at=lowest_at,
+        round_trip_cost_bps=round_trip_cost_bps,
         minutes_judged=minutes_judged,
     )
 
@@ -163,6 +207,12 @@ class CounterfactualService:
         self.market = market
         self.audit = audit
 
+    @staticmethod
+    def _seconds_since(start: datetime, moment: datetime | None) -> int | None:
+        if moment is None:
+            return None
+        return int(max(0.0, (moment - start).total_seconds()))
+
     async def evaluate_pending(
         self,
         now: datetime | None = None,
@@ -177,13 +227,25 @@ class CounterfactualService:
         """
 
         now = now or datetime.now(UTC)
+        lookback = replay_lookback(self.settings.server_limits.max_holding_seconds)
+        # Scan more than we may replay: a signal whose horizon has not elapsed
+        # yet, or one whose policy or snapshot is gone, must not consume a
+        # slot and starve the signals behind it. Only attempted replays count
+        # against MAX_REPLAYS_PER_CYCLE.
         candidates = await self.repo.list_rejected_signals_without_counterfactual(
-            since=now - LOOKBACK, until=now, limit=MAX_REPLAYS_PER_CYCLE
+            since=now - lookback, until=now, limit=MAX_REPLAYS_PER_CYCLE * 10
         )
         written = 0
+        attempted = 0
         for signal in candidates:
+            if attempted >= MAX_REPLAYS_PER_CYCLE:
+                break
+            policy = await self._replayable_policy(signal, now)
+            if policy is None:
+                continue
+            attempted += 1
             try:
-                row = await self._evaluate(signal, now, available_quote_usdt)
+                row = await self._evaluate(signal, now, available_quote_usdt, policy)
             except Exception as exc:  # noqa: BLE001 - replay is best-effort
                 if self.audit is not None:
                     await self.audit.record(
@@ -197,17 +259,38 @@ class CounterfactualService:
                 written += 1
         return written
 
-    async def _evaluate(
-        self, signal: Any, now: datetime, available_quote_usdt: Decimal | None
-    ) -> Any | None:
-        score = dict(signal.score_json or {})
-        if str(score.get("entry_choice")) != "buy":
-            return None
+    async def _replayable_policy(self, signal: Any, now: datetime) -> EffectivePolicy | None:
+        """The policy this signal must be replayed under, or ``None`` to skip it.
+
+        ``None`` means the signal can never produce a row: its policy or
+        snapshot is gone, or its holding window has not elapsed yet. Skipping
+        is what keeps those from occupying the per-cycle budget forever.
+        """
 
         policy_row = await self.repo.get_policy_by_policy_id(signal.policy_id)
         if policy_row is None:
             return None
         policy = EffectivePolicy.model_validate(policy_row.effective_json)
+        if policy.symbol_policy(signal.symbol) is None:
+            return None
+        horizon_end = signal.created_at + timedelta(
+            seconds=policy.exit_defaults.max_holding_seconds
+        )
+        if horizon_end > now:
+            return None
+        return policy
+
+    async def _evaluate(
+        self,
+        signal: Any,
+        now: datetime,
+        available_quote_usdt: Decimal | None,
+        policy: EffectivePolicy,
+    ) -> Any | None:
+        score = dict(signal.score_json or {})
+        if str(score.get("entry_choice")) != "buy":
+            return None
+
         symbol_policy = policy.symbol_policy(signal.symbol)
         if symbol_policy is None:
             return None
@@ -215,9 +298,6 @@ class CounterfactualService:
         horizon_end = signal.created_at + timedelta(
             seconds=policy.exit_defaults.max_holding_seconds
         )
-        if horizon_end > now:
-            # The replay would still be guessing at the tail of the window.
-            return None
 
         snapshot = await self.repo.get_market_snapshot(signal.snapshot_id)
         if snapshot is None:
@@ -302,6 +382,9 @@ class CounterfactualService:
             horizon_seconds=policy.exit_defaults.max_holding_seconds,
             mfe_bps=replay.mfe_bps,
             mae_bps=replay.mae_bps,
+            time_to_mfe_seconds=self._seconds_since(signal.created_at, replay.highest_at),
+            time_to_mae_seconds=self._seconds_since(signal.created_at, replay.lowest_at),
+            round_trip_cost_bps=replay.round_trip_cost_bps,
             holding_seconds=int(
                 max(
                     0.0,

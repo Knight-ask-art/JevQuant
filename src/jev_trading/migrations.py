@@ -127,6 +127,25 @@ async def up_0005_counterfactual_path(
         await _add_column(conn, "counterfactual_outcomes", name, type_sql)
 
 
+async def up_0006_counterfactual_timing(
+    conn: AsyncConnection,
+) -> None:
+    """Counterfactual replays also record when the path peaked and cost paid."""
+
+    for name, type_sql in (
+        # Seconds from the signal to the bar that set MFE / MAE. Together with
+        # mfe_bps they answer "did price ever pay, and when" rather than only
+        # "where did it end".
+        ("time_to_mfe_seconds", "INTEGER"),
+        ("time_to_mae_seconds", "INTEGER"),
+        # Round-trip cost charged to this replay, in bps. Kept as a column so
+        # gross and net can be compared without re-deriving the fee schedule
+        # that was in force when the row was written.
+        ("round_trip_cost_bps", "NUMERIC(28, 12)"),
+    ):
+        await _add_column(conn, "counterfactual_outcomes", name, type_sql)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_baseline", "record the pre-migration schema", up_0001_baseline),
     Migration("0002_positions_mode", "positions carry their execution route", up_0002_positions_mode),
@@ -144,6 +163,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         "0005_counterfactual_path",
         "counterfactual replays record MFE/MAE, holding time and data gaps",
         up_0005_counterfactual_path,
+    ),
+    Migration(
+        "0006_counterfactual_timing",
+        "counterfactual replays record time-to-MFE/MAE and the cost charged",
+        up_0006_counterfactual_timing,
     ),
 )
 
