@@ -56,6 +56,17 @@ class Settings(BaseSettings):
     fee_bps: Decimal = Decimal("10")
     slippage_bps: Decimal = Decimal("2")
     exit_slippage_bps: Decimal = Decimal("8")
+    # Cost-aware regime gate: refuse an entry when the move the market can
+    # plausibly deliver over the holding window does not cover the round trip
+    # by this multiple. At 0 the bar is zero, so the only refusal left is the
+    # one for a missing volatility estimate.
+    #
+    # It starts in shadow (``regime_gate_enforce=False``): the verdict is
+    # recorded on every signal, but nothing is blocked, so allowed and blocked
+    # cohorts can be compared on realised outcomes before the gate is trusted
+    # to refuse trades.
+    regime_cost_multiplier: Decimal = Field(default=Decimal("1.5"), ge=0)
+    regime_gate_enforce: bool = False
     min_stop_loss_bps: Decimal = Decimal("20")
     max_stop_loss_bps: Decimal = Decimal("300")
     min_entry_cooldown_seconds: int = 60
@@ -252,6 +263,10 @@ class Settings(BaseSettings):
                 self.binance_testnet_api_key and self.binance_testnet_api_secret
             ),
             "mfa_configured": bool(self.mfa_totp_secret),
+            "regime_gate": {
+                "cost_multiplier": str(self.regime_cost_multiplier),
+                "enforce": self.regime_gate_enforce,
+            },
             "server_limits": {
                 "max_position_notional_usdt": str(self.max_position_notional_usdt),
                 "max_gross_exposure_pct": str(self.max_gross_exposure_pct),

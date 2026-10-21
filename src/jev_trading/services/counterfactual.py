@@ -41,6 +41,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from ..domain.enums import SignalState
 from ..domain.market import Candle
 from ..domain.money import ZERO
 from ..domain.policy import EffectivePolicy, ExitDefaults
@@ -198,6 +199,24 @@ def blocked_rule(policy: EffectivePolicy, score: dict[str, Any]) -> str:
     return "unknown"
 
 
+def regime_blocked(events: Sequence[Any]) -> bool:
+    """Did the cost-aware regime gate reject this signal?
+
+    The Jev gate's thresholds are derivable from the score, so ``blocked_rule``
+    can recompute them. The regime gate's verdict depends on the snapshot's ATR
+    and the policy's holding window, which are not on the signal row, so the
+    recorded event detail is the source of truth here.
+    """
+
+    for event in events:
+        if event.state != SignalState.REJECTED.value:
+            continue
+        detail = event.detail_json or {}
+        if detail.get("regime_blocked"):
+            return True
+    return False
+
+
 class CounterfactualService:
     """Replays blocked buy signals once their holding window has elapsed."""
 
@@ -291,6 +310,14 @@ class CounterfactualService:
         if str(score.get("entry_choice")) != "buy":
             return None
 
+        events = await self.repo.get_signal_events(signal.id)
+        if regime_blocked(events):
+            # Refused by the cost gate, not by Jev's thresholds. Attributing it
+            # to the Jev gate would make the wrong cohort look responsible.
+            rule = "regime_expected_move_below_cost"
+        else:
+            rule = blocked_rule(policy, score)
+
         symbol_policy = policy.symbol_policy(signal.symbol)
         if symbol_policy is None:
             return None
@@ -347,7 +374,7 @@ class CounterfactualService:
                 entry_probability=float(score.get("entry_probability") or 0.0),
                 policy_fit=float(score.get("policy_fit") or 0.0),
                 quality_score=float(score.get("quality_score") or 0.0),
-                blocked_rule=blocked_rule(policy, score),
+                blocked_rule=rule,
                 assumed_notional_usdt=notional,
                 entry_price=entry_price,
                 exit_price=None,
@@ -372,7 +399,7 @@ class CounterfactualService:
             entry_probability=float(score.get("entry_probability") or 0.0),
             policy_fit=float(score.get("policy_fit") or 0.0),
             quality_score=float(score.get("quality_score") or 0.0),
-            blocked_rule=blocked_rule(policy, score),
+            blocked_rule=rule,
             assumed_notional_usdt=notional,
             entry_price=replay.entry_price,
             exit_price=replay.exit_price,

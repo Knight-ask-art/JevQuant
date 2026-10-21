@@ -40,6 +40,7 @@ from .events import EventBroker
 from .market_service import MarketService
 from .modes import ModeManager
 from .policy_service import PolicyService
+from .regime_gate import RegimeGate
 
 DEFAULT_INTENT_TTL_SECONDS = 15
 
@@ -183,10 +184,12 @@ class TradingOrchestrator:
         account_id: str,
         budgets: Any | None = None,
         counterfactual: Any | None = None,
+        regime_gate: Any | None = None,
     ) -> None:
         self.settings = settings
         self.budgets = budgets
         self.counterfactual = counterfactual
+        self.regime_gate = regime_gate or RegimeGate.from_settings(settings)
         self.repo = repo
         self.policy_service = policy_service
         self.market = market
@@ -592,6 +595,19 @@ class TradingOrchestrator:
             },
         }
 
+    def _regime_verdict(self, snapshot, policy: EffectivePolicy):
+        """Ask the cost-aware regime gate about this snapshot.
+
+        Uses the policy's own holding window: the comparison is between the
+        move available over that window and the round trip paid to capture it,
+        so a policy that holds longer is rightly judged against a bigger move.
+        """
+
+        return self.regime_gate.evaluate(
+            features=snapshot.features,
+            horizon_seconds=policy.exit_defaults.max_holding_seconds,
+        )
+
     def _gate(self, policy: EffectivePolicy, jev_result) -> tuple[bool, dict[str, Any]]:
         gate = policy.jev_gate
         probability = jev_result.entry_probability
@@ -846,6 +862,45 @@ class TradingOrchestrator:
                 },
             )
             return
+
+        # The regime verdict is computed and recorded for every signal that
+        # cleared the Jev gate, in shadow and in enforcement alike, so the
+        # cohorts can be compared on outcomes later. It is deliberately placed
+        # after scoring: a gate that ran before Jev would leave no outcome to
+        # judge it by.
+        regime = self._regime_verdict(snapshot, policy)
+        gate_detail = {**gate_detail, **regime.as_detail()}
+        if regime.blocked and self.settings.regime_gate_enforce:
+            await self.repo.transition_signal(
+                signal.id, SignalState.REJECTED, gate_detail
+            )
+            counters["rejected"] += 1
+            await self.audit.record(
+                "signal.rejected",
+                "signal",
+                signal.id,
+                {"symbol": symbol, "stage": "regime_gate", **gate_detail},
+            )
+            await self.broker.publish(
+                "signal.candidates",
+                {
+                    "signal_id": signal.id,
+                    "symbol": symbol,
+                    "state": SignalState.REJECTED.value,
+                    "detail": gate_detail,
+                },
+            )
+            return
+        if regime.blocked:
+            # Shadow: the trade still happens, but the record says what the
+            # gate would have done. This is the only honest way to start with
+            # this little data.
+            await self.audit.record(
+                "regime.shadow_block",
+                "signal",
+                signal.id,
+                {"symbol": symbol, **gate_detail},
+            )
 
         await self.repo.transition_signal(signal.id, SignalState.ELIGIBLE, gate_detail)
         counters["signals_eligible"] += 1

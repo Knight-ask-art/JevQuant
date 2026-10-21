@@ -50,8 +50,8 @@ locally and never holds the only copy of an approved intent.
 6. Decide the entries-blocked reason, in precedence order:
    `kill_switch` → `policy_unavailable` → `market_feed_unhealthy` → `execution_unhealthy`.
 7. For each symbol policy: create a `CANDIDATE`, ask Jev typed questions, persist the
-   evaluation, transition to `SCORED`, apply the gate, then either `REJECTED` or
-   `ELIGIBLE`.
+   evaluation, transition to `SCORED`, apply the Jev gate and then the regime gate, then
+   either `REJECTED` or `ELIGIBLE`.
 8. For an eligible signal: exchange filters → account/position/cooldown checks →
    idempotency key → notional `min(symbol cap, 25% available)` → provisional intent →
    risk snapshot hash → persist intent → risk decision → `APPROVED` or `RISK_REJECTED`.
@@ -147,6 +147,31 @@ exit_price = entry_price × (1 − (stop_loss_bps + taker_fee_bps + exit_slippag
 If the resulting quantity or notional cannot satisfy `LOT_SIZE` / `MIN_NOTIONAL`, the
 intent is rejected with `REJECT_EXIT_MIN_NOTIONAL`. A position the system could not legally
 sell is never opened.
+
+## Regime gate
+
+The Jev gate answers "is this candidate good"; it says nothing about whether the move
+available over the holding window is bigger than the round trip paid to capture it.
+`services/regime_gate.py` asks that second question and can only refuse:
+
+```text
+expected_abs_move_bps = atr_5m_bps * sqrt(horizon_minutes / 5)
+required_move_bps     = (2 x fee + entry slippage + exit slippage) x cost_multiplier
+blocked               = expected < required   (or no ATR at all)
+```
+
+- It runs after Jev scoring, on every signal that clears the Jev gate, and its verdict is
+  merged into the same `detail` the signal carries. A gate that ran first would leave no
+  outcome to judge it by.
+- `regime_gate_enforce` starts `false`. In shadow the trade still happens and the verdict
+  is audited as `regime.shadow_block`; with it on, the signal goes `REJECTED` with
+  `stage="regime_gate"` before any intent exists.
+- A missing or zero `atr_5m_bps` fails closed (`no_volatility_estimate`): the feature is
+  `0.0` when the ATR could not be computed, and unknown volatility is an unanswered
+  question, not a reason to trade.
+- `counterfactual_outcomes.blocked_rule` records `regime_expected_move_below_cost` for a
+  signal the regime gate refused, so the two gates are judged on separate cohorts. The
+  verdict itself is read back from the signal event, because ATR is not on the score.
 
 ## Counterfactual outcomes
 

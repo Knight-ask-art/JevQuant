@@ -368,3 +368,41 @@ async def test_a_window_with_no_bars_is_recorded_as_no_data(repo, server_limits,
     assert rows[0].net_bps is None
     assert rows[0].gap_seconds == 3600
     assert await service.evaluate_pending(NOW + timedelta(hours=3)) == 0
+
+
+async def test_a_regime_rejection_is_not_blamed_on_the_jev_gate(
+    repo, server_limits, settings
+):
+    """The two gates are judged on different cohorts, so the record must say which.
+
+    The Jev thresholds can be recomputed from the score, but a regime refusal
+    depends on the snapshot's ATR, which the score does not carry. Reading it
+    back from the recorded event is what keeps a cost refusal from looking like
+    a threshold refusal -- the cohorts would otherwise be the same to the
+    counterfactual report, which is the only thing that can answer "which gate
+    is costing us money".
+    """
+
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    signal = await _blocked_signal(repo, policy)
+    await repo.transition_signal(
+        signal.id,
+        SignalState.REJECTED,
+        {
+            "regime_blocked": True,
+            "regime_reason": "expected_move_below_cost",
+            "regime_expected_abs_move_bps": 12.0,
+            "regime_required_move_bps": 45.0,
+        },
+    )
+    service = CounterfactualService(
+        settings=settings,
+        repo=repo,
+        market=FakeMarket([bar(1, low=67000.0), bar(2, high=69000.0)]),
+    )
+
+    assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
+    rows = await repo.list_counterfactuals()
+    # The stored score fails min_choice_probability; the regime event wins.
+    assert rows[0].blocked_rule == "regime_expected_move_below_cost"

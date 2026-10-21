@@ -68,6 +68,8 @@ $env:PYTHONPATH="src"
   (all queries). Migrations live in `migrations.py` and run at container start.
 - `services/orchestrator.py` — `run_cycle`, the whole pipeline: policy → snapshots →
   per-symbol Jev evaluation → gate → intent → risk → dispatch → exits → PnL.
+- `services/regime_gate.py` — deterministic cost gate: expected move over the policy's
+  holding window vs the round trip. Records its verdict on every signal; can refuse one.
 - `services/counterfactual.py` — replays **blocked** buys over 1m bars so the gate can be
   judged on outcomes. Read-only and best-effort; see `docs/architecture.md`.
 - `services/experiment.py` + `experiment.py` — offline A/B/C comparison runner
