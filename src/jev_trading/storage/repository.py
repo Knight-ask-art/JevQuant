@@ -581,7 +581,13 @@ class Repository:
     async def list_rejected_signals_without_counterfactual(
         self, *, since: datetime, until: datetime, limit: int = 60
     ) -> list[SignalRow]:
-        """Blocked signals that have no replayed outcome yet, oldest first."""
+        """Blocked buys that have no replayed outcome yet, oldest first.
+
+        Only ``entry_choice == "buy"`` can produce a replay: anything else was
+        never a candidate trade, so it would burn the per-cycle budget and
+        leave nothing behind. Without this filter a run of ``reject`` signals
+        occupies every slot and the real buys are never reached.
+        """
 
         async with self.db.session() as session:
             statement = (
@@ -593,6 +599,7 @@ class Repository:
                     SignalRow.state == SignalState.REJECTED.value,
                     SignalRow.created_at >= since,
                     SignalRow.created_at <= until,
+                    SignalRow.score_json["entry_choice"].as_string() == "buy",
                     CounterfactualRow.id.is_(None),
                 )
                 .order_by(SignalRow.created_at)

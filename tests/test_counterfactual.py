@@ -241,6 +241,45 @@ async def test_a_rejected_choice_is_not_replayed(repo, server_limits, settings):
     assert await repo.list_counterfactuals() == []
 
 
+async def test_reject_choices_do_not_take_the_replay_slots(
+    repo, server_limits, settings
+):
+    """The oldest-first queue must not be filled by rows that replay nothing.
+
+    A reject signal returns None without writing a row, so it stays at the
+    head of the queue forever. Enough of them and the real buys behind it are
+    never reached, which is exactly what happened in production.
+    """
+
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    for offset in range(8):
+        await _blocked_signal(
+            repo,
+            policy,
+            created_at=NOW - timedelta(hours=8) + timedelta(minutes=offset),
+            score={
+                "entry_choice": "reject",
+                "entry_probability": 0.63,
+                "policy_fit": 0.28,
+                "quality_score": 1.26,
+            },
+        )
+    await _blocked_signal(repo, policy)
+
+    candidates = await repo.list_rejected_signals_without_counterfactual(
+        since=NOW - timedelta(hours=14), until=NOW + timedelta(hours=2), limit=6
+    )
+
+    assert [signal.score_json["entry_choice"] for signal in candidates] == ["buy"]
+    service = CounterfactualService(
+        settings=settings,
+        repo=repo,
+        market=FakeMarket([bar(1, low=98.0)]),
+    )
+    assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
+
+
 async def test_a_window_with_no_bars_is_recorded_as_no_data(repo, server_limits, settings):
     policy = compiled_policy(server_limits, now=NOW)
     await repo.insert_policy(policy, source="test", is_simulated=True)
