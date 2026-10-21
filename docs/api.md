@@ -87,8 +87,8 @@ When a tool-capable model is configured, one authoring turn is an agent loop:
    realized performance) and includes it in the prompt.
 2. The model may call read-only tools — `get_candles`, `get_market_overview`,
    `get_account_state`, `get_open_positions`, `get_recent_decisions`,
-   `get_recent_trades`, `get_performance_summary` — for up to `JEV_AGENT_MAX_TURNS`
-   turns or `JEV_AGENT_BUDGET_SECONDS`.
+   `get_recent_trades`, `get_performance_summary`, `get_blocked_signals` — for up to
+   `JEV_AGENT_MAX_TURNS` turns or `JEV_AGENT_BUDGET_SECONDS`.
 3. On the final turn tools are disabled and the model must return the policy JSON.
 
 Tool calls are bounded (16 per turn, 120 candles per call) and read-only: no tool can
@@ -107,6 +107,10 @@ the trace records `tool_fallback`.
 | GET | `/api/v1/signals/{signal_id}` | signal, events, Jev evaluation, intent, risk decision, order |
 | GET | `/api/v1/intents?limit=100` | intents |
 | GET | `/api/v1/risk-decisions?limit=100` | risk decisions |
+
+Replayed outcomes for blocked buys live in `counterfactual_outcomes` (one row per
+signal; see the counterfactual section in `architecture.md`). They are exposed through
+the `get_blocked_signals` agent tool rather than a public route.
 
 ## Execution and ledger
 

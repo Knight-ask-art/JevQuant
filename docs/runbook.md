@@ -137,6 +137,8 @@ pending migrations in order and records them in `schema_migrations`:
 | `0001_baseline` | marks a pre-migration database |
 | `0002_positions_mode` | adds `positions.mode` (existing rows become `paper`) |
 | `0003_fills_external_id` | adds `fills.external_id` + unique (order, trade) index |
+| `0004_positions_exit_request` | adds the exit-request bookkeeping columns |
+| `0005_counterfactual_path` | adds `mfe_bps` / `mae_bps` / `holding_seconds` / `gap_seconds` / `is_synthetic` to `counterfactual_outcomes` |
 
 - `jev migrate --dry-run` lists pending versions without changing anything.
 - A database is upgraded in place; the ledger rows are preserved.

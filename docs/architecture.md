@@ -68,7 +68,9 @@ locally and never holds the only copy of an approved intent.
 11. Cycles are serialized by a container lock. The scheduler skips an interval when a
     cycle is still running; a manual `POST /api/v1/demo/cycle` returns 409 instead of
     queueing behind it.
-11. Write a PnL snapshot, audit `cycle.completed`, publish to the event stream.
+12. Replay blocked buys whose window has closed (`counterfactual_outcomes`; read-only,
+    best-effort, bounded per cycle).
+13. Write a PnL snapshot, audit `cycle.completed`, publish to the event stream.
 
 The optional scheduler calls step 1–11 on `JEV_AUTO_CYCLE_SECONDS`. A scheduler error is
 audited and the loop continues; it does not silently stop.
@@ -108,6 +110,15 @@ Unknown execution outcomes never invent a fill.
 - The execution gateway can dispatch an already-approved intent via
   `POST /api/v1/execution/intents`; it verifies status, expiry, mode and the persisted
   risk decision before calling the adapter.
+- Dispatch re-runs the risk engine against a **fresh** snapshot and re-derives
+  `risk_snapshot_hash`. A price that moved past what was approved fails the check
+  (`execution.recheck_failed`) rather than being filled at the new price.
+- Jev is asked at most once per symbol per closed candle. Pacing is checked before the
+  signal is created and keyed on the states that mean "Jev already saw this candle"
+  (`JEV_EVALUATING` onward), so a restart or a rejected signal does not re-bill the call.
+  A budget refusal is not a Jev call either: the signal goes `EXPIRED`, not `ERROR`.
+- An intent-level guard refuses a second trade on a candle that already has one
+  (`candle_already_traded`), independent of the entry idempotency key.
 
 ## The policy compiler
 
@@ -136,6 +147,30 @@ exit_price = entry_price × (1 − (stop_loss_bps + taker_fee_bps + exit_slippag
 If the resulting quantity or notional cannot satisfy `LOT_SIZE` / `MIN_NOTIONAL`, the
 intent is rejected with `REJECT_EXIT_MIN_NOTIONAL`. A position the system could not legally
 sell is never opened.
+
+## Counterfactual outcomes
+
+A blocked entry is only evidence about the gate if its outcome is measured. After the
+cycle's own work is done, `CounterfactualService.evaluate_pending` replays blocked buys
+that have played out and stores one row per signal in `counterfactual_outcomes`.
+
+- Window: 1m bars with `open_time > signal.created_at` and `close_time <= horizon_end`,
+  where `horizon_end = created_at + max_holding_seconds`. The entry minute is never used
+  for the exit, so a bar that contains the entry cannot be mistaken for a profitable one.
+- Pessimistic: a bar touching both stop and target is a stop; both taker fees and exit
+  slippage are charged; `method` records the model (`1m-conservative-v1`).
+- `mfe_bps` / `mae_bps` record how far price ever went each way, so "the gate was right"
+  and "the exit geometry was wrong" can be told apart.
+- Coverage is bounded by `LOOKBACK` (14 h); older signals are not replayed. A window with
+  no bars is stored as `exit_reason="no_data"` so it is never rescanned.
+- The per-cycle budget is `MAX_REPLAYS_PER_CYCLE` (6), and only `entry_choice == "buy"`
+  is queued — anything else was never a candidate trade and would burn the budget
+  without producing a row.
+- Replay is read-only and best-effort: a failure is audited as `counterfactual.error`
+  and retried next cycle; it never affects trading.
+
+`GET /api/v1/...`-style access is via the `GET_BLOCKED_SIGNALS` agent tool, which reports
+counts, average `net_bps`, per-rule attribution and timeout-path MFE.
 
 ## Modes and live arming
 
