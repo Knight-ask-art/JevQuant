@@ -2,6 +2,8 @@
 
 Three groups, one replay engine, one cost model:
 
+- ``hold_cash``: never trade (0% return by construction, the zero-trade
+  baseline every other group has to beat);
 - ``rules``: a deterministic SMA20/SMA60 hourly crossover, no model involved;
 - ``jev_all_buys``: every recorded Jev BUY, including the ones the gate blocked;
 - ``jev_gate_passed``: only the BUYs the gate admitted.
@@ -84,6 +86,8 @@ class TradeResult:
     entry_probability: float | None = None
     gate: str = "n/a"
     blocked_rule: str | None = None
+    mfe_bps: float = 0.0
+    mae_bps: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +103,8 @@ class TradeResult:
             "entry_probability": self.entry_probability,
             "gate": self.gate,
             "blocked_rule": self.blocked_rule,
+            "mfe_bps": self.mfe_bps,
+            "mae_bps": self.mae_bps,
         }
 
 
@@ -151,6 +157,59 @@ def summarize(trades: Sequence[TradeResult], starting_equity: Decimal) -> dict[s
         "max_drawdown_pct": round(float(max_drawdown), 3),
         "exit_reasons": dict(sorted(reasons.items())),
         "trades_detail": [trade.as_dict() for trade in ordered],
+    }
+
+
+def summarize_signal_level(
+    rows: Sequence[dict[str, Any]], starting_equity: Decimal
+) -> dict[str, Any]:
+    """Per-signal results: each BUY judged alone, gate status kept apart.
+
+    The blocked rows here are not independent: several often land inside one
+    few-minute burst. The spread across them says how noisy the estimate is,
+    not how confident we may be in its sign.
+    """
+
+    def stats(subset: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        nets = [Decimal(str(item["net_bps"])) for item in subset]
+        wins = sum(1 for value in nets if value > 0)
+        average = sum(nets, ZERO) / len(nets) if nets else ZERO
+        spread = (
+            (sum((value - average) ** 2 for value in nets) / len(nets)).sqrt() if nets else ZERO
+        )
+        return {
+            "signals": len(subset),
+            "wins": wins,
+            "win_rate_pct": round(wins / len(subset) * 100, 2) if subset else None,
+            "average_net_bps": round(float(average), 2),
+            "stdev_net_bps": round(float(spread), 2),
+        }
+
+    def timeout_path(subset: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        timeouts = [item for item in subset if item["exit_reason"] == "timeout"]
+        if not timeouts:
+            return {"timeouts": 0}
+        mfe = [item["mfe_bps"] for item in timeouts]
+        mae = [item["mae_bps"] for item in timeouts]
+        # Did the path ever reach a useful profit before giving it back?
+        near_target = sum(1 for value in mfe if value >= 40.0)
+        return {
+            "timeouts": len(timeouts),
+            "average_mfe_bps": round(sum(mfe) / len(mfe), 2),
+            "average_mae_bps": round(sum(mae) / len(mae), 2),
+            "timeouts_that_peaked_above_40_bps": near_target,
+            "largest_mfe_bps": round(max(mfe), 2),
+        }
+
+    blocked = [item for item in rows if item["gate"] == "blocked"]
+    passed = [item for item in rows if item["gate"] == "passed"]
+    return {
+        "all": stats(rows),
+        "gate_passed": stats(passed),
+        "gate_blocked": stats(blocked),
+        "timeout_path_all": timeout_path(rows),
+        "timeout_path_gate_passed": timeout_path(passed),
+        "timeout_path_gate_blocked": timeout_path(blocked),
     }
 
 
@@ -232,6 +291,8 @@ class ExperimentRunner:
             entry_probability=probability,
             gate=gate,
             blocked_rule=blocked_rule,
+            mfe_bps=round(float(replay.mfe_bps), 2),
+            mae_bps=round(float(replay.mae_bps), 2),
         )
 
     # -- main ------------------------------------------------------------
@@ -266,6 +327,10 @@ class ExperimentRunner:
             ),
         }
         blocked: list[TradeResult] = []
+        # Signal level: each BUY replayed on its own, gate ignored. This is a
+        # different question from the portfolio-level groups above, where the
+        # one-position rule skips signals that arrive while a trade is open.
+        signal_level_rows: list[dict[str, Any]] = []
         skipped_no_data = 0
         skipped_young = 0
 
@@ -289,7 +354,7 @@ class ExperimentRunner:
             entry_price = snapshot.ask * (
                 Decimal("1") + self.settings.slippage_bps / Decimal("10000")
             )
-            return self._replay(
+            trade = self._replay(
                 symbol=row.symbol,
                 bars=symbol_bars,
                 entered_at=row.created_at,
@@ -297,11 +362,14 @@ class ExperimentRunner:
                 exits=policy.exit_defaults,
                 notional=self._notional(policy, row.symbol),
                 signal_id=row.id,
-                gate="n/a",
+                gate="passed" if row.state != "REJECTED" else "blocked",
                 probability=float(row.score_json.get("entry_probability") or 0.0),
                 blocked_rule=None,
                 group=group.name,
             )
+            if trade is not None:
+                signal_level_rows.append(trade.as_dict())
+            return trade
 
         busy_until: dict[str, datetime] = {}
         for row in sorted(buys, key=lambda item: item.created_at):
@@ -380,6 +448,10 @@ class ExperimentRunner:
                 }
                 for name, group in groups.items()
             },
+            "hold_cash": {
+                "description": "never trade",
+                **summarize([], spec.starting_equity_usdt),
+            },
             "rules_baseline": {
                 "description": f"SMA{spec.baseline_fast}/{spec.baseline_slow} hourly crossover",
                 **baseline,
@@ -387,6 +459,13 @@ class ExperimentRunner:
             "blocked_buys": {
                 "description": "blocked BUYs replayed independently",
                 **summarize(blocked, spec.starting_equity_usdt),
+            },
+            "signal_level": {
+                "description": (
+                    "every BUY replayed on its own, gate ignored: measures Jev's "
+                    "selection, not a portfolio (no one-position rule)"
+                ),
+                **summarize_signal_level(signal_level_rows, spec.starting_equity_usdt),
             },
         }
 
@@ -466,6 +545,8 @@ def format_report(report: dict[str, Any]) -> str:
     ]
     for name, group in report["groups"].items():
         lines.append(_row(name, group))
+    hold = report["hold_cash"]
+    lines.append(_row("hold_cash", hold))
     baseline = report["rules_baseline"]
     lines.append(_row("rules_sma", baseline))
     blocked = report["blocked_buys"]

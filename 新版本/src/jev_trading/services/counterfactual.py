@@ -18,6 +18,12 @@ money" cannot come from optimistic assumptions:
   entry would have happened can never be used to reach the target;
 - when a single 1m bar touches both the stop and the target, the stop wins;
 - every exit pays exit slippage and both sides pay the taker fee.
+
+Known imprecision: if the entry happens part-way through a 1m bar, a stop or
+target touched later in that same minute is only seen from the next bar on.
+Nothing cheaper than trade-level data can resolve that, so the row records how
+many minutes it judged (``minutes_judged``) and the window's ``gap_seconds``
+so a reader can tell how much of the path the verdict actually covers.
 """
 
 from __future__ import annotations
@@ -48,6 +54,10 @@ class Replay:
     net_bps: Decimal
     pnl_usdt: Decimal
     exit_time: datetime | None = None
+    mfe_bps: Decimal = ZERO
+    mae_bps: Decimal = ZERO
+    minutes_judged: int = 0
+    gap_seconds: int = 0
 
 
 def simulate(
@@ -76,12 +86,18 @@ def simulate(
     exit_reason = "timeout"
     exit_time: datetime | None = None
     last_close: Decimal | None = None
+    highest = entry_price
+    lowest = entry_price
+    minutes_judged = 0
     for candle in candles:
         if candle.close_time > horizon_end:
             break
+        minutes_judged += 1
         last_close = Decimal(str(candle.close))
         low = Decimal(str(candle.low))
         high = Decimal(str(candle.high))
+        highest = max(highest, high, last_close)
+        lowest = min(lowest, low, last_close)
         if low <= stop_price:
             # One bar can touch both levels; assuming the stop removes any
             # benefit of hindsight from intra-bar ordering we cannot see.
@@ -110,6 +126,9 @@ def simulate(
         net_bps=net_bps,
         pnl_usdt=pnl,
         exit_time=exit_time,
+        mfe_bps=(highest / entry_price - Decimal("1")) * Decimal("10000"),
+        mae_bps=(lowest / entry_price - Decimal("1")) * Decimal("10000"),
+        minutes_judged=minutes_judged,
     )
 
 
@@ -249,5 +268,20 @@ class CounterfactualService:
             net_bps=replay.net_bps,
             pnl_usdt=replay.pnl_usdt if notional > ZERO else None,
             horizon_seconds=policy.exit_defaults.max_holding_seconds,
+            mfe_bps=replay.mfe_bps,
+            mae_bps=replay.mae_bps,
+            holding_seconds=int(
+                max(
+                    0.0,
+                    (replay.exit_time - signal.created_at).total_seconds(),
+                )
+            )
+            if replay.exit_time is not None
+            else None,
+            # Minutes the window covers that no 1m bar was judged for: a
+            # data gap, not a quiet market.
+            gap_seconds=60
+            * max(0, policy.exit_defaults.max_holding_seconds // 60 - replay.minutes_judged),
+            is_synthetic=bool(snapshot.is_synthetic),
             method=SIMULATION_METHOD,
         )

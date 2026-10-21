@@ -317,6 +317,15 @@ class CounterfactualRow(Base):
     net_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
     pnl_usdt: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     horizon_seconds: Mapped[int] = mapped_column(Integer)
+    # Price path over the whole window, in bps against the entry price:
+    # how far it ever went in favour (MFE) and against (MAE).
+    mfe_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    mae_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    holding_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Minutes with no 1m bar inside the window. A large gap means the replay
+    # saw less of the path than it claims to have judged.
+    gap_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False)
     method: Mapped[str] = mapped_column(String(48))
     evaluated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 

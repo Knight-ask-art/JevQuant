@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from conftest import NOW, compiled_policy, market_snapshot
 
@@ -78,3 +80,44 @@ async def test_a_paced_symbol_creates_no_signal(repo, server_limits, settings):
     assert [event[0] for event in audit.events] == ["signal.paced"]
     assert audit.events[0][1] == "symbol"
     assert "paced" in notes[0]
+
+
+async def test_a_rejected_signal_still_paces_the_symbol(repo, server_limits, settings):
+    from conftest import NOW
+    from conftest import market_snapshot as snap
+
+    from jev_trading.domain.enums import SignalState
+
+    policy = compiled_policy(server_limits)
+    snapshot = snap(NOW)
+    await repo.insert_market_snapshot(snapshot)
+    signal = await repo.create_signal(
+        symbol="BTCUSDT",
+        policy_id=str(policy.policy_id),
+        snapshot_id=str(snapshot.snapshot_id),
+        side="buy",
+        created_at=NOW,
+    )
+    await repo.transition_signal(signal.id, SignalState.JEV_EVALUATING)
+    await repo.transition_signal(signal.id, SignalState.SCORED)
+    await repo.transition_signal(signal.id, SignalState.REJECTED, {"reason": "test"})
+
+    orchestrator = TradingOrchestrator(
+        settings=settings,
+        repo=repo,
+        policy_service=None,
+        market=None,
+        jev=None,
+        policy_generator=None,
+        risk_engine=None,
+        execution_for_mode={},
+        modes=None,
+        audit=FakeAudit(),
+        broker=FakeBroker(),
+        account_id="a1",
+    )
+
+    # The call was paid for: a rejection must hold the symbol back too.
+    wait = await orchestrator._jev_pace_wait("BTCUSDT", NOW + timedelta(minutes=5))
+    assert wait > 0
+    assert wait == pytest.approx(settings.jev_min_call_interval_seconds - 300, abs=1)

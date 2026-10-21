@@ -764,12 +764,19 @@ class AgentToolbox:
         by_rule: dict[str, int] = {}
         for row in rows:
             by_rule[row.blocked_rule] = by_rule.get(row.blocked_rule, 0) + 1
+        timeouts = [row for row in decided if row.exit_reason == "timeout"]
+        covered = (
+            round(sum((row.mfe_bps or 0) for row in timeouts) / len(timeouts), 2)
+            if timeouts
+            else None
+        )
         data = {
             "blocked_signals": len(rows),
             "would_have_won": len(wins),
             "net_pnl_usdt": canonical_str(net),
             "average_net_bps": round(float(average_bps), 2),
             "by_blocked_rule": dict(sorted(by_rule.items())),
+            "timeout_average_mfe_bps": covered,
             "recent": [
                 {
                     "symbol": row.symbol,
@@ -780,6 +787,8 @@ class AgentToolbox:
                     "blocked_rule": row.blocked_rule,
                     "exit_reason": row.exit_reason,
                     "net_bps": _num(row.net_bps, 2),
+                    "mfe_bps": _num(row.mfe_bps, 2),
+                    "mae_bps": _num(row.mae_bps, 2),
                     "pnl_usdt": canonical_str(row.pnl_usdt) if row.pnl_usdt is not None else None,
                 }
                 for row in rows[: min(limit, 10)]

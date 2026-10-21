@@ -72,6 +72,12 @@ MARKET_REACHED_SIGNAL_STATES = tuple(
         SignalState.CLOSED,
     }
 )
+# Every state a signal can occupy once it was created. The Jev cadence keys
+# on these: the call was paid for whatever came back, rejections included, so
+# a rejection must start the wait as surely as a fill does.
+JEV_CONSUMED_SIGNAL_STATES = tuple(
+    state.value for state in SignalState if state is not SignalState.CANDIDATE
+)
 # A resting sell is stale once the bid has risen this far above its limit: at
 # that point it no longer tracks the market and is simply absorbing moves.
 REPRICE_BPS = 10
@@ -632,7 +638,7 @@ class TradingOrchestrator:
         if interval <= 0:
             return 0.0
         last_reached = await self.repo.last_market_reached_at(
-            symbol, MARKET_REACHED_SIGNAL_STATES
+            symbol, JEV_CONSUMED_SIGNAL_STATES
         )
         if last_reached is None:
             return 0.0

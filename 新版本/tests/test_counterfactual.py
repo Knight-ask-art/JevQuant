@@ -73,7 +73,21 @@ async def test_a_bar_touching_both_levels_is_a_stop():
     assert result.exit_reason == "stop_loss"
 
 
-async def test_timeout_exits_at_the_last_close():
+def test_the_path_reports_how_far_price_ever_went_each_way():
+    # Offsets are relative to NOW, whose price level differs from the 100
+    # entry this test prices; only the shape of the path matters here.
+    result = replay(
+        [bar(1, high=100.0, low=99.0), bar(2, high=100.0, close=99.5)],
+        price="99",
+    )
+    assert result is not None
+    assert result.exit_reason == "timeout"
+    assert round(float(result.mfe_bps)) == pytest.approx(101, abs=2)
+    assert round(float(result.mae_bps)) == pytest.approx(0, abs=2)
+    assert result.minutes_judged == 2
+
+
+def test_timeout_exits_at_the_last_close():
     result = replay([bar(1, close=100.2), bar(2, close=100.4)])
     assert result is not None
     assert result.exit_reason == "timeout"
