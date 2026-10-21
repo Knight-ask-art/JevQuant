@@ -4,65 +4,101 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-JevQuant is a lightweight automated trading research system pairing **TypeSafe Jev** with **Binance Spot BTC/USDT**. It computes technical indicators on closed 1h candles, queries Jev for structured signals (BUY / SELL / HOLD), evaluates them through an independent risk manager, and executes via an identical interface across Paper, Testnet, and micro-budget Live trading (50 CNY capital cap).
+JevQuant is an LLM-authored, risk-gated trading runtime. A model writes a strategy policy;
+**Jev** scores each closed candle into a typed `buy` / `reject` / `wait` decision; an
+independent risk engine — never the model — decides what actually reaches the exchange.
+Execution runs through one interface across Paper, Shadow, Binance Testnet, and Live.
 
-> **Current status: reference implementation, NOT a runnable trading system.** Verify this before making claims about the project's capabilities or building on top of it:
-> - `src/jevquant/runner.py` has **no trading main loop** — only `initialize_runner()` (assembly + startup reconciliation) and `run_live_preflight()`. Nothing schedules the per-closed-candle cycle or wires market data → indicators → Jev → risk → order → ledger together.
-> - `dashboard/app.py` renders **synthetic candles** (generated from `base_btc = 68450.0`), hardcoded ETH/SOL cards, and static KPIs. It is a demo page, not a live console.
-> - `api.binance.com` returns **HTTP 451 (restricted location)** from this environment. Per the spec, stop rather than circumvent. Real market data is currently unreachable.
-> - Live path lacks a real position ledger, post-entry stop-loss execution, and persisted risk state (`RiskManager.daily_entries_count` / `is_halted` reset on restart).
-> - The P4/P5 adapters (`BinanceTestnetAdapter`, `BinanceLiveAdapter`) have **never made a real exchange request** — all coverage is Mock-based.
+- Package: `src/jev_trading/` (Python 3.12+, FastAPI + SQLAlchemy 2 async + React/TS UI).
+- The authoritative design documents are in `docs/` (`architecture.md`, `api.md`,
+  `runbook.md`) and `设计.md`. Prefer them over this file when they disagree.
+- Production host is a single Docker Compose box (`deploy/`); see `docs/runbook.md`.
 
-Key project specifications:
-- Machine specification: `JevQuant.spec` (highest priority source of truth).
-- Phased implementation guide: `JevQuant-开发计划.md`.
+## Core Invariants
 
-## Core Invariants & Safety Constraints
-
-1. **AI / Execution Separation**: Jev outputs only high-level directional advice (`BUY`, `SELL`, `HOLD`). Jev cannot create orders, dictate amounts, modify risk policies, or alter exchange keys.
-2. **Exit Feasibility Pre-check**: Before placing a buy order, the risk manager must verify that in an adverse price move (e.g., -3% drop minus fees/slippage), the position can still be legally sold under Binance `MIN_NOTIONAL` / `NOTIONAL` and `LOT_SIZE` rules. If not, the buy must be rejected (`REJECT_EXIT_MIN_NOTIONAL`).
-3. **Strict Money & Quantity Precision**: Always use `decimal.Decimal` for financial quantities, prices, notional calculations, and step sizing. Never use binary floats for order sizing or limits.
-4. **Fail-Closed on Market Rules**: Market filters must be dynamically queried via `exchangeInfo` and never hardcoded to static values. If rules are missing or the symbol is not in `TRADING` status, halt and refuse to trade.
-5. **No Secret Leaks**: Never log, expose via UI, or persist API secrets or authorization headers.
-6. **Live Trading Gate**: Live mode requires `TRADING_MODE=live` + `ENABLE_LIVE_TRADING=true` + explicit CLI `--confirm-live` + preflight inspection pass. Default is always `paper`.
-7. **Frontend Design Style**: The dashboard (Phase 3+) follows a dark-tech / industrial terminal aesthetic inspired by "Jev Market Reflex" (black canvas, green/red/amber status indicators, real-time metrics, circular reflex latency radar, heartbeat timeline, and structured action log).
+1. **The model advises; the risk engine decides.** A policy from the LLM is untrusted input
+   and goes through the compiler, which can only *narrow* server limits
+   (`max(policy, server)`). Jev cannot create orders, size positions, or touch keys.
+2. **Decimal only.** Every price, quantity, notional and fee is `decimal.Decimal`. Binary
+   floats never reach order sizing or limits.
+3. **Fail closed.** Missing exchange rules, a non-`TRADING` symbol, a stale feed, an
+   unhealthy adapter, an unknown order outcome, or a missing policy all block new entries.
+   Market filters are always queried, never hardcoded.
+4. **Exit feasibility before entry.** A buy is rejected (`REJECT_EXIT_MIN_NOTIONAL`) if an
+   adverse move minus fees/slippage would leave a position that cannot legally be sold.
+5. **No secret leaks.** Never log, return, or persist API keys or authorization headers.
+   Model keys are write-only in the UI; venue keys live only in the environment.
+6. **Live is gated.** Live needs the mode, `JEV_ENABLE_LIVE_TRADING`, a full preflight and
+   an arming token with a TTL. Manual cycles are refused in live. Default is `paper`.
+7. **Auth is intentionally off** (`JEV_AUTH_DISABLED=true`): the host is reachable only
+   through an SSH tunnel. Do not "fix" this by turning auth on.
 
 ## Development Commands
 
 ```powershell
-# Virtual environment (Python 3.13)
-.\.venv\Scripts\activate
+# Interpreter (Python 3.12 virtualenv)
+.\.venv\Scripts\python.exe -m pytest
 
-# Install dependencies (editable mode)
-pip install -e ".[dev]"
+# One file / one test
+.\.venv\Scripts\python.exe -m pytest tests/test_counterfactual.py -v
+.\.venv\Scripts\python.exe -m pytest tests/test_counterfactual.py -k "stop" -v
 
-# Run test suite
-pytest
+# CLI (src-layout: set PYTHONPATH when not installed)
+$env:PYTHONPATH="src"
+.\.venv\Scripts\python.exe -m jev_trading.cli.main --help
+# subcommands: doctor, migrate, demo, cycle, status, serve, backtest
 
-# Run a single test file
-pytest tests/test_exchange_rules.py -v
-
-# Run a specific test function
-pytest tests/test_exchange_rules.py -k "test_filter_parsing" -v
-
-# Run public market & filter probe (requires no API keys)
-python -m jevquant.exchange
+# Migrations (forward-only, checksum-verified)
+.\.venv\Scripts\python.exe -m jev_trading.cli.main migrate --dry-run
 ```
 
-## Architecture & Code Structure
+`tests/conftest.py` holds the shared fixtures (`compiled_policy`, `market_snapshot`,
+`symbol_rules`, `NOW`). Tests use SQLite (`aiosqlite`) so they need no external services.
 
-The project follows a standard Python `src`-layout under `src/jevquant/`:
+## Architecture
 
-- `config.py`: Environment configuration, mode validation, strict live preflight guards.
-- `storage.py`: SQLite persistence (candles, market_rules_snapshots, signals, risk_checks, orders, fills, balances) using parameterized queries and Decimal strings.
-- `exchange.py`: CCXT Binance Spot adapter, rule parsing (MIN_NOTIONAL, LOT_SIZE, PRICE_FILTER), and candle fetching (closed candles only).
-- `indicators.py`: Pandas-based technical indicators (SMA20, SMA60, RSI14, ATR14) without lookahead bias.
-- `jev_engine.py`: Official `typesafe-sdk` wrapper; defaults to `HOLD` on timeout or API error.
-- `strategy.py`: Jev strategy and baseline comparison strategy (e.g. SMA crossover).
-- `risk.py`: 50 CNY budget allocation, step-size rounding, exit feasibility checker, and daily loss circuit breakers.
-- `orders.py`: Order state machine (`FLAT` -> `ENTRY_SUBMITTING` -> `LONG` -> `EXIT_SUBMITTING`), idempotency via `client_order_id`, and restart reconciliation.
-- `runner.py`: Adapter assembly, live preflight checks, and startup reconciliation. **Does not contain the trading main loop** — the per-closed-candle cycle is not implemented anywhere in this codebase.
-- `recording.py`: Read-only, allowlisted JSONL decision-event capture and replay. Not wired into any loop.
-- `practice.py` / `presentation.py`: Dashboard-only helpers for the beginner practice tab and honest metric formatting.
-- `__main__.py`: `python -m jevquant doctor` (offline prerequisite check) and `demo` (forces paper mode, clears credentials, launches the dashboard).
-- `dashboard/`: Streamlit demo UI in the dark terminal "Jev Market Reflex" style. Renders synthetic data; see the status note above.
+`src/jev_trading/`
+
+- `config.py` — `Settings` from the environment, mode validation, live preflight guards.
+  `redacted_summary()` is what the API is allowed to return.
+- `domain/` — `money.py` (Decimal helpers), `intent.py` (`TradeIntent`,
+  `risk_snapshot_hash`), `risk.py`, `policy.py` (`EffectivePolicy`, exit defaults),
+  `enums.py` (signal states + legal transitions), `errors.py` (`AppError`/`ErrorCode`).
+- `storage/` — `db.py` (engine/session), `models.py` (SQLAlchemy rows), `repository.py`
+  (all queries). Migrations live in `migrations.py` and run at container start.
+- `services/orchestrator.py` — `run_cycle`, the whole pipeline: policy → snapshots →
+  per-symbol Jev evaluation → gate → intent → risk → dispatch → exits → PnL.
+- `services/counterfactual.py` — replays **blocked** buys over 1m bars so the gate can be
+  judged on outcomes. Read-only and best-effort; see `docs/architecture.md`.
+- `services/experiment.py` + `experiment.py` — offline A/B/C comparison runner
+  (portfolio vs signal level, hold-cash and SMA baselines, MFE/MAE).
+- `services/container.py` — dependency wiring, scheduler loop, dependency probes.
+- `services/policy_service.py` — authoring + the compiler that narrows LLM output.
+- `services/agent_tools.py` — the read-only tools the authoring agent may call.
+- `services/audit.py` — hash-chained audit log (`audit_events`); never break the chain.
+- `adapters/market/` — `binance.py` (public REST, paged klines), `synthetic.py` (demo).
+- `adapters/execution/` — `paper.py`, `shadow.py`, `binance_testnet.py`, `hummingbot.py`.
+  All four satisfy the same contract; only paper/testnet are exercised in CI.
+- `api/` — FastAPI app, routes, auth dependency, WebSocket event stream.
+- `cli/main.py` — `jev` entry point (`serve`, `cycle`, `migrate`, `status`, …).
+- `frontend/` — React 18 + TS + Vite cockpit, served by nginx behind the API.
+
+## Conventions
+
+- **Money** — construct from strings (`Decimal("0.1")`), never from floats.
+- **Cycles** — one Jev call per symbol per closed candle; pacing is checked before the
+  signal is created. Never re-ask Jev for a candle that was already evaluated.
+- **Idempotency** — entry key `intent-{policy8}-{symbol}-{candle_epoch}-buy`; one trade
+  per candle is enforced at intent level too, not just by the key.
+- **Simulation is labelled** — synthetic candles, simulated models, simulated orders and
+  synthetic backtests carry explicit flags into the API, audit and UI.
+- **Migrations** — never edit one that has run (checksum mismatch fails startup); add a new
+  one and register it in `MIGRATIONS`.
+- **Reporting** — timestamps are stored UTC; report them to the user in UTC+8.
+
+## Testing Notes
+
+- `pytest` must stay green; the suite is the only executable description of behaviour.
+- Prefer testing the pure functions (`simulate()`, `_gate_bucket()`, the compiler) and the
+  repository queries directly over driving a whole cycle.
+- A fix for a real defect should come with a test that fails without it.
