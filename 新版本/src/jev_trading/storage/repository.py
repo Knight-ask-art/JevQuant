@@ -737,6 +737,61 @@ class Repository:
             )
             return list(result.scalars())
 
+    async def signal_for_candle(
+        self, symbol: str, candle_close_at: datetime
+    ) -> SignalRow | None:
+        """The signal already produced for this symbol's closed candle.
+
+        The in-memory "same candle" guard dies with the process, so a restart
+        inside a candle used to re-ask Jev (and pay again) about evidence that
+        had not moved. This is the durable form of that guard.
+        """
+
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(SignalRow)
+                    .join(
+                        MarketSnapshotRow,
+                        MarketSnapshotRow.id == SignalRow.snapshot_id,
+                    )
+                    .where(
+                        SignalRow.symbol == symbol,
+                        MarketSnapshotRow.candle_close_at == candle_close_at,
+                    )
+                    .order_by(SignalRow.created_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+    async def intent_for_candle(
+        self, symbol: str, candle_close_at: datetime
+    ) -> TradeIntentRow | None:
+        """An intent already created from this symbol's closed candle.
+
+        Covers signals whose row was not written by the current process: the
+        idempotency key itself carries the candle, so the same candle cannot
+        produce a second order even across a restart.
+        """
+
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(TradeIntentRow)
+                    .join(SignalRow, SignalRow.id == TradeIntentRow.signal_id)
+                    .join(
+                        MarketSnapshotRow,
+                        MarketSnapshotRow.id == SignalRow.snapshot_id,
+                    )
+                    .where(
+                        TradeIntentRow.symbol == symbol,
+                        MarketSnapshotRow.candle_close_at == candle_close_at,
+                    )
+                    .order_by(TradeIntentRow.created_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
     async def get_signal(self, signal_id: str) -> SignalRow | None:
         async with self.db.session() as session:
             return await session.get(SignalRow, signal_id)

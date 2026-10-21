@@ -26,7 +26,7 @@ from ..domain.enums import (
     SignalState,
 )
 from ..domain.enums import ErrorCode, PositionStatus
-from ..domain.errors import AppError, ReconciliationRequiredError
+from ..domain.errors import AppError, ReconciliationRequiredError, RiskRejectedError
 from ..domain.intent import ApprovedTradeIntent, Provenance, TradeIntent
 from ..domain.market import AccountSnapshot, MarketSnapshot
 from ..domain.money import ZERO, canonical_str
@@ -692,6 +692,23 @@ class TradingOrchestrator:
     ) -> None:
         now = datetime.now(UTC)
         symbol = symbol_policy.symbol
+        # The same closed candle is never evaluated twice. The in-memory check
+        # at cycle start dies with the process, so a restart inside one candle
+        # would re-ask Jev (and pay again) about evidence that has not moved.
+        already = await self.repo.signal_for_candle(symbol, snapshot.candle_close_at)
+        if already is not None:
+            counters["entries_blocked"] += 1
+            notes.append(f"{symbol}: candle already evaluated, Jev not re-asked")
+            await self.audit.record(
+                "signal.candle_already_evaluated",
+                "symbol",
+                symbol,
+                {
+                    "candle_close_at": snapshot.candle_close_at.isoformat(),
+                    "signal_id": already.id,
+                },
+            )
+            return
         # Pace before a signal exists: a symbol Jev may not be asked about
         # again yet has not produced a signal, and creating one only to leave
         # it dangling in a state the machine cannot express is worse than not
@@ -881,6 +898,20 @@ class TradingOrchestrator:
             notes.append(f"{symbol}: preparation failed ({type(exc).__name__})")
             return
 
+        # One order per symbol per closed candle, whatever produced the signal.
+        # The key below includes the policy, so two policies on the same candle
+        # would otherwise both be allowed to buy.
+        existing_intent = await self.repo.intent_for_candle(
+            symbol, snapshot.candle_close_at
+        )
+        if existing_intent is not None:
+            await self.repo.transition_signal(
+                signal_id,
+                SignalState.EXPIRED,
+                {"reason": "candle_already_traded", "intent_id": existing_intent.id},
+            )
+            notes.append(f"{symbol}: candle already has an intent")
+            return
         idempotency_key = (
             f"intent-{str(policy.policy_id)[:8]}-{symbol}-"
             f"{int(snapshot.candle_close_at.timestamp())}-buy"
@@ -1111,6 +1142,34 @@ class TradingOrchestrator:
         snapshot = snapshots[0]
         await self.repo.insert_market_snapshot(snapshot)
         rules = await self.market.filters(symbol)
+
+        # The risk decision was made against an earlier snapshot. Price, spread
+        # and account state move between approval and dispatch, so the decision
+        # is re-derived here against what the order would actually face; a
+        # decision that no longer holds blocks the order instead of filling it
+        # at a price the risk engine never approved.
+        try:
+            await self._recheck_risk(approved, snapshot, rules, now)
+        except AppError as exc:
+            await self.repo.transition_signal(
+                row.signal_id,
+                SignalState.ERROR,
+                {"reason": exc.code.value, "stage": "dispatch_recheck"},
+            )
+            await self.repo.update_intent_status(intent_id, "ERROR")
+            await self.audit.record(
+                "execution.recheck_failed",
+                "intent",
+                intent_id,
+                {"code": exc.code.value, **exc.details},
+            )
+            return {
+                "intent_id": intent_id,
+                "status": SignalState.ERROR.value,
+                "order_id": None,
+                "notes": [f"risk re-check failed: {exc.message}"],
+            }
+
         await self.repo.update_intent_status(intent_id, "EXECUTION_PENDING")
         counters = {"executed": 0}
         notes: list[str] = []
@@ -1171,6 +1230,83 @@ class TradingOrchestrator:
             "avg_fill_price": canonical_str(receipt.avg_fill_price),
             "notes": notes,
         }
+
+    async def _recheck_risk(self, approved, snapshot, rules, now: datetime) -> None:
+        """Re-evaluate the approval against the snapshot the order will use.
+
+        Only the checks that a moving market can invalidate are re-run: the
+        intent's own numbers, its policy and its TTL were already settled. A
+        stale or widened book, a halted symbol, or a spread the policy no
+        longer tolerates must stop the order, not be inherited from the
+        earlier decision.
+        """
+
+        intent = approved.intent
+        policy_row = await self.repo.get_policy_by_policy_id(str(intent.policy_id))
+        if policy_row is None:
+            raise AppError(
+                ErrorCode.POLICY_EXPIRED,
+                "The policy behind this intent is no longer stored.",
+            )
+        policy = EffectivePolicy.model_validate(policy_row.effective_json)
+        if policy.expires_at <= now:
+            raise AppError(
+                ErrorCode.POLICY_EXPIRED,
+                f"The policy expired at {policy.expires_at.isoformat()}.",
+            )
+        symbol_policy = policy.symbol_policy(intent.symbol)
+        if symbol_policy is None:
+            raise AppError(
+                ErrorCode.POLICY_EXPIRED,
+                f"The policy no longer covers {intent.symbol}.",
+            )
+        marks = {intent.symbol: snapshot.mid}
+        account = await self.repo.account_snapshot(self.account_id, marks, now)
+        positions = await self.repo.get_open_positions(self.account_id)
+        held = next(
+            (position.qty for position in positions if position.symbol == intent.symbol),
+            ZERO,
+        )
+        system = await self._exit_system_snapshot()
+        context = RiskContext(
+            policy=policy,
+            account=account,
+            market=snapshot,
+            symbol_rules=rules,
+            system=system,
+            now=now,
+            position_qty=held,
+            last_entry_at=await self.repo.last_entry_at(self.account_id, intent.symbol),
+            max_staleness_ms=self.settings.market_staleness_ms,
+            exit_slippage_bps=self.settings.exit_slippage_bps,
+            exit_stress_drawdown_bps=self.settings.exit_stress_drawdown_bps,
+        )
+        # The intent was stamped against the approval-time snapshot, so the
+        # hash has to be re-derived for this context; otherwise every re-check
+        # would fail on the hash alone rather than on the state that moved.
+        provisional = intent.model_copy(update={"risk_snapshot_hash": "pending"})
+        checked = provisional.model_copy(
+            update={"risk_snapshot_hash": compute_risk_snapshot_hash(provisional, context)}
+        )
+        decision = self.risk_engine.evaluate(checked, context)
+        await self.repo.insert_risk_decision(decision)
+        await self.audit.record(
+            "risk.recheck",
+            "intent",
+            str(intent.intent_id),
+            {
+                "approved": decision.approved,
+                "failed_rules": [
+                    failure.model_dump(mode="json") for failure in decision.failed_rules
+                ],
+                "snapshot_id": str(snapshot.snapshot_id),
+            },
+        )
+        if not decision.approved:
+            raise RiskRejectedError(
+                "The approved intent no longer passes risk at dispatch time.",
+                [failure.model_dump(mode="json") for failure in decision.failed_rules],
+            )
 
     def _receipt_outcome(self, receipt) -> str:
         """Classify a receipt by the signal state it leads to."""

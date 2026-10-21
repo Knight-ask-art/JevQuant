@@ -189,3 +189,65 @@ async def test_a_budget_refusal_does_not_start_the_cooldown(
     assert [row.state for row in signals] == [SignalState.EXPIRED.value]
     assert counters["errors"] == 0
     assert await orchestrator._jev_pace_wait("BTCUSDT", NOW) == 0.0
+
+
+async def test_a_candle_already_evaluated_is_not_asked_again(
+    repo, server_limits, settings
+):
+    """A restart inside one candle must not pay for the same answer twice."""
+
+    from conftest import market_snapshot as snap
+
+    policy = compiled_policy(server_limits)
+    snapshot = snap(NOW)
+    await repo.insert_market_snapshot(snapshot)
+    await repo.create_signal(
+        symbol="BTCUSDT",
+        policy_id=str(policy.policy_id),
+        snapshot_id=str(snapshot.snapshot_id),
+        side="buy",
+        created_at=NOW,
+    )
+
+    class NoCandles:
+        async def klines(self, *_args, **_kwargs):
+            return []
+
+    class NoJev:
+        async def evaluate(self, *_args, **_kwargs):
+            raise AssertionError("Jev must not be asked about the same candle twice")
+
+    orchestrator = TradingOrchestrator(
+        settings=settings,
+        repo=repo,
+        policy_service=None,
+        market=NoCandles(),
+        jev=NoJev(),
+        policy_generator=None,
+        risk_engine=None,
+        execution_for_mode={},
+        modes=None,
+        audit=FakeAudit(),
+        broker=FakeBroker(),
+        account_id="a1",
+    )
+    counters = {"entries_blocked": 0, "signals_created": 0, "errors": 0}
+    notes: list[str] = []
+
+    await orchestrator._process_entry(
+        mode=Mode.PAPER,
+        policy=policy,
+        policy_row=None,
+        symbol_policy=policy.universe[0],
+        snapshot=snapshot,
+        snapshot_map={},
+        system=None,
+        adapter=None,
+        counters=counters,
+        notes=notes,
+    )
+
+    assert counters["signals_created"] == 0
+    assert counters["entries_blocked"] == 1
+    assert len(await repo.list_signals()) == 1
+    assert "already evaluated" in notes[0]
