@@ -65,7 +65,8 @@ class ExperimentSpec:
     end: datetime | None = None
     baseline_fast: int = 20
     baseline_slow: int = 60
-    starting_equity_usdt: Decimal = Decimal("13.89")
+    # A default only; the deployed account's size is not a repo fact.
+    starting_equity_usdt: Decimal = Decimal("100")
 
     @property
     def finished_at(self) -> datetime:
