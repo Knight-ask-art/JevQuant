@@ -18,7 +18,7 @@ from typing import Mapping, Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..domain.market import Candle
-from .features import aggregate, rsi
+from .features import aggregate, closed_candles, rsi
 
 INTERVALS: dict[str, timedelta] = {
     "1m": timedelta(minutes=1),
@@ -40,6 +40,34 @@ SYNTHETIC_LOOKBACK_MINUTES = {
 
 # Binance caps /api/v3/klines at 1000 bars per request.
 BINANCE_MAX_BARS = 1000
+
+
+async def fetch_minute_range(market, symbol: str, start: datetime, end: datetime) -> list[Candle]:
+    """Every closed 1m bar in ``[start, end]``, paging around the 1000-bar cap.
+
+    A provider returns at most 1000 bars per request, so a window longer than
+    that has to be walked forward. The loop stops when the data runs out, when
+    a page makes no progress, or when it reaches ``end`` -- never because a
+    page happened to be short, which is also what a gap at the cursor looks
+    like.
+    """
+
+    bars: list[Candle] = []
+    cursor = start
+    while cursor < end:
+        batch = await market.klines(symbol, interval="1m", limit=BINANCE_MAX_BARS, start=cursor)
+        usable = [
+            bar
+            for bar in closed_candles(batch, end)
+            if bar.open_time >= start and bar.close_time > cursor
+        ]
+        if not usable:
+            break
+        bars.extend(usable)
+        if usable[-1].close_time >= end:
+            break
+        cursor = usable[-1].close_time
+    return bars
 
 
 class CandleOut(BaseModel):

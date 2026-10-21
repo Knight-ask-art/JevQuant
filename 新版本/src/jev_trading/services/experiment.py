@@ -9,8 +9,12 @@ Three groups, one replay engine, one cost model:
 - ``jev_gate_passed``: only the BUYs the gate admitted.
 
 The point is not to crown a winner on three days of data. It is to put the
-same question to all three groups with the same fills, fees, exits and
-one-position-at-a-time constraint, so the answer is at least comparable.
+same question to all three groups with the same fills, fees and
+one-position-at-a-time constraint. Two differences remain and are reported
+rather than hidden: the Jev groups use each signal's own recorded policy,
+while the baseline uses the policy that was live for that symbol at that
+moment (and counts how often it had to assume defaults), and the baseline's
+entry is a bar close rather than a recorded ask.
 
 Honesty rules this module enforces:
 
@@ -43,7 +47,8 @@ from ..domain.policy import EffectivePolicy, ExitDefaults
 from ..storage.db import Database
 from ..storage.repository import Repository
 from .counterfactual import Replay, simulate
-from .features import aggregate, closed_candles, sma
+from .features import aggregate, sma
+from .klines import fetch_minute_range
 from .market_service import MarketService
 
 DEFAULT_EXITS = ExitDefaults(
@@ -203,13 +208,16 @@ def summarize_signal_level(
 
     blocked = [item for item in rows if item["gate"] == "blocked"]
     passed = [item for item in rows if item["gate"] == "passed"]
+    other = [item for item in rows if item["gate"] == "other"]
     return {
         "all": stats(rows),
         "gate_passed": stats(passed),
         "gate_blocked": stats(blocked),
+        "gate_other": stats(other),
         "timeout_path_all": timeout_path(rows),
         "timeout_path_gate_passed": timeout_path(passed),
         "timeout_path_gate_blocked": timeout_path(blocked),
+        "timeout_path_gate_other": timeout_path(other),
     }
 
 
@@ -221,22 +229,7 @@ class ExperimentRunner:
 
     # -- data ------------------------------------------------------------
     async def _minutes(self, symbol: str, start: datetime, end: datetime) -> list[Candle]:
-        """Every closed 1m bar in ``[start, end]``, paged around the 1000 cap."""
-
-        bars: list[Candle] = []
-        cursor = start
-        while cursor < end:
-            batch = await self.market.klines(symbol, interval="1m", limit=1000, start=cursor)
-            batch = [bar for bar in closed_candles(batch, end) if bar.open_time >= start]
-            if not batch:
-                break
-            bars.extend(batch)
-            if batch[-1].close_time <= cursor:
-                break
-            cursor = batch[-1].close_time
-            if len(batch) < 1000:
-                break
-        return bars
+        return await fetch_minute_range(self.market, symbol, start, end)
 
     # -- replay ----------------------------------------------------------
     def _notional(self, policy: EffectivePolicy | None, symbol: str) -> Decimal:
@@ -362,7 +355,7 @@ class ExperimentRunner:
                 exits=policy.exit_defaults,
                 notional=self._notional(policy, row.symbol),
                 signal_id=row.id,
-                gate="passed" if row.state != "REJECTED" else "blocked",
+                gate=_gate_bucket(row.state),
                 probability=float(row.score_json.get("entry_probability") or 0.0),
                 blocked_rule=None,
                 group=group.name,
@@ -465,12 +458,25 @@ class ExperimentRunner:
         skipped_overlap = 0
         busy_until = datetime.min.replace(tzinfo=UTC)
         policies = await self.repo.list_policies(limit=500)
+        defaulted = 0
 
-        def exits_at(moment: datetime) -> ExitDefaults:
+        def exits_at(moment: datetime, symbol: str) -> ExitDefaults:
+            """The exits the live policy carried for *this* symbol.
+
+            A policy that does not list the symbol cannot speak for it; the
+            first matching policy in a multi-symbol universe would otherwise
+            lend one symbol's stops to another. Falling back to the defaults
+            is counted so the report can say how much of the baseline ran on
+            assumed exits rather than recorded ones.
+            """
+
+            nonlocal defaulted
             for policy in policies:
-                if policy.generated_at <= moment and policy.expires_at >= moment:
+                if policy.generated_at <= moment <= policy.expires_at:
                     effective = EffectivePolicy.model_validate(policy.effective_json)
-                    return effective.exit_defaults
+                    if effective.symbol_policy(symbol) is not None:
+                        return effective.exit_defaults
+            defaulted += 1
             return DEFAULT_EXITS
 
         for symbol in spec.symbols:
@@ -491,7 +497,7 @@ class ExperimentRunner:
                 if entered_at < busy_until:
                     skipped_overlap += 1
                     continue
-                exits = exits_at(entered_at)
+                exits = exits_at(entered_at, symbol)
                 entry_price = Decimal(str(hourly[index].close)) * (
                     Decimal("1") + self.settings.slippage_bps / Decimal("10000")
                 )
@@ -515,6 +521,7 @@ class ExperimentRunner:
         return {
             "candidates": None,
             "skipped_overlap": skipped_overlap,
+            "exits_defaulted": defaulted,
             **summarize(trades, spec.starting_equity_usdt),
         }
 
@@ -524,6 +531,8 @@ def format_report(report: dict[str, Any]) -> str:
         f"Window: {report['window']['started_at']} -> {report['window']['finished_at']}",
         f"Signals: {report['data']['signals']}  BUYs: {report['data']['buy_signals']}  "
         f"gate passed: {report['data']['gate_passed_buys']}  blocked: {report['data']['blocked_buys']}",
+        "",
+        "Portfolio level (one position at a time across the group):",
         "",
         "| group | trades | win rate | net USDT | return % | avg bps | PF | max DD % |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -537,15 +546,25 @@ def format_report(report: dict[str, Any]) -> str:
     blocked = report["blocked_buys"]
     lines.append(_row("blocked_buys", blocked))
     lines.append("")
+    lines.append(
+        "rules baseline: "
+        f"{baseline['exits_defaulted']} entries used assumed default exits "
+        "(no live policy covered that symbol)"
+    )
+    lines.append("")
     lines.append("Signal level (each BUY replayed alone, gate ignored):")
     level = report["signal_level"]
-    for key in ("all", "gate_passed", "gate_blocked"):
+    for key in ("all", "gate_passed", "gate_blocked", "gate_other"):
         part = level[key]
         lines.append(
             f"- {key}: {part['signals']} signals, {part['wins']} would have won, "
             f"avg {part['average_net_bps']} bps (stdev {part['stdev_net_bps']})"
         )
-    for key in ("timeout_path_gate_passed", "timeout_path_gate_blocked"):
+    for key in (
+        "timeout_path_gate_passed",
+        "timeout_path_gate_blocked",
+        "timeout_path_gate_other",
+    ):
         part = level[key]
         if part.get("timeouts"):
             lines.append(
@@ -554,11 +573,49 @@ def format_report(report: dict[str, Any]) -> str:
                 f"{part['timeouts_that_peaked_above_40_bps']} peaked above 40 bps"
             )
     lines.append("")
-    lines.append(f"Blocked BUYs that would have won: {blocked['wins']} / {blocked['trades']}")
+    lines.append(
+        f"Blocked BUYs that would have won: {blocked['wins']} / {blocked['trades']} "
+        "(each judged alone; drawdown is not meaningful for this set)"
+    )
     lines.append("Assumptions:")
     for item in report["assumptions"]:
         lines.append(f"- {item}")
     return "\n".join(lines)
+
+
+#: Signal states that mean the Jev gate admitted the signal.
+_GATE_PASSED_STATES = frozenset(
+    {
+        "ELIGIBLE",
+        "INTENT_CREATED",
+        "RISK_PENDING",
+        "RISK_REJECTED",
+        "APPROVED",
+        "EXECUTION_PENDING",
+        "ACCEPTED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "POSITION_OPEN",
+        "EXIT_PENDING",
+        "CLOSED",
+    }
+)
+
+
+def _gate_bucket(state: str) -> str:
+    """Which gate outcome this signal's final state records.
+
+    ``other`` is its own bucket on purpose: a signal that errored or expired
+    was never admitted by the gate, so counting it as "passed" would flatter
+    the gate, and counting it as "blocked" would blame it for a provider
+    failure.
+    """
+
+    if state == "REJECTED":
+        return "blocked"
+    if state in _GATE_PASSED_STATES:
+        return "passed"
+    return "other"
 
 
 def _money(value: str) -> str:

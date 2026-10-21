@@ -72,11 +72,15 @@ MARKET_REACHED_SIGNAL_STATES = tuple(
         SignalState.CLOSED,
     }
 )
-# Every state a signal can occupy once it was created. The Jev cadence keys
-# on these: the call was paid for whatever came back, rejections included, so
-# a rejection must start the wait as surely as a fill does.
+# Signal states that mean a Jev call was made and paid for. The cadence keys
+# on these: a rejection cost as much as a fill, so it must start the wait too.
+# EXPIRED is excluded on purpose -- a signal expires before Jev is called
+# (budget refusal, missing candle), and charging a full interval for a call
+# that never happened would silently stop trading.
 JEV_CONSUMED_SIGNAL_STATES = tuple(
-    state.value for state in SignalState if state is not SignalState.CANDIDATE
+    state.value
+    for state in SignalState
+    if state not in {SignalState.CANDIDATE, SignalState.EXPIRED}
 )
 # A resting sell is stale once the bid has risen this far above its limit: at
 # that point it no longer tracks the market and is simply absorbing moves.
@@ -730,13 +734,28 @@ class TradingOrchestrator:
         from ..adapters.models.base import build_jev_questions
 
         questions = build_jev_questions()
-        try:
+        if self.budgets is not None:
             # The per-call gate: one cheap aggregate read, because checking at
             # cycle start alone would let the last symbols of a cycle overshoot
-            # the cap (and a spent budget must stop here, not surface as a
-            # Jev error).
-            if self.budgets is not None:
+            # the cap. Kept outside the try below: a refusal means Jev was
+            # never called, so it must not be recorded as a paid call (and
+            # must not start the cadence wait).
+            try:
                 await self.budgets.check_jev()
+            except AppError as exc:
+                await self.repo.transition_signal(
+                    signal.id, SignalState.EXPIRED, {"reason": exc.code.value}
+                )
+                counters["entries_blocked"] += 1
+                notes.append(f"{symbol}: Jev call skipped, {exc.message}")
+                await self.audit.record(
+                    "jev.budget_exhausted",
+                    "signal",
+                    signal.id,
+                    {"symbol": symbol, "code": exc.code.value, **exc.details},
+                )
+                return
+        try:
             jev_result = await self.jev.evaluate(state, questions, signal_id=signal.id)
         except AppError as exc:
             await self.repo.insert_jev_evaluation(

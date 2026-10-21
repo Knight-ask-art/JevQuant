@@ -121,3 +121,71 @@ async def test_a_rejected_signal_still_paces_the_symbol(repo, server_limits, set
     wait = await orchestrator._jev_pace_wait("BTCUSDT", NOW + timedelta(minutes=5))
     assert wait > 0
     assert wait == pytest.approx(settings.jev_min_call_interval_seconds - 300, abs=1)
+
+
+async def test_a_budget_refusal_does_not_start_the_cooldown(
+    repo, server_limits, settings, monkeypatch
+):
+    """A call Jev never received must not cost the symbol an hour."""
+
+    from conftest import market_snapshot as snap
+
+    from jev_trading.domain.enums import SignalState
+    from jev_trading.domain.errors import BudgetExhaustedError
+
+    policy = compiled_policy(server_limits)
+    snapshot = snap(NOW)
+    await repo.insert_market_snapshot(snapshot)
+
+    class RefusingBudget:
+        async def check_jev(self, *_args, **_kwargs):
+            raise BudgetExhaustedError("Jev daily call budget is spent.")
+
+    class NoCandles:
+        async def klines(self, *_args, **_kwargs):
+            return []
+
+    class NoJev:
+        async def evaluate(self, *_args, **_kwargs):
+            raise AssertionError("Jev must not be called when the budget is spent")
+
+    orchestrator = TradingOrchestrator(
+        settings=settings,
+        repo=repo,
+        policy_service=None,
+        market=NoCandles(),
+        jev=NoJev(),
+        policy_generator=None,
+        risk_engine=None,
+        execution_for_mode={},
+        modes=None,
+        audit=FakeAudit(),
+        broker=FakeBroker(),
+        account_id="a1",
+        budgets=RefusingBudget(),
+    )
+
+    async def free(symbol: str, now) -> float:
+        return 0.0
+
+    orchestrator._jev_pace_wait = free
+    counters = {"entries_blocked": 0, "signals_created": 0, "errors": 0}
+    notes: list[str] = []
+
+    await orchestrator._process_entry(
+        mode=Mode.PAPER,
+        policy=policy,
+        policy_row=None,
+        symbol_policy=policy.universe[0],
+        snapshot=snapshot,
+        snapshot_map={},
+        system=None,
+        adapter=None,
+        counters=counters,
+        notes=notes,
+    )
+
+    signals = await repo.list_signals()
+    assert [row.state for row in signals] == [SignalState.EXPIRED.value]
+    assert counters["errors"] == 0
+    assert await orchestrator._jev_pace_wait("BTCUSDT", NOW) == 0.0

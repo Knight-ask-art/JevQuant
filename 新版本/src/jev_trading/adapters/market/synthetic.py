@@ -153,6 +153,8 @@ class SyntheticMarketDataProvider:
             low = min(previous.close, close) * (1.0 - abs(rng.gauss(0, 0.0004)))
             self._candles[symbol].append(
                 Candle(
+                    # ``last`` is the previous close, which is also this bar's
+                    # open: a bar may not start a minute after its predecessor.
                     open_time=last,
                     close_time=last + timedelta(minutes=1),
                     open=previous.close,

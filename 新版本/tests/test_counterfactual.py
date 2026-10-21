@@ -128,7 +128,14 @@ class FakeMarket:
     async def filters(self, symbol: str, **_kwargs):
         return symbol_rules(symbol=symbol)
 
-    async def klines(self, symbol: str, interval: str = "1m", limit: int = 120, warmup: int = 0):
+    async def klines(
+        self,
+        symbol: str,
+        interval: str = "1m",
+        limit: int = 120,
+        warmup: int = 0,
+        start=None,
+    ):
         return self.candles
 
 
@@ -232,3 +239,21 @@ async def test_a_rejected_choice_is_not_replayed(repo, server_limits, settings):
 
     assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 0
     assert await repo.list_counterfactuals() == []
+
+
+async def test_a_window_with_no_bars_is_recorded_as_no_data(repo, server_limits, settings):
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    await _blocked_signal(repo, policy)
+    service = CounterfactualService(settings=settings, repo=repo, market=FakeMarket([]))
+
+    written = await service.evaluate_pending(NOW + timedelta(hours=2))
+
+    # Stored, not skipped: otherwise the same signal is scanned every cycle.
+    assert written == 1
+    rows = await repo.list_counterfactuals()
+    assert len(rows) == 1
+    assert rows[0].exit_reason == "no_data"
+    assert rows[0].net_bps is None
+    assert rows[0].gap_seconds == 3600
+    assert await service.evaluate_pending(NOW + timedelta(hours=3)) == 0

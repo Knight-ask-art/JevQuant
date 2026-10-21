@@ -21,9 +21,14 @@ money" cannot come from optimistic assumptions:
 
 Known imprecision: if the entry happens part-way through a 1m bar, a stop or
 target touched later in that same minute is only seen from the next bar on.
-Nothing cheaper than trade-level data can resolve that, so the row records how
-many minutes it judged (``minutes_judged``) and the window's ``gap_seconds``
-so a reader can tell how much of the path the verdict actually covers.
+Nothing cheaper than trade-level data can resolve that. Two things make the
+gap visible instead of hidden: ``gap_seconds`` counts the minutes of the
+window that no bar covered, and a window with no bars at all is stored as
+``no_data`` rather than as a flat timeout.
+
+Coverage is bounded: only signals inside ``LOOKBACK`` are replayed, because
+the venue serves at most 1000 one-minute bars per request. A signal older
+than that is not recorded at all -- it is not retried forever.
 """
 
 from __future__ import annotations
@@ -37,13 +42,15 @@ from typing import Any
 from ..domain.market import Candle
 from ..domain.money import ZERO
 from ..domain.policy import EffectivePolicy, ExitDefaults
-from .features import closed_candles
+from .klines import fetch_minute_range
 
 SIMULATION_METHOD = "1m-conservative-v1"
 #: Binance returns at most 1000 one-minute bars, so a signal older than this
 #: can no longer be replayed faithfully.
 LOOKBACK = timedelta(hours=14)
-MAX_CANDLES = 1000
+#: Signals replayed per cycle. Each one costs a klines walk; a backlog is
+#: picked up by the next cycle, so this only bounds the work in one cycle.
+MAX_REPLAYS_PER_CYCLE = 6
 
 
 @dataclass(frozen=True)
@@ -171,7 +178,7 @@ class CounterfactualService:
 
         now = now or datetime.now(UTC)
         candidates = await self.repo.list_rejected_signals_without_counterfactual(
-            since=now - LOOKBACK, until=now
+            since=now - LOOKBACK, until=now, limit=MAX_REPLAYS_PER_CYCLE
         )
         written = 0
         for signal in candidates:
@@ -231,14 +238,14 @@ class CounterfactualService:
         entry_price = snapshot.ask * (Decimal("1") + self.settings.slippage_bps / Decimal("10000"))
         entry_price = rules.quantize_price(entry_price)
 
-        candles = await self.market.klines(signal.symbol, interval="1m", limit=MAX_CANDLES)
-        # Bars that opened before the signal can carry price action from
-        # before the entry existed; start with the first full minute after it.
-        window = [
-            candle
-            for candle in closed_candles(candles, now)
-            if candle.open_time > signal.created_at and candle.close_time <= horizon_end
-        ]
+        # Ask for the window itself: the provider returns the *latest* 1000
+        # bars when no start is given, which for an older signal is no bars at
+        # all. Bars that opened before the signal are dropped, so the entry
+        # minute can never carry the exit.
+        candles = await fetch_minute_range(
+            self.market, signal.symbol, signal.created_at, horizon_end
+        )
+        window = [candle for candle in candles if candle.open_time > signal.created_at]
         replay = simulate(
             candles=window,
             entry_price=entry_price,
@@ -249,7 +256,32 @@ class CounterfactualService:
             notional=notional,
         )
         if replay is None:
-            return None
+            # No bars in the window at all. Stored, not skipped: a signal the
+            # venue has no history for must not be scanned every cycle.
+            return await self.repo.insert_counterfactual(
+                signal_id=signal.id,
+                policy_id=signal.policy_id,
+                symbol=signal.symbol,
+                decided_at=signal.created_at,
+                entry_choice=str(score.get("entry_choice")),
+                entry_probability=float(score.get("entry_probability") or 0.0),
+                policy_fit=float(score.get("policy_fit") or 0.0),
+                quality_score=float(score.get("quality_score") or 0.0),
+                blocked_rule=blocked_rule(policy, score),
+                assumed_notional_usdt=notional,
+                entry_price=entry_price,
+                exit_price=None,
+                exit_reason="no_data",
+                net_bps=None,
+                pnl_usdt=None,
+                horizon_seconds=policy.exit_defaults.max_holding_seconds,
+                mfe_bps=None,
+                mae_bps=None,
+                holding_seconds=None,
+                gap_seconds=policy.exit_defaults.max_holding_seconds,
+                is_synthetic=bool(snapshot.is_synthetic),
+                method=SIMULATION_METHOD,
+            )
 
         return await self.repo.insert_counterfactual(
             signal_id=signal.id,
