@@ -15,3 +15,6 @@ frontend/node_modules/
 frontend/dist/
 *.log
 .DS_Store
+
+# Stale pre-restructure working copy (old venv/node_modules only).
+新版本/
