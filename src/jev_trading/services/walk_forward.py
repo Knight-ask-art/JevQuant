@@ -119,6 +119,8 @@ def net_bps(
     interface, but cannot produce an independently observed timeout price.
     """
 
+    if hold_minutes != sample.window_minutes:
+        raise ValueError("cannot reprice an alternative holding period from recorded MFE/MAE")
     entry = sample.entry_price
     if entry <= ZERO:
         return ZERO
@@ -201,6 +203,7 @@ def evaluate_grid(
     if not samples:
         return out
     for stop, take, hold in grid.cells():
+        eligible = [sample for sample in samples if sample.window_minutes == hold]
         values = [
             net_bps(
                 sample,
@@ -210,7 +213,7 @@ def evaluate_grid(
                 exit_slippage_bps=grid.exit_slippage_bps,
                 fee_bps=grid.fee_bps,
             )
-            for sample in samples
+            for sample in eligible
         ]
         if len(values) < min_trades:
             continue
@@ -243,6 +246,7 @@ def cell_values(
                 fee_bps=grid.fee_bps,
             )
             for sample in samples
+            if sample.window_minutes == hold
         ]
     return out
 
@@ -289,6 +293,8 @@ def _is_interior(
     """
 
     for axis, values in enumerate(axes):
+        if len(values) == 1:
+            continue
         position = values.index(cell.key[axis])
         for step in (-1, 1):
             index = position + step
@@ -326,11 +332,15 @@ def plateau(
     takes = grid.takes() if grid is not None else sorted({cell.take_bps for cell in cells})
     holds = list(grid.holds_minutes) if grid is not None else sorted({cell.hold_minutes for cell in cells})
     axes = (stops, takes, holds)
+    active_axes = sum(1 for values in axes if len(values) > 1)
+    required_neighbours = min(min_neighbours, max(1, 2 * active_axes - 1))
     by_key = {cell.key: cell for cell in cells}
 
     def neighbours(cell: CellResult) -> list[CellResult]:
         out: list[CellResult] = []
         for axis, values in enumerate(axes):
+            if len(values) == 1:
+                continue
             position = values.index(cell.key[axis])
             for step in (-1, 1):
                 index = position + step
@@ -355,7 +365,7 @@ def plateau(
             continue
         peers = neighbours(cell)
         positive = [peer for peer in peers if peer.mean_net_bps > required]
-        if not peers or len(positive) * 2 < len(peers) or len(positive) < min_neighbours:
+        if not peers or len(positive) * 2 < len(peers) or len(positive) < required_neighbours:
             continue
         if best is None or cell.mean_net_bps > best["_mean"]:
             best = {
@@ -520,6 +530,10 @@ def run(
                 "validation": len(validation),
                 "test": len(test),
             },
+            "holding_periods_observed": sorted({s.window_minutes for s in train}),
+            "unobserved_grid_holds": sorted(
+                set(grid.holds_minutes) - {s.window_minutes for s in train}
+            ),
         }
         if centre is None:
             record["verdict"] = "no_plateau"
@@ -540,7 +554,10 @@ def run(
                         fee_bps=grid.fee_bps,
                     )
                     for row in rows
+                    if row.window_minutes == cell.hold_minutes
                 )
+            if not pooled:
+                return None
             return round(float(sum(pooled, ZERO) / Decimal(len(pooled))), 2)
 
         validation_mean = segment_mean(validation)
@@ -580,6 +597,7 @@ def run(
         "grid": grid.as_dict(),
         "repricing_quality": "mfe_mae_approximation_not_path_replay",
         "decision_grade": False,
+        "holding_period_assumption": "only_recorded_horizons_are_repriced",
     }
 
 

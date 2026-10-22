@@ -174,7 +174,7 @@ def test_a_broad_neighbourhood_is_a_plateau():
         fee_bps=COST.fee_bps,
         stop_multiples=tuple(Decimal(value) for value in ("0.5", "1", "1.5", "2", "2.5")),
         take_multiples=tuple(Decimal(value) for value in ("1", "1.5", "2", "3", "4")),
-        holds_minutes=(30, 60, 120, 240, 480),
+        holds_minutes=(240,),
     )
 
     found = plateau(
@@ -228,7 +228,7 @@ def test_a_real_edge_is_confirmed_and_a_flat_one_is_not():
         fee_bps=COST.fee_bps,
         stop_multiples=tuple(Decimal(value) for value in ("0.5", "1", "1.5", "2", "2.5")),
         take_multiples=tuple(Decimal(value) for value in ("1", "1.5", "2", "3", "4")),
-        holds_minutes=(30, 60, 120, 240, 480),
+        holds_minutes=(240,),
     )
 
     edge = build_report(
@@ -303,3 +303,27 @@ def test_too_few_samples_says_so_instead_of_guessing():
 
     assert report["sample_adequacy"] == "insufficient"
     assert report["verdict"] == "no_plateau"
+
+
+
+def test_alternative_holding_horizon_is_not_repriced():
+    import pytest
+
+    record = sample(START, mfe="0", mae="0", net="40")
+    with pytest.raises(ValueError, match="alternative holding period"):
+        net_bps(
+            record,
+            stop_bps=Decimal("30"),
+            take_bps=Decimal("60"),
+            hold_minutes=30,
+            exit_slippage_bps=COST.exit_slippage_bps,
+            fee_bps=COST.fee_bps,
+        )
+
+
+def test_only_recorded_horizon_populates_grid_cells():
+    history = [sample(START + timedelta(hours=i), mfe="0", mae="0", net="35") for i in range(20)]
+    cells = evaluate_grid(history, grid=grid(), min_trades=10)
+    assert cells
+    assert {cell.hold_minutes for cell in cells} == {240}
+    assert all(cell.trades == 20 for cell in cells)
