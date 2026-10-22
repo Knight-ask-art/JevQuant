@@ -1,13 +1,15 @@
-"""Counterfactual outcomes for buy signals the Jev gate blocked.
+"""Counterfactual outcomes for every BUY with a recorded Jev gate decision.
 
-A rejected signal leaves no ledger row, so the only outcomes the system can
-observe are the ones the gate admitted. That makes "is the gate too strict?"
-unanswerable from the record: a blocked idea that would have paid is
-indistinguishable from one that would have stopped out.
+A blocked signal leaves no execution ledger row. Studying only blocked buys
+is also a biased comparison: admitted BUYs must be replayed under the *same*
+hypothetical entry and exit assumptions. The replay cohort therefore contains
+both REJECTED and ELIGIBLE decision events, regardless of later execution
+state.
 
-This service replays each blocked buy against the candles that followed, under
+This service replays each decided buy against the candles that followed, under
 the exit rules its policy actually carried, and stores the result. It never
-places an order and never touches the trading path.
+places an order, does not report realized trading PnL, and never touches the
+trading path.
 
 The replay is deliberately pessimistic, so a finding of "the gate cost us
 money" cannot come from optimistic assumptions:
@@ -273,7 +275,7 @@ def regime_blocked(events: Sequence[Any]) -> bool:
 
 
 class CounterfactualService:
-    """Replays blocked buy signals once their holding window has elapsed."""
+    """Replays all decided BUYs once their holding window has elapsed."""
 
     def __init__(self, *, settings, repo, market, audit: Any | None = None) -> None:
         self.settings = settings
@@ -307,7 +309,7 @@ class CounterfactualService:
         # yet, or one whose policy or snapshot is gone, must not consume a
         # slot and starve the signals behind it. Only attempted replays count
         # against MAX_REPLAYS_PER_CYCLE.
-        candidates = await self.repo.list_rejected_signals_without_counterfactual(
+        candidates = await self.repo.list_decided_buy_signals_without_counterfactual(
             since=now - lookback, until=now, limit=MAX_REPLAYS_PER_CYCLE * 10
         )
         written = 0
@@ -367,12 +369,18 @@ class CounterfactualService:
             return None
 
         events = await self.repo.get_signal_events(signal.id)
-        if regime_blocked(events):
-            # Refused by the cost gate, not by Jev's thresholds. Attributing it
-            # to the Jev gate would make the wrong cohort look responsible.
-            rule = "regime_expected_move_below_cost"
+        if any(event.state == SignalState.REJECTED.value for event in events):
+            if regime_blocked(events):
+                # Refused by the cost gate, not by Jev's thresholds.
+                rule = "regime_expected_move_below_cost"
+            else:
+                rule = blocked_rule(policy, score)
+        elif any(event.state == SignalState.ELIGIBLE.value for event in events):
+            # Jev passed, but risk may still have refused execution. This is
+            # a hypothetical outcome, NOT a real fill or realized PnL.
+            rule = "jev_gate_passed"
         else:
-            rule = blocked_rule(policy, score)
+            return None
 
         symbol_policy = policy.symbol_policy(signal.symbol)
         if symbol_policy is None:
