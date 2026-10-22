@@ -127,6 +127,21 @@ Drift is a signal, not an instruction: the ledger is never rewritten from a bala
 difference. Investigate with `POST /api/v1/execution/reconcile`; if that does not
 explain the gap, compare the fills manually before touching anything.
 
+## Security branch (PR #1), rebased
+
+`security/rebased` is PR #1's work merged onto current `main` and ready for
+review. It adds an opt-in operator login (HttpOnly session + CSRF), encrypts
+provider keys at rest with Fernet, and stops an entry kill switch from deferring
+a cross-route position exit. It also adds `JEV_CREDENTIAL_ENCRYPTION_KEY`.
+
+**Do not deploy it with auth enabled without deciding to.** The branch respects
+the project's standing posture in code: auth stays off unless
+`JEV_AUTH_DISABLED=false`, and the toggle can only be disabled on a local,
+synthetic, non-live PAPER account (`local_auth_off_allowed`). That guard is the
+reason this file lives in the repo rather than only in a PR description. If the
+branch is ever deployed, set `JEV_CREDENTIAL_ENCRYPTION_KEY` **before** saving
+any provider key through the UI -- without it the UI refuses to store keys.
+
 ## Cost reports
 
 Two read-only reports answer "where did the money go" without touching policy:
