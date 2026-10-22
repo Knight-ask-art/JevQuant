@@ -170,6 +170,13 @@ def position(row: PositionRow, mark: Any | None = None) -> dict[str, Any]:
         "stop_loss_bps": _money(row.stop_loss_bps),
         "take_profit_bps": _money(row.take_profit_bps),
         "max_holding_seconds": row.max_holding_seconds,
+        # Exit geometry v2. ``peak_price`` is the observed high-water mark the
+        # trail ratchets from; the ratchet fields are null when they are off,
+        # which is what every pre-v2 position reports.
+        "breakeven_trigger_bps": _money(row.breakeven_trigger_bps),
+        "trailing_trigger_bps": _money(row.trailing_trigger_bps),
+        "trailing_distance_bps": _money(row.trailing_distance_bps),
+        "peak_price": _money(row.peak_price),
         "status": row.status,
         "realized_pnl_usdt": _money(row.realized_pnl_usdt),
         "opened_at": row.opened_at.isoformat(),

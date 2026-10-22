@@ -165,6 +165,27 @@ async def up_0007_fill_fee_amount(
         )
 
 
+async def up_0009_exit_geometry_v2(
+    conn: AsyncConnection,
+) -> None:
+    """Positions carry their own exit ratchet state.
+
+    Exit geometry v2 adds an optional break-even and trailing stop. Both are
+    off for every existing position (NULL), which is exactly v1 behaviour: an
+    upgrade must not change how a trade that is already running will end.
+    ``peak_price`` is the high-water mark the trail ratchets from; it starts
+    empty and is filled by the exit manager as it observes prices.
+    """
+
+    for column in (
+        "breakeven_trigger_bps",
+        "trailing_trigger_bps",
+        "trailing_distance_bps",
+        "peak_price",
+    ):
+        await _add_column(conn, "positions", column, "NUMERIC(28, 12)")
+
+
 async def up_0008_edge_shadow(
     conn: AsyncConnection,
 ) -> None:
@@ -234,6 +255,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         "0008_edge_shadow",
         "record what the shadow edge evaluator would have decided",
         up_0008_edge_shadow,
+    ),
+    Migration(
+        "0009_exit_geometry_v2",
+        "positions carry their break-even / trailing state",
+        up_0009_exit_geometry_v2,
     ),
 )
 

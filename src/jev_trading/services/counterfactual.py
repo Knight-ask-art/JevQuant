@@ -43,6 +43,7 @@ from typing import Any
 
 from ..domain.costs import CostModel
 from ..domain.enums import SignalState
+from ..domain.exits import exit_plan
 from ..domain.market import Candle
 from ..domain.money import ZERO
 from ..domain.policy import EffectivePolicy, ExitDefaults
@@ -108,13 +109,19 @@ def simulate(
 
     ``candles`` must already be restricted to the bars that follow the entry
     minute. The result is expressed net of fees and exit slippage.
+
+    The stop and target come from ``domain/exits.py``, the same function the
+    live exit manager uses. The replay feeds it each bar's low as the bid, so a
+    ratcheted stop is hit on the same rule that would hit it live; the peak is
+    the highest high seen so far in this replay.
     """
 
     if not candles or entry_price <= ZERO:
         return None
     slippage = exit_slippage_bps / Decimal("10000")
-    stop_price = entry_price * (Decimal("1") - exit_rules.stop_loss_bps / Decimal("10000"))
-    target_price = entry_price * (Decimal("1") + exit_rules.take_profit_bps / Decimal("10000"))
+    geometry = exit_rules.geometry()
+    round_trip_cost_bps = taker_fee_bps * Decimal("2") + exit_slippage_bps
+    peak = entry_price
 
     exit_price: Decimal | None = None
     exit_reason = "timeout"
@@ -144,15 +151,32 @@ def simulate(
         if last_close < lowest:
             lowest = last_close
             lowest_at = candle.close_time
-        if low <= stop_price:
+        # The ratchet sees the high this bar reached before the stop is
+        # checked against the low, which is the same order the live path uses
+        # (peak first, then the rule). It is also the conservative order: the
+        # trail can only have moved further up before the stop is tested.
+        if high > peak:
+            peak = high
+        # A bar is tested twice because it has two extremes: the stop against
+        # its low, the target against its high. The live path only sees a bid,
+        # so it tests both against one price; a bar cannot do that without
+        # hiding one of the two levels it actually reached.
+        plan = exit_plan(
+            entry_price=entry_price,
+            geometry=geometry,
+            peak_price=peak,
+            bid=low,
+            round_trip_cost_bps=round_trip_cost_bps,
+        )
+        if plan.stop_price > ZERO and low <= plan.stop_price:
             # One bar can touch both levels; assuming the stop removes any
             # benefit of hindsight from intra-bar ordering we cannot see.
-            exit_price = stop_price * (Decimal("1") - slippage)
+            exit_price = plan.stop_price * (Decimal("1") - slippage)
             exit_reason = "stop_loss"
             exit_time = candle.close_time
             break
-        if high >= target_price:
-            exit_price = target_price * (Decimal("1") - slippage)
+        if plan.target_price > ZERO and high >= plan.target_price:
+            exit_price = plan.target_price * (Decimal("1") - slippage)
             exit_reason = "take_profit"
             exit_time = candle.close_time
             break
@@ -166,7 +190,6 @@ def simulate(
     # Exit slippage is already inside ``exit_price``; only the two taker fees
     # remain to be charged. ``round_trip_cost_bps`` records the total friction
     # applied to the un-slipped exit, for reporting rather than arithmetic.
-    round_trip_cost_bps = taker_fee_bps * Decimal("2") + exit_slippage_bps
     net_bps = gross_bps - taker_fee_bps * Decimal("2")
     pnl = notional * net_bps / Decimal("10000")
     return Replay(

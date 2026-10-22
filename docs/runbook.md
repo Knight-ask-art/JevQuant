@@ -173,6 +173,32 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 and back it up: losing it makes saved model keys unreadable (they must be
 re-entered), and this PR does not provide a lossless rotation.
 
+## Exit geometry v2
+
+Migration `0009_exit_geometry_v2` adds `positions.breakeven_trigger_bps`,
+`trailing_trigger_bps`, `trailing_distance_bps` and `peak_price`. Existing
+positions get NULL for all four, which is exactly v1 behaviour — a deploy does
+not change how a position already open will end.
+
+The ratchets are opt-in per policy. Until a policy includes them, nothing about
+exits changes. To enable them, add to the policy's `exit_defaults`:
+
+```json
+"breakeven_trigger_bps": 60,
+"trailing_trigger_bps": 150,
+"trailing_distance_bps": 100
+```
+
+Both `trailing_*` fields must be present together, and the distance must be
+smaller than the trigger; the compiler clamps the distance down to
+`JEV_MAX_TRAILING_DISTANCE_BPS` (400). Clamping can only lower it, so it never
+creates a pair the validator would refuse.
+
+Before turning a trail on for real money, run the walk-forward with the same
+geometry. `python -m jev_trading.walk_forward` reprices recorded outcomes under
+a stop/take/hold grid; a trail that only looks good on four trades is not a
+reason to change live exits.
+
 ## Cost reports
 
 Two read-only reports answer "where did the money go" without touching policy:

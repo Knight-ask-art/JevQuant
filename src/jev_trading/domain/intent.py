@@ -98,6 +98,11 @@ class ApprovedTradeIntent(BaseModel):
     effective_stop_loss_bps: Decimal | None = Field(default=None, gt=0)
     effective_take_profit_bps: Decimal | None = Field(default=None, gt=0)
     effective_max_holding_seconds: int | None = Field(default=None, gt=0)
+    # Exit geometry v2 ratchets, frozen at approval like the stop and target.
+    # ``None`` means off, which is what every intent approved before v2 means.
+    effective_breakeven_trigger_bps: Decimal | None = Field(default=None, gt=0)
+    effective_trailing_trigger_bps: Decimal | None = Field(default=None, gt=0)
+    effective_trailing_distance_bps: Decimal | None = Field(default=None, gt=0)
     expected_fee_quote: Decimal = Field(default=Decimal("0"), ge=0)
 
     @property

@@ -634,6 +634,21 @@ class RiskEngine:
                 if intent.intent_type is IntentType.OPEN
                 else None
             ),
+            effective_breakeven_trigger_bps=(
+                policy.exit_defaults.breakeven_trigger_bps
+                if intent.intent_type is IntentType.OPEN
+                else None
+            ),
+            effective_trailing_trigger_bps=(
+                policy.exit_defaults.trailing_trigger_bps
+                if intent.intent_type is IntentType.OPEN
+                else None
+            ),
+            effective_trailing_distance_bps=(
+                policy.exit_defaults.trailing_distance_bps
+                if intent.intent_type is IntentType.OPEN
+                else None
+            ),
             expected_fee_quote=expected_fee,
         )
         return approved, []

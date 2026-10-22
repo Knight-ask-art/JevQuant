@@ -27,6 +27,7 @@ from ..domain.enums import (
 )
 from ..domain.costs import CostModel
 from ..domain.enums import ErrorCode, PositionStatus
+from ..domain.exits import ExitGeometry, exit_plan, time_limit_reached
 from ..domain.errors import AppError, ReconciliationRequiredError, RiskRejectedError
 from ..domain.intent import ApprovedTradeIntent, Provenance, TradeIntent
 from ..domain.market import AccountSnapshot, MarketSnapshot
@@ -194,6 +195,9 @@ class TradingOrchestrator:
         self.counterfactual = counterfactual
         self.regime_gate = regime_gate or RegimeGate.from_settings(settings)
         self.cost_model = CostModel.from_settings(settings)
+        # Last ratcheted stop recorded per position, so the audit trail shows
+        # each move once instead of once per cycle.
+        self._ratchet_seen: dict[str, Decimal] = {}
         self.edge_evaluator = edge_evaluator
         if self.edge_evaluator is None and getattr(settings, "edge_shadow_enabled", True):
             self.edge_evaluator = EdgeEvaluator.from_settings(settings, repo)
@@ -1709,22 +1713,55 @@ class TradingOrchestrator:
             return None
         return EffectivePolicy.model_validate(row.effective_json)
 
-    def _exit_reason(self, position, snapshot: MarketSnapshot, now: datetime) -> str | None:
-        entry = position.avg_entry_price
-        stop_bps = position.stop_loss_bps or ZERO
-        take_bps = position.take_profit_bps or ZERO
-        if stop_bps > ZERO and snapshot.bid <= entry * (Decimal("1") - stop_bps / Decimal("10000")):
-            return "stop_loss"
-        if take_bps > ZERO and snapshot.bid >= entry * (Decimal("1") + take_bps / Decimal("10000")):
-            return "take_profit"
+    @staticmethod
+    def _geometry_of(position) -> ExitGeometry:
+        """The rules frozen onto this position, including any v2 ratchets.
+
+        ``peak_price`` is not passed here: the ratchet needs the peak *now*,
+        and the exit manager updates it just before asking. A position with
+        NULL ratchet columns (every pre-v2 row) yields exactly v1 behaviour.
+        """
+
+        return ExitGeometry(
+            stop_loss_bps=position.stop_loss_bps or ZERO,
+            take_profit_bps=position.take_profit_bps or ZERO,
+            max_holding_seconds=position.max_holding_seconds or 0,
+            breakeven_trigger_bps=position.breakeven_trigger_bps,
+            trailing_trigger_bps=position.trailing_trigger_bps,
+            trailing_distance_bps=position.trailing_distance_bps,
+        )
+
+    def _exit_decision(self, position, snapshot: MarketSnapshot, now: datetime):
+        """The one place a position's exit is decided.
+
+        Both the live path and the counterfactual replay call the shared
+        ``exit_plan`` so the recorded "what would this have returned" cannot
+        drift from the rule that actually runs.
+        """
+
         opened = position.opened_at
         if opened.tzinfo is None:
             opened = opened.replace(tzinfo=UTC)
-        if position.max_holding_seconds and now >= opened + timedelta(
-            seconds=position.max_holding_seconds
+        geometry = self._geometry_of(position)
+        plan = exit_plan(
+            entry_price=position.avg_entry_price,
+            geometry=geometry,
+            peak_price=position.peak_price,
+            bid=snapshot.bid,
+            round_trip_cost_bps=self.cost_model.round_trip_bps,
+        )
+        if plan.reason is not None:
+            return plan.reason, plan
+        if time_limit_reached(
+            opened_at=opened,
+            now=now,
+            max_holding_seconds=geometry.max_holding_seconds,
         ):
-            return "time_limit"
-        return None
+            return "time_limit", plan
+        return None, plan
+
+    def _exit_reason(self, position, snapshot: MarketSnapshot, now: datetime) -> str | None:
+        return self._exit_decision(position, snapshot, now)[0]
 
     async def _exit_system_snapshot(self) -> SystemSnapshot:
         """The dependencies an exit reads, probed only while positions are open."""
@@ -1859,7 +1896,19 @@ class TradingOrchestrator:
             # In particular, after a restart Live may be disarmed/reset to Paper,
             # but any outstanding Live position still requires its native exit path.
 
-            reason = self._exit_reason(position, snapshot, now) or position.exit_requested_reason
+            # The peak is updated before the rule runs: a trailing stop that
+            # ratchets from a stale high-water mark would give back exactly
+            # the move it exists to protect.
+            position = await self.repo.update_position_peak(position, snapshot.bid)
+            decided, plan = self._exit_decision(position, snapshot, now)
+            if plan.ratcheted and self._ratchet_seen.get(position.id) != plan.stop_price:
+                # Recorded once per distinct stop level, not once per cycle:
+                # a ratchet that fires every minute would bury the audit log.
+                self._ratchet_seen[position.id] = plan.stop_price
+                await self.audit.record(
+                    "exit.ratchet", "position", position.id, plan.as_detail()
+                )
+            reason = decided or position.exit_requested_reason
             if reason is None:
                 continue
             idempotency_suffix = f"{int(now.timestamp() // 60)}"

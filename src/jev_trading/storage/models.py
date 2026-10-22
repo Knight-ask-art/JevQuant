@@ -476,6 +476,15 @@ class PositionRow(Base):
     stop_loss_bps: Mapped[Decimal] = mapped_column(PCT)
     take_profit_bps: Mapped[Decimal] = mapped_column(PCT)
     max_holding_seconds: Mapped[int] = mapped_column(Integer)
+    # Exit geometry v2, frozen onto the position when it opened so a later
+    # policy change cannot re-price a trade that is already running. NULL means
+    # the ratchets are off, which is what every pre-v2 position means.
+    breakeven_trigger_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    trailing_trigger_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    trailing_distance_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    # High-water mark of the bid actually observed while the position was open.
+    # The trail ratchets from this, never from an unobserved intra-cycle spike.
+    peak_price: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     status: Mapped[str] = mapped_column(String(16), index=True, default="OPEN")
     realized_pnl_usdt: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
     opened_at: Mapped[datetime] = mapped_column(UTCDateTime)

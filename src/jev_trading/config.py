@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     edge_max_gap_minutes: int = Field(default=30, ge=0)
     min_stop_loss_bps: Decimal = Decimal("20")
     max_stop_loss_bps: Decimal = Decimal("300")
+    # Exit geometry v2 bound. The trail may not be wider than this, so a policy
+    # cannot describe a trailing stop that can only fire below its own entry.
+    max_trailing_distance_bps: Decimal = Decimal("400")
     min_entry_cooldown_seconds: int = 60
     # Over-trading protection (Freqtrade-style "guard"): within
     # overtrade_window_seconds a symbol may enter at most
@@ -248,6 +251,7 @@ class Settings(BaseSettings):
             min_stop_loss_bps=self.min_stop_loss_bps,
             max_stop_loss_bps=self.max_stop_loss_bps,
             max_holding_seconds=86_400,
+            max_trailing_distance_bps=self.max_trailing_distance_bps,
             min_entry_cooldown_seconds=self.min_entry_cooldown_seconds,
             min_choice_probability=self.min_choice_probability,
             min_policy_fit=self.min_policy_fit,

@@ -131,7 +131,8 @@ The LLM output is untrusted. The compiler:
 - clamps per-symbol notional/spread/slippage and raises cooldown to the server minimum;
 - clamps portfolio exposure, positions and loss/drawdown caps;
 - raises gate thresholds to server floors;
-- clamps stop/take/holding into the server range;
+- clamps stop/take/holding into the server range, and the optional break-even /
+  trailing ratchets (a distance that would arm at or below entry disables them);
 - records every adjustment as a `Clamp` for the Strategy Desk and audit.
 
 An empty universe after compilation is a hard validation error.
@@ -147,6 +148,46 @@ exit_price = entry_price × (1 − (stop_loss_bps + taker_fee_bps + exit_slippag
 If the resulting quantity or notional cannot satisfy `LOT_SIZE` / `MIN_NOTIONAL`, the
 intent is rejected with `REJECT_EXIT_MIN_NOTIONAL`. A position the system could not legally
 sell is never opened.
+
+## Exit geometry v2: the ratchet
+
+A position leaves on a stop, a target, or the clock. Version 2 adds two ways for
+the stop to ratchet up, and both are **off unless the policy asks for them**:
+
+```json
+"exit_defaults": {
+  "stop_loss_bps": 120,
+  "take_profit_bps": 240,
+  "max_holding_seconds": 3600,
+  "breakeven_trigger_bps": 60,
+  "trailing_trigger_bps": 150,
+  "trailing_distance_bps": 100
+}
+```
+
+- **Break-even** moves the stop to entry + the round trip once the peak clears
+  `breakeven_trigger_bps`. A stop *at* entry still loses the fees, so break-even
+  is priced above it. It never loosens a stop that is already tighter.
+- **Trailing** starts once the peak clears `trailing_trigger_bps` and then keeps
+  the stop `trailing_distance_bps` below the high-water mark. The distance must
+  be smaller than the trigger, or the trail would arm at or below entry — a stop
+  with extra steps. The policy validator refuses that combination outright, and
+  the compiler only ever narrows the distance, so it cannot create it.
+- **The peak only rises.** It is the high-water mark of bids the exit manager
+  actually observed, so a spike between cycles is invisible and the trail arms
+  late rather than early. The replay sees every bar's high, so its ratchet is
+  slightly more optimistic than live; that direction is documented, not hidden.
+- **One rule, two callers.** `domain/exits.py` owns the stop/target/ratchet
+  arithmetic and is called by the orchestrator (against the bid) and by the
+  counterfactual replay (against each bar's low, after updating the peak from
+  its high). If they were separate, the record would stop describing the rule
+  that runs.
+- **Frozen per position.** The geometry is copied onto the position at fill
+  time, so a later policy cannot re-price a trade that is already running.
+  Positions opened before migration `0009` have NULL ratchet columns, which
+  reads as v1 — an upgrade never tightens a live stop.
+- Every distinct ratcheted level is audited once as `exit.ratchet`, with prices
+  only.
 
 ## Cost model
 

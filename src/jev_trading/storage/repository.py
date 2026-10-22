@@ -251,6 +251,26 @@ class Repository:
             await session.flush()
             return row
 
+    async def update_position_peak(
+        self, position: PositionRow, bid: Decimal
+    ) -> PositionRow:
+        """Raise the position's high-water mark to ``bid`` if it is higher.
+
+        Returns a freshly read row so the caller always sees the committed
+        value. The peak only ever rises: a pullback must not lower the trail,
+        or the stop would walk backwards and the position would exit on a move
+        it had already survived.
+        """
+
+        async with self.db.session() as session:
+            row = await session.get(PositionRow, position.id)
+            if row is None:
+                raise ValueError(f"position {position.id} not found")
+            if bid > ZERO and (row.peak_price is None or bid > row.peak_price):
+                row.peak_price = bid
+                await session.flush()
+            return row
+
     async def settled_position(self, position_id: str) -> PositionRow:
         """A position row freshly read from the store (never a stale identity)."""
 
@@ -1377,6 +1397,10 @@ class Repository:
                         take_profit_bps=approved.effective_take_profit_bps
                         or Decimal("0"),
                         max_holding_seconds=approved.effective_max_holding_seconds or 0,
+                        breakeven_trigger_bps=approved.effective_breakeven_trigger_bps,
+                        trailing_trigger_bps=approved.effective_trailing_trigger_bps,
+                        trailing_distance_bps=approved.effective_trailing_distance_bps,
+                        peak_price=avg_price,
                         status=PositionStatus.OPEN.value,
                         opened_at=now,
                         entry_order_id=order_id,

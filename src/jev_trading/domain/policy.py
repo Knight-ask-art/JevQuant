@@ -80,11 +80,55 @@ class JevGatePolicy(BaseModel):
 
 
 class ExitDefaults(BaseModel):
+    """The exit geometry a policy proposes, before the server clamps it.
+
+    The two ratchet fields are optional and default to off. A policy that does
+    not mention them gets exactly the v1 behaviour -- a fixed stop and target --
+    so enabling a trail is always a deliberate act by whoever wrote the policy,
+    never a side effect of upgrading the code.
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     stop_loss_bps: Decimal = Field(gt=0, le=10_000)
     take_profit_bps: Decimal = Field(gt=0, le=10_000)
     max_holding_seconds: int = Field(gt=0, le=604_800)
+    #: Move the stop to entry + round-trip cost once the peak clears this.
+    breakeven_trigger_bps: Decimal | None = Field(default=None, gt=0, le=10_000)
+    #: Start trailing once the peak clears this.
+    trailing_trigger_bps: Decimal | None = Field(default=None, gt=0, le=10_000)
+    #: Keep the trailing stop this far below the peak.
+    trailing_distance_bps: Decimal | None = Field(default=None, gt=0, le=10_000)
+
+    @model_validator(mode="after")
+    def _trail_is_coherent(self) -> ExitDefaults:
+        if self.trailing_trigger_bps is None and self.trailing_distance_bps is None:
+            return self
+        if self.trailing_trigger_bps is None or self.trailing_distance_bps is None:
+            raise ValueError(
+                "trailing_trigger_bps and trailing_distance_bps must be set together"
+            )
+        if self.trailing_distance_bps >= self.trailing_trigger_bps:
+            # Otherwise the trail arms at or below entry and can exit a trade
+            # that never made money, which is a stop with extra steps.
+            raise ValueError(
+                "trailing_distance_bps must be smaller than trailing_trigger_bps"
+            )
+        return self
+
+    def geometry(self):
+        """The runtime form of these rules (see ``domain/exits.py``)."""
+
+        from .exits import ExitGeometry
+
+        return ExitGeometry(
+            stop_loss_bps=self.stop_loss_bps,
+            take_profit_bps=self.take_profit_bps,
+            max_holding_seconds=self.max_holding_seconds,
+            breakeven_trigger_bps=self.breakeven_trigger_bps,
+            trailing_trigger_bps=self.trailing_trigger_bps,
+            trailing_distance_bps=self.trailing_distance_bps,
+        )
 
 
 class StrategyPolicy(BaseModel):
@@ -146,6 +190,10 @@ class ServerLimits(BaseModel):
     max_stop_loss_bps: Decimal = Field(default=Decimal("300"), gt=0)
     max_take_profit_bps: Decimal = Field(default=Decimal("1000"), gt=0)
     max_holding_seconds: int = Field(default=86_400, gt=0)
+    #: The longest trail a policy may ask for. A trail wider than the target
+    #: can only ever fire below entry, so the server refuses it rather than
+    #: letting a policy describe an exit that cannot make money.
+    max_trailing_distance_bps: Decimal = Field(default=Decimal("400"), gt=0)
     min_entry_cooldown_seconds: int = Field(default=0, ge=0)
     min_choice_probability: float = Field(default=0.5, ge=0.0, le=1.0)
     min_policy_fit: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -464,6 +512,38 @@ class PolicyCompiler:
         )
 
     def _clamp_exits(self, proposed: ExitDefaults, clamps: list[Clamp]) -> ExitDefaults:
+        # The ratchets are opt-in, so a policy that leaves them out keeps the
+        # exact v1 geometry. When present they are bounded like every other
+        # exit value: the server can narrow them, never widen them.
+        breakeven = proposed.breakeven_trigger_bps
+        if breakeven is not None and breakeven < self.server.min_stop_loss_bps:
+            clamps.append(
+                Clamp(
+                    field="exit_defaults.breakeven_trigger_bps",
+                    requested=str(breakeven),
+                    effective=str(self.server.min_stop_loss_bps),
+                    reason="break-even must not arm inside the minimum stop distance",
+                )
+            )
+            breakeven = self.server.min_stop_loss_bps
+
+        trailing_trigger = proposed.trailing_trigger_bps
+        trailing_distance = proposed.trailing_distance_bps
+        if trailing_distance is not None and trailing_distance > self.server.max_trailing_distance_bps:
+            clamps.append(
+                Clamp(
+                    field="exit_defaults.trailing_distance_bps",
+                    requested=str(trailing_distance),
+                    effective=str(self.server.max_trailing_distance_bps),
+                    reason="server trailing distance bound",
+                )
+            )
+            trailing_distance = self.server.max_trailing_distance_bps
+        # Narrowing the distance can never break coherence: the validator
+        # already requires distance < trigger, and clamping only lowers the
+        # distance. The server therefore cannot produce the pair the validator
+        # refuses, and needs no fallback branch for it.
+
         stop_loss = min(
             max(proposed.stop_loss_bps, self.server.min_stop_loss_bps),
             self.server.max_stop_loss_bps,
@@ -504,4 +584,7 @@ class PolicyCompiler:
             stop_loss_bps=stop_loss,
             take_profit_bps=take_profit,
             max_holding_seconds=holding,
+            breakeven_trigger_bps=breakeven,
+            trailing_trigger_bps=trailing_trigger,
+            trailing_distance_bps=trailing_distance,
         )

@@ -70,6 +70,8 @@ $env:PYTHONPATH="src"
   (all queries). Migrations live in `migrations.py` and run at container start.
 - `services/orchestrator.py` — `run_cycle`, the whole pipeline: policy → snapshots →
   per-symbol Jev evaluation → gate → intent → risk → dispatch → exits → PnL.
+- `domain/exits.py` — the stop/target/break-even/trail arithmetic, shared by the live
+  exit manager and the counterfactual replay so the record describes the rule that runs.
 - `services/regime_gate.py` — deterministic cost gate: expected move over the policy's
   holding window vs the round trip. Records its verdict on every signal; can refuse one.
 - `domain/costs.py` — the one definition of a round trip (fees + impact), and the
