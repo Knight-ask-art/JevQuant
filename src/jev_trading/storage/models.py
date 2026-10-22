@@ -288,12 +288,12 @@ class SignalEventRow(Base):
 
 
 class CounterfactualRow(Base):
-    """What a blocked buy would have returned under the exit rules in force.
+    """Hypothetical outcome of a decided BUY under its recorded exit rules.
 
-    Rejected signals never reach the order path, so the only outcomes the
-    system could otherwise observe are the ones the gate let through. One row
-    per blocked signal, written once the full holding window has elapsed; the
-    notional is a replay assumption, never a real position.
+    Both Jev-rejected and Jev-eligible signals use the same replay assumptions.
+    ``blocked_rule="jev_gate_passed"`` denotes an eligible decision, NOT an
+    actual fill. One row per signal after its holding horizon; the notional
+    and return are modelled, never realized position PnL.
     """
 
     __tablename__ = "counterfactual_outcomes"

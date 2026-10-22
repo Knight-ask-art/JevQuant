@@ -647,17 +647,30 @@ class Repository:
         async with self.db.session() as session:
             return await session.get(MarketSnapshotRow, snapshot_id)
 
-    async def list_rejected_signals_without_counterfactual(
+    async def list_decided_buy_signals_without_counterfactual(
         self, *, since: datetime, until: datetime, limit: int = 60
     ) -> list[SignalRow]:
-        """Blocked buys that have no replayed outcome yet, oldest first.
+        """Scored BUYs with a recorded gate decision and no replay, oldest first.
 
-        Only ``entry_choice == "buy"`` can produce a replay: anything else was
-        never a candidate trade, so it would burn the per-cycle budget and
-        leave nothing behind. Without this filter a run of ``reject`` signals
-        occupies every slot and the real buys are never reached.
+        Include both Jev-rejected signals and Jev-eligible signals, even after
+        the latter move through risk/execution/position lifecycle states. Using
+        immutable decision *events* avoids losing admitted candidates when
+        their current state changes. A SCORED signal without a gate decision
+        is excluded: it may have crashed before the gate evaluated it.
+
+        Non-BUY choices and unscored signals must not occupy the replay queue.
         """
 
+        decided = (
+            select(SignalEventRow.id)
+            .where(
+                SignalEventRow.signal_id == SignalRow.id,
+                SignalEventRow.state.in_(
+                    (SignalState.REJECTED.value, SignalState.ELIGIBLE.value)
+                ),
+            )
+            .exists()
+        )
         async with self.db.session() as session:
             statement = (
                 select(SignalRow)
@@ -665,13 +678,14 @@ class Repository:
                     CounterfactualRow, CounterfactualRow.signal_id == SignalRow.id
                 )
                 .where(
-                    SignalRow.state == SignalState.REJECTED.value,
+                    SignalRow.side == "buy",
                     SignalRow.created_at >= since,
                     SignalRow.created_at <= until,
                     SignalRow.score_json["entry_choice"].as_string() == "buy",
+                    decided,
                     CounterfactualRow.id.is_(None),
                 )
-                .order_by(SignalRow.created_at)
+                .order_by(SignalRow.created_at, SignalRow.id)
                 .limit(limit)
             )
             return list((await session.execute(statement)).scalars())

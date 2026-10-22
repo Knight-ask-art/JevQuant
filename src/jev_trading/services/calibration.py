@@ -12,8 +12,8 @@ This module checks, and produces a mapping that can be checked again later:
   own mapping; pooling them would average two different questions.
 - **Outcome first.** The recorded counterfactual return decides the label
   (``net_bps > 0``); the score is only the predictor. A counterfactual row
-  records the counterfactual *side* of the gate alongside the admitted trades,
-  which is the only sample that is not selected by the gate itself.
+  now covers both rejected and Jev-eligible BUY decisions under identical
+  replay assumptions; this is not a measurement of actual executed PnL.
 - **Fitted on the past only.** Fitting takes the earliest part of a cohort and
   reports the rest as held out. A fit that has not been checked out of sample
   is a description, not a calibration.

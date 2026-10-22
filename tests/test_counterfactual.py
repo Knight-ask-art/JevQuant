@@ -267,7 +267,7 @@ async def test_reject_choices_do_not_take_the_replay_slots(
         )
     await _blocked_signal(repo, policy)
 
-    candidates = await repo.list_rejected_signals_without_counterfactual(
+    candidates = await repo.list_decided_buy_signals_without_counterfactual(
         since=NOW - timedelta(hours=14), until=NOW + timedelta(hours=2), limit=6
     )
 
@@ -578,3 +578,134 @@ async def test_counterfactual_uses_chronological_candles_even_if_provider_reorde
     outcome = (await repo.list_counterfactuals())[0]
     assert outcome.exit_reason == "take_profit"
     assert outcome.gap_seconds == 0
+
+
+async def _eligible_signal(repo, policy, *, created_at=NOW):
+    """A scored BUY with an immutable ELIGIBLE event (not necessarily filled)."""
+
+    snapshot = market_snapshot(NOW)
+    await repo.insert_market_snapshot(snapshot)
+    signal = await repo.create_signal(
+        symbol="BTCUSDT",
+        policy_id=str(policy.policy_id),
+        snapshot_id=str(snapshot.snapshot_id),
+        side="buy",
+        state=SignalState.ELIGIBLE,
+        created_at=created_at,
+    )
+    evaluation = await repo.insert_jev_evaluation(
+        signal_id=signal.id, model="test", request={}, response={}, answers={}
+    )
+    await repo.attach_jev_evaluation(
+        signal.id,
+        evaluation.id,
+        score={
+            "entry_choice": "buy",
+            "entry_probability": 0.99,
+            "policy_fit": 0.99,
+            "quality_score": 5.0,
+        },
+    )
+    return signal
+
+
+async def test_eligible_and_rejected_buy_decisions_both_receive_hypothetical_outcomes(
+    repo, server_limits, settings
+):
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    rejected = await _blocked_signal(repo, policy)
+    eligible = await _eligible_signal(repo, policy)
+
+    candidates = await repo.list_decided_buy_signals_without_counterfactual(
+        since=NOW - timedelta(hours=1), until=NOW + timedelta(hours=2)
+    )
+    assert {candidate.id for candidate in candidates} == {rejected.id, eligible.id}
+
+    service = CounterfactualService(
+        settings=settings, repo=repo, market=FakeMarket([bar(1, low=67000.0)])
+    )
+    assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 2
+    rows = {row.signal_id: row for row in await repo.list_counterfactuals()}
+    assert rows[rejected.id].blocked_rule == "min_choice_probability"
+    assert rows[eligible.id].blocked_rule == "jev_gate_passed"
+    assert rows[eligible.id].net_bps == rows[rejected.id].net_bps
+    assert await service.evaluate_pending(NOW + timedelta(hours=3)) == 0
+
+
+async def test_decision_event_survives_later_lifecycle_and_unresolved_buys_are_skipped(
+    repo, server_limits
+):
+    from sqlalchemy import update
+    from jev_trading.storage.models import SignalRow
+
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    eligible = await _eligible_signal(repo, policy)
+    # A terminal state is not evidence that the Jev gate rejected the BUY.
+    async with repo.db.session() as session:
+        await session.execute(
+            update(SignalRow)
+            .where(SignalRow.id == eligible.id)
+            .values(state=SignalState.CLOSED.value)
+        )
+
+    # Scored, but the process died before recording REJECTED or ELIGIBLE.
+    snapshot = market_snapshot(NOW)
+    await repo.insert_market_snapshot(snapshot)
+    unresolved = await repo.create_signal(
+        symbol="BTCUSDT",
+        policy_id=str(policy.policy_id),
+        snapshot_id=str(snapshot.snapshot_id),
+        side="buy",
+        state=SignalState.SCORED,
+        created_at=NOW,
+    )
+    await repo.attach_jev_evaluation(
+        unresolved.id,
+        "test-evaluation",
+        score={"entry_choice": "buy", "entry_probability": 0.95},
+    )
+    await _blocked_signal(
+        repo,
+        policy,
+        score={
+            "entry_choice": "reject",
+            "entry_probability": 0.95,
+            "policy_fit": 0.99,
+            "quality_score": 5.0,
+        },
+    )
+    candidates = await repo.list_decided_buy_signals_without_counterfactual(
+        since=NOW - timedelta(hours=1), until=NOW + timedelta(hours=2)
+    )
+    assert [candidate.id for candidate in candidates] == [eligible.id]
+
+
+
+def test_first_gate_decision_is_chronological_and_ignores_later_mutations():
+    from types import SimpleNamespace
+    from jev_trading.services.counterfactual import first_gate_decision
+
+    eligible = SimpleNamespace(
+        state=SignalState.ELIGIBLE.value,
+        created_at=NOW,
+        id="a",
+        detail_json={},
+    )
+    rejected_later = SimpleNamespace(
+        state=SignalState.REJECTED.value,
+        created_at=NOW + timedelta(seconds=1),
+        id="b",
+        detail_json={},
+    )
+    assert first_gate_decision([rejected_later, eligible]) is eligible
+    assert first_gate_decision([rejected_later]).state == SignalState.REJECTED.value
+    assert first_gate_decision([]) is None
+    tied = SimpleNamespace(
+        state=SignalState.REJECTED.value,
+        created_at=NOW,
+        id="z",
+        detail_json={},
+    )
+    assert first_gate_decision([tied, eligible]) is eligible
