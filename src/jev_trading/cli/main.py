@@ -16,6 +16,7 @@ from typing import Any
 
 from ..config import Settings, get_settings
 from ..domain.enums import Mode
+from ..logging_setup import configure_logging
 from ..services.container import AppContainer
 
 
@@ -124,6 +125,7 @@ async def _run_cycles(settings: Settings, count: int, refresh_policy: bool) -> i
 
 
 async def _status(settings: Settings) -> int:
+    configure_logging()
     container = await AppContainer(settings).start()
     try:
         _print(await container.status())
@@ -133,6 +135,7 @@ async def _status(settings: Settings) -> int:
 
 
 def _serve(settings: Settings, host: str, port: int, reload: bool) -> int:
+    configure_logging()
     import uvicorn
 
     if reload:

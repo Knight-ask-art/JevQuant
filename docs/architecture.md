@@ -389,6 +389,31 @@ It also reports `capture_ratio` (realised gross over MFE), giveback, the median 
 `GET /api/v1/...`-style access is via the `GET_BLOCKED_SIGNALS` agent tool, which reports
 counts, average `net_bps`, per-rule attribution and timeout-path MFE.
 
+## Policy lifetime
+
+A policy's TTL is how soon the model looks at the market again. Both edges
+matter, so both are server-side (`domain/policy_life.py`):
+
+- `max_policy_ttl_seconds` (ceiling, 2 h by default): a policy may not outlive
+  its read of the regime.
+- `min_policy_life_seconds` (floor, 6 h by default): a policy may not be replaced
+  before several candles have tested the read it was written from. Below the
+  floor, regeneration is churn. `policy_fit` is scored against a policy, so a
+  new policy resets the baseline and a buy rejected under one policy is not
+  comparable with one rejected under the next. Production ran one policy per
+  hour, each valid for two.
+
+Both bounds are applied by the compiler and recorded as clamps on `expires_at`,
+so the effective TTL is auditable. A ceiling below the floor is a
+configuration error, and the ceiling still wins.
+
+The runtime replaces a policy `policy_refresh_lead_seconds` (30 min) before it
+lapses rather than after, so a slow or failing refresh leaves the old policy
+in force for another cycle instead of leaving no policy at all.
+
+With the shipped defaults the ceiling (2 h) is stricter than the floor (6 h),
+so the practical lifetime is two hours. Raise `JEV_MAX_POLICY_TTL_SECONDS`
+with `JEV_MIN_POLICY_LIFE_SECONDS` when a longer review interval is wanted.
 ## Abandoned signals
 
 A signal moves through several states, each written by its own transaction. A

@@ -10,12 +10,15 @@ deterministic exit path whenever execution remains healthy.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger("jev_trading.orchestrator")
 
 from ..domain.enums import (
     IntentType,
@@ -195,6 +198,7 @@ class TradingOrchestrator:
         regime_gate: Any | None = None,
         edge_evaluator: Any | None = None,
         abandoned_after: timedelta = DEFAULT_ABANDON_AFTER,
+        policy_refresh_lead: timedelta | None = None,
     ) -> None:
         self.settings = settings
         self.budgets = budgets
@@ -202,6 +206,10 @@ class TradingOrchestrator:
         # How long a signal may sit in an in-flight state before the cycle
         # treats it as abandoned by a dead process.
         self.abandoned_after = abandoned_after
+        # How early the active policy is replaced, so a slow or failing
+        # refresh never leaves the runtime without one. None keeps the
+        # replace-only-when-expired behaviour (tests and small setups).
+        self.policy_refresh_lead = policy_refresh_lead
         self.regime_gate = regime_gate or RegimeGate.from_settings(settings)
         self.cost_model = CostModel.from_settings(settings)
         # Last ratcheted stop recorded per position, so the audit trail shows
@@ -265,6 +273,7 @@ class TradingOrchestrator:
         try:
             rows = await self.repo.list_in_flight_signals(IN_FLIGHT_STATES)
         except Exception:  # noqa: BLE001 - housekeeping only
+            logger.warning("abandoned-signal sweep could not read signals")
             return []
         abandoned = abandoned_of(
             [(row.id, row.symbol, row.state, row.events) for row in rows],
@@ -277,11 +286,24 @@ class TradingOrchestrator:
                     item.signal_id, SignalState(item.to_state), item.as_detail()
                 )
             except Exception:  # noqa: BLE001 - another writer moved it first
+                logger.warning(
+                    "could not move abandoned signal %s from %s", 
+                    item.signal_id,
+                    item.state,
+                )
                 continue
             await self.audit.record(
                 "signal.abandoned", "signal", item.signal_id, item.as_detail()
             )
         return abandoned
+
+    def _policy_due(self, policy: Any, now: datetime) -> bool:
+        """Whether the active policy is close enough to expiry to replace."""
+
+        lead = self.policy_refresh_lead
+        if lead is None or policy is None:
+            return False
+        return policy.expires_at - now <= lead
 
     async def run_cycle(self, *, refresh_policy: bool = False) -> CycleResult:
         cycle_id = str(uuid4())
@@ -320,7 +342,11 @@ class TradingOrchestrator:
 
         now = datetime.now(UTC)
         policy_generated = False
-        if not kill and (policy is None or refresh_policy):
+        # Refresh before the policy lapses rather than after: a cycle that
+        # lands inside the lead regenerates, so a failed refresh still
+        # leaves the old policy in force for another cycle.
+        due = self._policy_due(policy, now)
+        if not kill and (policy is None or due or refresh_policy):
             try:
                 policy = await self._generate_policy(
                     mode, snapshots, account, cycle_id=cycle_id

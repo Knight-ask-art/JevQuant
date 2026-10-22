@@ -105,6 +105,8 @@ Field contract. The JSON Schema below is generated from the server validator.
 Every listed field is required, unknown fields are rejected, and enum values
 must match exactly. Dates are ISO-8601 with a timezone; policy_id is a UUID
 you choose; generated_at is now and expires_at is now plus the TTL you want.
+The server stretches a lifetime shorter than its minimum and truncates one
+longer than its maximum, and the result is recorded as a clamp either way.
 """
     + POLICY_SCHEMA_TEXT
 )

@@ -25,6 +25,7 @@ from pydantic import (
 
 from .enums import JevChoice, Mode, PolicyStatus, RegimeLabel, Side
 from .errors import PolicyExpiredError, PolicyInvalidError
+from .policy_life import effective_expiry
 
 SymbolStr = Annotated[str, StringConstraints(pattern=r"^[A-Z0-9]{5,20}$")]
 SCHEMA_VERSION = "strategy-policy/1.0"
@@ -182,6 +183,9 @@ class ServerLimits(BaseModel):
     max_positions: int = Field(ge=0, le=100)
     max_drawdown_pct: Decimal = Field(ge=0, le=100)
     max_policy_ttl_seconds: int = Field(gt=0, le=86_400)
+    #: Shortest lifetime a compiled policy may have; see
+    #: ``domain/policy_life.py`` for why a floor exists at all.
+    min_policy_life_seconds: int = Field(default=6 * 3600, ge=0, le=86_400)
     allowed_symbols: frozenset[str] = Field(min_length=1)
     allowed_entry_sides: frozenset[Side] = Field(default_factory=lambda: frozenset({Side.BUY}))
     max_spread_bps: Decimal = Field(default=Decimal("5"), ge=0)
@@ -309,18 +313,36 @@ class PolicyCompiler:
                 details={"mode_scope": [m.value for m in policy.mode_scope]},
             )
 
-        max_expiry = now + timedelta(seconds=self.server.max_policy_ttl_seconds)
-        effective_expiry = policy.expires_at
-        if effective_expiry > max_expiry:
+        # The model chooses the expiry; the server chooses the band. A
+        # lifetime shorter than the slice between refreshes is not a review
+        # interval, it is churn: every regeneration resets the policy the
+        # Jev gate is scored against. Stretching it narrows in the same
+        # direction the ceiling does, and is recorded as a clamp.
+        policy_expiry, raised, cut = effective_expiry(
+            requested=policy.expires_at,
+            generated_at=policy.generated_at,
+            now=now,
+            min_life=timedelta(seconds=self.server.min_policy_life_seconds),
+            max_ttl=timedelta(seconds=self.server.max_policy_ttl_seconds),
+        )
+        if raised:
             clamps.append(
                 Clamp(
                     field="expires_at",
                     requested=policy.expires_at.isoformat(),
-                    effective=max_expiry.isoformat(),
+                    effective=policy_expiry.isoformat(),
+                    reason="server min policy life (min_policy_life_seconds)",
+                )
+            )
+        if cut:
+            clamps.append(
+                Clamp(
+                    field="expires_at",
+                    requested=policy.expires_at.isoformat(),
+                    effective=policy_expiry.isoformat(),
                     reason="server max policy TTL",
                 )
             )
-            effective_expiry = max_expiry
 
         universe = self._compile_universe(policy, clamps)
         portfolio = self._clamp_portfolio(policy.portfolio, clamps)
@@ -331,7 +353,7 @@ class PolicyCompiler:
             policy_id=policy.policy_id,
             status=PolicyStatus.ACTIVE,
             generated_at=policy.generated_at,
-            expires_at=effective_expiry,
+            expires_at=policy_expiry,
             compiled_at=now,
             mode_scope=policy.mode_scope,
             regime=policy.regime,

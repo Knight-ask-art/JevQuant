@@ -52,7 +52,10 @@ def test_policy_cannot_widen_beyond_server_limits(server_limits):
     assert symbol.max_spread_bps == Decimal("1")
     assert symbol.max_slippage_bps == Decimal("1")
     assert effective.portfolio.max_positions == 1
-    assert effective.clamps == []
+    # The only clamp is the lifetime floor: a 15-minute request is stretched
+    # to the server's minimum life. The risk fields themselves are untouched.
+    assert {clamp.field for clamp in effective.clamps} == {"expires_at"}
+    assert "min policy life" in effective.clamps[0].reason
 
 
 def test_expiry_is_clamped_to_server_ttl(server_limits):

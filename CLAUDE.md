@@ -90,12 +90,16 @@ $env:PYTHONPATH="src"
   with purge, a stop x take x hold grid, and a plateau verdict. Writes nothing.
 - `services/experiment.py` + `experiment.py` — offline A/B/C comparison runner
   (portfolio vs signal level, hold-cash and SMA baselines, MFE/MAE).
+- `domain/policy_life.py` — the policy lifetime band (floor, ceiling, refresh
+  lead) and the pure expiry rule the compiler applies. A short TTL is churn:
+  every regeneration resets the policy `policy_fit` is scored against.
 - `services/abandoned_signals.py` — closes rows a dead process left in an in-flight
   state, at startup and at the head of every cycle. Analytics housekeeping only.
 - `services/telemetry.py` + `telemetry.py` — per-stage timings from the signal trail
   and the adapters' own venue-call measurements. Read-only; a missing measurement is
   reported as missing, never as zero. See `docs/architecture.md`.
-- `services/container.py` — dependency wiring, scheduler loop, dependency probes.
+- `logging_setup.py` — the one stderr handler for `jev_trading.*`, at `JEV_LOG_LEVEL`.
+  Installed by `serve` and the `python -m` entry points; idempotent.- `services/container.py` — dependency wiring, scheduler loop, dependency probes.
 - `services/policy_service.py` — authoring + the compiler that narrows LLM output.
 - `services/agent_tools.py` — the read-only tools the authoring agent may call.
 - `services/audit.py` — hash-chained audit log (`audit_events`); never break the chain.

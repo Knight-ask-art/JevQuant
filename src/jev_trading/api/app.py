@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from ..config import Settings, get_settings
+from ..logging_setup import configure_logging
 from ..domain.errors import AppError
 from ..services.container import AppContainer
 from .routes_auth import router as auth_router
@@ -60,6 +61,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Before the container starts: its startup log (abandoned signals,
+        # backfill) is exactly what an operator needs when a deploy misbehaves.
+        configure_logging()
         await container.start()
         logger.info(
             "control plane started mode=%s backend=%s synthetic=%s",

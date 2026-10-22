@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     max_positions: int = 3
     max_drawdown_pct: Decimal = Decimal("5")
     max_policy_ttl_seconds: int = 7200
+    #: Floor on a compiled policy's lifetime, and the refresh lead. See
+    #: ``domain/policy_life.py``: a lifetime shorter than the gap between
+    #: refreshes is churn, and each regeneration resets the baseline the
+    #: Jev gate is scored against.
+    min_policy_life_seconds: int = Field(default=21_600, ge=0, le=86_400)
+    policy_refresh_lead_seconds: int = Field(default=1800, ge=0, le=86_400)
     allowed_symbols: list[str] = Field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
     market_staleness_ms: int = 5000
     # Maximum age of a cached exchange filter snapshot used to admit an entry.
@@ -249,6 +255,7 @@ class Settings(BaseSettings):
             max_positions=self.max_positions,
             max_drawdown_pct=self.max_drawdown_pct,
             max_policy_ttl_seconds=self.max_policy_ttl_seconds,
+            min_policy_life_seconds=self.min_policy_life_seconds,
             allowed_symbols=frozenset(self.allowed_symbols),
             max_spread_bps=Decimal("5"),
             max_slippage_bps=Decimal("15"),

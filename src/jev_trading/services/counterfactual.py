@@ -43,6 +43,7 @@ forever.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -56,6 +57,8 @@ from ..domain.market import Candle
 from ..domain.money import ZERO
 from ..domain.policy import EffectivePolicy, ExitDefaults
 from .klines import fetch_minute_range, normalize_minute_candles
+
+logger = logging.getLogger("jev_trading.counterfactual")
 
 SIMULATION_METHOD = "1m-conservative-v1"
 #: Extra slack on top of the longest holding window a policy may carry. A
@@ -357,6 +360,14 @@ class CounterfactualService:
             try:
                 row = await self._evaluate(signal, now, None, policy)
             except Exception as exc:  # noqa: BLE001 - replay is best-effort
+                # Both: the audit row is the durable record, the log line is
+                # the one that is visible when the database write itself is
+                # what failed.
+                logger.warning(
+                    "counterfactual replay failed for %s: %s",
+                    signal.id,
+                    type(exc).__name__,
+                )
                 if self.audit is not None:
                     await self.audit.record(
                         "counterfactual.error",
@@ -404,6 +415,14 @@ class CounterfactualService:
             try:
                 row = await self._evaluate(signal, now, available_quote_usdt, policy)
             except Exception as exc:  # noqa: BLE001 - replay is best-effort
+                # Both: the audit row is the durable record, the log line is
+                # the one that is visible when the database write itself is
+                # what failed.
+                logger.warning(
+                    "counterfactual replay failed for %s: %s",
+                    signal.id,
+                    type(exc).__name__,
+                )
                 if self.audit is not None:
                     await self.audit.record(
                         "counterfactual.error",

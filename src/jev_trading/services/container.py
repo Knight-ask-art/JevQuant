@@ -30,6 +30,7 @@ from ..domain.errors import AppError
 from ..domain.money import canonical_str
 from ..domain.market import Candle, MarketSnapshot
 from ..domain.policy import PolicyCompiler
+from ..domain.policy_life import PolicyLife
 from ..domain.risk import RiskEngine
 from ..storage.db import Database
 from ..storage.repository import Repository
@@ -245,6 +246,13 @@ class AppContainer:
             if self.settings.edge_shadow_enabled
             else None
         )
+        # A policy lifetime below the refresh lead would be due for
+        # replacement the moment it is created; refuse the configuration
+        # rather than churn silently.
+        self.policy_life = PolicyLife(
+            min_seconds=self.settings.min_policy_life_seconds,
+            refresh_lead_seconds=self.settings.policy_refresh_lead_seconds,
+        )
         self.orchestrator = TradingOrchestrator(
             settings=self.settings,
             repo=self.repo,
@@ -261,6 +269,7 @@ class AppContainer:
             budgets=self.budgets,
             counterfactual=self.counterfactual,
             edge_evaluator=self.edge_evaluator,
+            policy_refresh_lead=self.policy_life.refresh_lead,
         )
         # A process that died mid-pipeline left signals in in-flight states
         # that nothing else will ever move. Close them before the first
@@ -686,8 +695,9 @@ class AppContainer:
 
         try:
             written = await self.counterfactual.backfill()
-            if written:
-                logger.info("counterfactual backfill wrote %s outcomes", written)
+            # Logged even when zero: "ran and found nothing new" and
+            # "never ran" must not look the same in the container log.
+            logger.info("counterfactual backfill wrote %s outcomes", written)
         except Exception:  # noqa: BLE001 - analytics only, never the service
             logger.warning("counterfactual backfill failed", exc_info=True)
 

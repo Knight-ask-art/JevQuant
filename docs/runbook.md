@@ -323,6 +323,42 @@ pending migrations in order and records them in `schema_migrations`:
   Never edit a migration that has run — add a new one.
 - Back up the database before migrating in production.
 
+## Service logs
+
+`jev serve` (and `python -m jev_trading.*`) install one stderr handler for
+`jev_trading.*` at `JEV_LOG_LEVEL` (default `INFO`). Before this, those records
+were dropped and only uvicorn's access log appeared -- which made "the backfill
+wrote nothing" and "the backfill crashed" look identical.
+
+What to look for after a deploy:
+
+```
+jev_trading.api: control plane started mode=... backend=...
+jev_trading.container: counterfactual backfill wrote N outcomes
+jev_trading.container: closed N abandoned signal(s) left by the previous process
+jev_trading.container: auto cycle <id> mode=... signals=... executed=...
+```
+
+The backfill line is written even when it found nothing new. A `WARNING` from
+`jev_trading.counterfactual` is one signal whose replay failed; it is retried on
+the next cycle and is also in the audit trail as `counterfactual.error`.
+## Policy lifetime
+
+Every policy records its `expires_at` and any `expires_at` clamp in
+`GET /api/v1/strategy/policies/current` (`compiled.clamps`). Read the clamps
+before changing a TTL: a `server min policy life` clamp means the model asked
+for a shorter review than the server allows, and a `server max policy TTL`
+clamp means it asked for longer than the regime read can be trusted for.
+
+```
+JEV_MIN_POLICY_LIFE_SECONDS=21600      # floor
+JEV_MAX_POLICY_TTL_SECONDS=7200        # ceiling
+JEV_POLICY_REFRESH_LEAD_SECONDS=1800   # replace this early
+```
+
+If `policy_generated` is true on every cycle, the model is choosing lifetimes
+at or below the lead; raise the floor rather than the lead. If it is true
+only about once per TTL, the band is doing its job.
 ## Restart behaviour
 
 - Mode resets to paper; live arming does not survive restart.
