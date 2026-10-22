@@ -509,6 +509,77 @@ async def test_timeout_keeps_missing_tail_as_a_gap(repo, server_limits, settings
 
 
 
+def test_replay_sorts_out_of_order_candles_before_charging_a_stop():
+    # Target was reached before a later stop. Original input order must not
+    # reverse the outcome or produce an erroneous MFE/MAE sequence.
+    result = replay([bar(3, low=98.0), bar(1, high=102.6)])
+    assert result is not None
+    assert result.exit_reason == "take_profit"
+
+
+def test_replay_deduplicates_identical_minute_bars():
+    first = bar(1, high=102.6)
+    result = replay([first, first, bar(3, low=98.0)])
+    assert result is not None
+    assert result.exit_reason == "take_profit"
+    assert result.minutes_judged == 1
+
+
+def test_conflicting_duplicate_minute_bars_fail_closed():
+    import pytest
+
+    with pytest.raises(ValueError, match="conflicting duplicate"):
+        replay([bar(1, high=102.6), bar(1, high=100.5)])
+
+
+def test_minute_normalization_rejects_unaligned_open_and_allows_binance_close_time():
+    import pytest
+    from jev_trading.services.klines import normalize_minute_candles
+
+    candle = bar(1)
+    binance = Candle(
+        open_time=candle.open_time,
+        close_time=candle.close_time - timedelta(milliseconds=1),
+        open=candle.open,
+        high=candle.high,
+        low=candle.low,
+        close=candle.close,
+        volume=candle.volume,
+    )
+    assert normalize_minute_candles([binance]) == [binance]
+    unaligned = Candle(
+        open_time=candle.open_time + timedelta(seconds=30),
+        close_time=candle.close_time,
+        open=candle.open,
+        high=candle.high,
+        low=candle.low,
+        close=candle.close,
+        volume=candle.volume,
+    )
+    with pytest.raises(ValueError, match="minute-aligned"):
+        normalize_minute_candles([unaligned])
+
+
+async def test_counterfactual_uses_chronological_candles_even_if_provider_reorders(
+    repo, server_limits, settings
+):
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    await _blocked_signal(repo, policy)
+    service = CounterfactualService(
+        settings=settings,
+        repo=repo,
+        market=FakeMarket([
+            bar(3, low=67000.0),
+            bar(1, high=71000.0, low=68000.0, close=68010.0),
+        ]),
+    )
+    assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
+    outcome = (await repo.list_counterfactuals())[0]
+    assert outcome.exit_reason == "take_profit"
+    assert outcome.gap_seconds == 0
+
+
 async def _eligible_signal(repo, policy, *, created_at=NOW):
     """A scored BUY with an immutable ELIGIBLE event (not necessarily filled)."""
 
@@ -609,3 +680,32 @@ async def test_decision_event_survives_later_lifecycle_and_unresolved_buys_are_s
         since=NOW - timedelta(hours=1), until=NOW + timedelta(hours=2)
     )
     assert [candidate.id for candidate in candidates] == [eligible.id]
+
+
+
+def test_first_gate_decision_is_chronological_and_ignores_later_mutations():
+    from types import SimpleNamespace
+    from jev_trading.services.counterfactual import first_gate_decision
+
+    eligible = SimpleNamespace(
+        state=SignalState.ELIGIBLE.value,
+        created_at=NOW,
+        id="a",
+        detail_json={},
+    )
+    rejected_later = SimpleNamespace(
+        state=SignalState.REJECTED.value,
+        created_at=NOW + timedelta(seconds=1),
+        id="b",
+        detail_json={},
+    )
+    assert first_gate_decision([rejected_later, eligible]) is eligible
+    assert first_gate_decision([rejected_later]).state == SignalState.REJECTED.value
+    assert first_gate_decision([]) is None
+    tied = SimpleNamespace(
+        state=SignalState.REJECTED.value,
+        created_at=NOW,
+        id="z",
+        detail_json={},
+    )
+    assert first_gate_decision([tied, eligible]) is eligible

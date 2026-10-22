@@ -54,7 +54,7 @@ from ..domain.exits import exit_plan
 from ..domain.market import Candle
 from ..domain.money import ZERO
 from ..domain.policy import EffectivePolicy, ExitDefaults
-from .klines import fetch_minute_range
+from .klines import fetch_minute_range, normalize_minute_candles
 
 SIMULATION_METHOD = "1m-conservative-v1"
 #: Extra slack on top of the longest holding window a policy may carry. A
@@ -149,7 +149,10 @@ def simulate(
     the highest high seen so far in this replay.
     """
 
-    if not candles or entry_price <= ZERO:
+    if entry_price <= ZERO:
+        return None
+    candles = normalize_minute_candles(candles)
+    if not candles:
         return None
     slippage = exit_slippage_bps / Decimal("10000")
     geometry = exit_rules.geometry()
@@ -254,6 +257,23 @@ def blocked_rule(policy: EffectivePolicy, score: dict[str, Any]) -> str:
     if float(score.get("quality_score") or 0.0) < gate.min_quality_score:
         return "min_quality_score"
     return "unknown"
+
+
+def first_gate_decision(events: Sequence[Any]) -> Any | None:
+    """The earliest recorded REJECTED/ELIGIBLE decision, stable under ties.
+
+    Never infer a Jev gate's verdict from the signal's *current* execution
+    state or the order a repository happened to return event rows.
+    """
+
+    events_for_gate = [
+        event
+        for event in events
+        if event.state in {SignalState.REJECTED.value, SignalState.ELIGIBLE.value}
+    ]
+    if not events_for_gate:
+        return None
+    return min(events_for_gate, key=lambda event: (event.created_at, event.id))
 
 
 def regime_blocked(events: Sequence[Any]) -> bool:
@@ -369,18 +389,18 @@ class CounterfactualService:
             return None
 
         events = await self.repo.get_signal_events(signal.id)
-        if any(event.state == SignalState.REJECTED.value for event in events):
+        decision = first_gate_decision(events)
+        if decision is None:
+            return None
+        if decision.state == SignalState.REJECTED.value:
             if regime_blocked(events):
-                # Refused by the cost gate, not by Jev's thresholds.
                 rule = "regime_expected_move_below_cost"
             else:
                 rule = blocked_rule(policy, score)
-        elif any(event.state == SignalState.ELIGIBLE.value for event in events):
+        else:
             # Jev passed, but risk may still have refused execution. This is
             # a hypothetical outcome, NOT a real fill or realized PnL.
             rule = "jev_gate_passed"
-        else:
-            return None
 
         symbol_policy = policy.symbol_policy(signal.symbol)
         if symbol_policy is None:
@@ -416,7 +436,9 @@ class CounterfactualService:
         candles = await fetch_minute_range(
             self.market, signal.symbol, signal.created_at, horizon_end
         )
-        window = [candle for candle in candles if candle.open_time > signal.created_at]
+        window = normalize_minute_candles(
+            [candle for candle in candles if candle.open_time > signal.created_at]
+        )
         replay = simulate(
             candles=window,
             entry_price=entry_price,

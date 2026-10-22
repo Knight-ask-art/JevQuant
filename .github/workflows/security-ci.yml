@@ -40,3 +40,34 @@ jobs:
         run: npm ci
       - name: Typecheck and build
         run: npm run build
+
+
+
+  postgres-counterfactual:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: jev_ci
+          POSTGRES_PASSWORD: jev_ci_only
+          POSTGRES_DB: jev_counterfactual_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jev_ci -d jev_counterfactual_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      JEV_TEST_POSTGRES_URL: postgresql+asyncpg://jev_ci:jev_ci_only@127.0.0.1:5432/jev_counterfactual_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Test PostgreSQL counterfactual SQL and idempotency
+        run: python -m pytest -q tests/test_postgres_counterfactual.py
