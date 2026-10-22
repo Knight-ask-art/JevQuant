@@ -78,6 +78,8 @@ $env:PYTHONPATH="src"
   Read-only; see `docs/architecture.md`.
 - `services/counterfactual.py` — replays **blocked** buys over 1m bars so the gate can be
   judged on outcomes. Read-only and best-effort; see `docs/architecture.md`.
+- `services/calibration.py` + `calibration.py` — Platt calibration of Jev's confidence
+  per (model, holding window), with a held-out check. Reports; never writes.
 - `services/walk_forward.py` + `walk_forward.py` — rolling train/validation/test folds
   with purge, a stop x take x hold grid, and a plateau verdict. Writes nothing.
 - `services/experiment.py` + `experiment.py` — offline A/B/C comparison runner

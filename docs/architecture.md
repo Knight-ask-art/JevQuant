@@ -200,6 +200,30 @@ blocked               = expected < required   (or no ATR at all)
   signal the regime gate refused, so the two gates are judged on separate cohorts. The
   verdict itself is read back from the signal event, because ATR is not on the score.
 
+## Jev calibration
+
+Jev's ``confidence`` is read as ``entry_probability`` and compared against the
+gate threshold. Whether it means a probability of profit is a separate
+question, and `services/calibration.py` answers it from the record:
+
+- **Cohort = (model, holding window).** A re-tuned model, or an exit geometry
+  that changes what "win" means, gets its own mapping. Pooling them would
+  average two different questions.
+- **Outcome first.** The label is ``net_bps > 0`` from the replay, including
+  the candidates the gate blocked. Rows whose window was never fully seen have
+  no label and are left out.
+- **Fitted on the early part, checked on the rest.** The held-out Brier score
+  is compared with "always say the training base rate" -- a calibration that
+  does not beat the base rate is a curve, not a calibration. The AUC is
+  reported next to it: calibration without discrimination is a constant.
+- **Platt (logit) is the default fitter.** With this little history an
+  isotonic fit would memorise the sample.
+- **Below the minimum it says so,** with the counts that would be needed.
+
+`python -m jev_trading.calibration` prints the report. Nothing is written and
+nothing is applied: the gate keeps using the raw confidence until a calibration
+has been checked and deliberately wired in.
+
 ## Walk-forward
 
 `services/walk_forward.py` asks whether an exit geometry survives out of

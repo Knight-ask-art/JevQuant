@@ -155,6 +155,17 @@ a while, not a failure. To find out how far off it is, compare
 `counterfactual_rows` with the cohort strings: a large number of rows spread
 across many cohorts keeps every cohort thin.
 
+## Calibration
+
+```
+python -m jev_trading.calibration [--min-samples 100] [--json]
+```
+
+`status: insufficient` per cohort is the expected answer until a cohort has 100
+fully-elapsed outcomes. When a cohort reports `beats_base_rate: false`, the raw
+confidence is no better than guessing the base rate in that cohort, and no
+calibration should be applied to it.
+
 ## Walk-forward
 
 ```

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from types import SimpleNamespace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Sequence
@@ -764,6 +765,43 @@ class Repository:
                     raise
                 return existing
             return row
+
+    async def list_calibration_rows(self, limit: int = 50000) -> list[Any]:
+        """Decided outcomes with the score and the model that produced them.
+
+        Joined to the signal's evaluation for the model name. A row whose
+        evaluation is missing keeps a ``None`` model and is grouped as unknown
+        rather than dropped: a calibration that quietly excludes the rows it
+        cannot explain is a calibration of the leftovers.
+        """
+
+        from .models import JevEvaluationRow
+
+        stmt = (
+            select(CounterfactualRow, JevEvaluationRow)
+            .join(SignalRow, CounterfactualRow.signal_id == SignalRow.id)
+            .outerjoin(
+                JevEvaluationRow,
+                SignalRow.jev_evaluation_id == JevEvaluationRow.id,
+            )
+            .where(CounterfactualRow.net_bps.is_not(None))
+            .order_by(CounterfactualRow.decided_at)
+            .limit(max(1, limit))
+        )
+        async with self.db.session() as session:
+            rows = list((await session.execute(stmt)).all())
+        return [
+            SimpleNamespace(
+                model=evaluation.model if evaluation is not None else None,
+                confidence=outcome.entry_probability,
+                horizon_seconds=outcome.horizon_seconds,
+                net_bps=outcome.net_bps,
+                gap_seconds=outcome.gap_seconds,
+                decided_at=outcome.decided_at,
+                symbol=outcome.symbol,
+            )
+            for outcome, evaluation in rows
+        ]
 
     async def list_counterfactuals(self, limit: int = 50) -> list[CounterfactualRow]:
         async with self.db.session() as session:
