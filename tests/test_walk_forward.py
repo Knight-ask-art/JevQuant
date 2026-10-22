@@ -105,19 +105,20 @@ def test_the_embargo_is_applied_on_both_sides():
 
 
 # -- repricing ---------------------------------------------------------------
-def test_a_target_is_paid_minus_the_exit_side_only():
-    """The entry side was paid at entry and is inside the entry price."""
+def test_a_target_pays_exit_slippage_and_both_taker_fees():
+    """Entry slippage is in entry_price; the entry taker fee is not."""
 
     value = net_bps(
         sample(START, mfe="90", mae="-10"),
         stop_bps=Decimal("30"),
         take_bps=Decimal("60"),
-        hold_minutes=60,
+        hold_minutes=240,
         exit_slippage_bps=COST.exit_slippage_bps,
         fee_bps=COST.fee_bps,
     )
 
-    assert value == Decimal("60") - Decimal("8") - Decimal("10")
+    expected = ((Decimal("1") + Decimal("60") / 10000) * (Decimal("1") - COST.exit_slippage_bps / 10000) - 1) * 10000 - COST.fee_bps * 2
+    assert value == expected
 
 
 def test_a_bar_that_touched_both_levels_is_a_stop_as_in_the_recorder():
@@ -125,12 +126,13 @@ def test_a_bar_that_touched_both_levels_is_a_stop_as_in_the_recorder():
         sample(START, mfe="200", mae="-200"),
         stop_bps=Decimal("30"),
         take_bps=Decimal("60"),
-        hold_minutes=60,
+        hold_minutes=240,
         exit_slippage_bps=COST.exit_slippage_bps,
         fee_bps=COST.fee_bps,
     )
 
-    assert value == Decimal("-30") - Decimal("18")
+    expected = ((Decimal("1") - Decimal("30") / 10000) * (Decimal("1") - COST.exit_slippage_bps / 10000) - 1) * 10000 - COST.fee_bps * 2
+    assert value == expected
 
 
 # -- the plateau -------------------------------------------------------------
@@ -172,7 +174,7 @@ def test_a_broad_neighbourhood_is_a_plateau():
         fee_bps=COST.fee_bps,
         stop_multiples=tuple(Decimal(value) for value in ("0.5", "1", "1.5", "2", "2.5")),
         take_multiples=tuple(Decimal(value) for value in ("1", "1.5", "2", "3", "4")),
-        holds_minutes=(30, 60, 120, 240, 480),
+        holds_minutes=(240,),
     )
 
     found = plateau(
@@ -182,7 +184,7 @@ def test_a_broad_neighbourhood_is_a_plateau():
     )
 
     assert found is not None
-    assert found["positive_neighbours"] >= 5
+    assert found["positive_neighbours"] >= 3  # four neighbours in 2D
     assert found["train_mean_net_bps"] > float(COST.round_trip_bps)
 
 
@@ -226,7 +228,7 @@ def test_a_real_edge_is_confirmed_and_a_flat_one_is_not():
         fee_bps=COST.fee_bps,
         stop_multiples=tuple(Decimal(value) for value in ("0.5", "1", "1.5", "2", "2.5")),
         take_multiples=tuple(Decimal(value) for value in ("1", "1.5", "2", "3", "4")),
-        holds_minutes=(30, 60, 120, 240, 480),
+        holds_minutes=(240,),
     )
 
     edge = build_report(
@@ -301,3 +303,27 @@ def test_too_few_samples_says_so_instead_of_guessing():
 
     assert report["sample_adequacy"] == "insufficient"
     assert report["verdict"] == "no_plateau"
+
+
+
+def test_alternative_holding_horizon_is_not_repriced():
+    import pytest
+
+    record = sample(START, mfe="0", mae="0", net="40")
+    with pytest.raises(ValueError, match="alternative holding period"):
+        net_bps(
+            record,
+            stop_bps=Decimal("30"),
+            take_bps=Decimal("60"),
+            hold_minutes=30,
+            exit_slippage_bps=COST.exit_slippage_bps,
+            fee_bps=COST.fee_bps,
+        )
+
+
+def test_only_recorded_horizon_populates_grid_cells():
+    history = [sample(START + timedelta(hours=i), mfe="0", mae="0", net="35") for i in range(20)]
+    cells = evaluate_grid(history, grid=grid(), min_trades=10)
+    assert cells
+    assert {cell.hold_minutes for cell in cells} == {240}
+    assert all(cell.trades == 20 for cell in cells)

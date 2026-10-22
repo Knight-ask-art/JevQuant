@@ -66,9 +66,9 @@ DEFAULT_MIN_TRADES = 10
 class Sample:
     """One recorded candidate, as the replay left it.
 
-    MFE/MAE say how far the path went each way, not the order; ``entry_close``
-    and ``exit_close`` are the recorded end-of-window prices, so a geometry
-    whose horizon matches the recorder's can be repriced exactly.
+    MFE/MAE say how far the observed path went each way, not their order.
+    ``exit_close`` is the recorder's slipped exit fill price, which may be
+    earlier than the horizon. It is not an alternative-horizon close.
     """
 
     decided_at: datetime
@@ -106,37 +106,39 @@ def net_bps(
     exit_slippage_bps: Decimal,
     fee_bps: Decimal,
 ) -> Decimal:
-    """Net bps of this sample under one exit geometry.
+    """Modelled net bps under an alternative stop/take/hold geometry.
 
-    Charged here: the stop or target is crossed with the exit slippage and a
-    taker fee. Not charged: the entry side, which is already inside
-    ``entry_price``.
+    ``entry_price`` already includes entry slippage, **not** the entry fee.
+    For a hypothetical stop/target, apply exit slippage to the threshold price
+    and subtract both taker fees. For a timeout, ``exit_close`` is the
+    persisted, already-slipped exit price: do not charge slippage a second time.
 
-    Two approximations, both inherited from what the recorder stores:
-
-    - a bar that touches both levels is a stop, as in the recorder;
-    - the order of the extremes inside the window is unknown, so a target is
-      assumed reachable whenever the upside reached it.
+    This is still an MFE/MAE approximation, not a path replay: the ordering of
+    extremes and the price at a different holding horizon are not observable
+    from the recorded outcome. Only the recorder's holding period may be
+    evaluated; other periods require full minute-level price-path replay.
     """
 
+    if hold_minutes != sample.window_minutes:
+        raise ValueError("cannot reprice an alternative holding period from recorded MFE/MAE")
     entry = sample.entry_price
     if entry <= ZERO:
         return ZERO
-    # MAE is signed and negative; the stop is hit when the adverse move is at
-    # least as far as the stop (equal counts -- the recorder lets the stop win).
+    # MAE is negative. If both levels were touched, the stop wins, matching
+    # the conservative convention in the counterfactual recorder.
     stop_hit = sample.mae_bps <= -stop_bps
     target_hit = sample.mfe_bps >= take_bps
-    if stop_hit:
-        gross = -stop_bps
-    elif target_hit:
-        gross = take_bps
-    elif hold_minutes == sample.window_minutes:
-        gross = (sample.exit_close / entry - Decimal("1")) * Decimal("10000")
+    if stop_hit or target_hit:
+        threshold_bps = -stop_bps if stop_hit else take_bps
+        raw_exit = entry * (Decimal("1") + threshold_bps / Decimal("10000"))
+        exit_price = raw_exit * (
+            Decimal("1") - exit_slippage_bps / Decimal("10000")
+        )
     else:
-        # A shorter hold cannot be read off the window. The sample's own end
-        # price stands in for it -- the same pessimistic reading as a timeout.
-        gross = (sample.exit_close / entry - Decimal("1")) * Decimal("10000")
-    return gross - exit_slippage_bps - fee_bps
+        # This is only the *recorded* exit, not the exit at hold_minutes.
+        # The alternative horizon needs minute-bar replay to be valid.
+        exit_price = sample.exit_close
+    return (exit_price / entry - Decimal("1")) * Decimal("10000") - fee_bps * Decimal("2")
 
 
 # -- grid --------------------------------------------------------------------
@@ -201,6 +203,7 @@ def evaluate_grid(
     if not samples:
         return out
     for stop, take, hold in grid.cells():
+        eligible = [sample for sample in samples if sample.window_minutes == hold]
         values = [
             net_bps(
                 sample,
@@ -210,7 +213,7 @@ def evaluate_grid(
                 exit_slippage_bps=grid.exit_slippage_bps,
                 fee_bps=grid.fee_bps,
             )
-            for sample in samples
+            for sample in eligible
         ]
         if len(values) < min_trades:
             continue
@@ -243,6 +246,7 @@ def cell_values(
                 fee_bps=grid.fee_bps,
             )
             for sample in samples
+            if sample.window_minutes == hold
         ]
     return out
 
@@ -289,6 +293,8 @@ def _is_interior(
     """
 
     for axis, values in enumerate(axes):
+        if len(values) == 1:
+            continue
         position = values.index(cell.key[axis])
         for step in (-1, 1):
             index = position + step
@@ -326,11 +332,15 @@ def plateau(
     takes = grid.takes() if grid is not None else sorted({cell.take_bps for cell in cells})
     holds = list(grid.holds_minutes) if grid is not None else sorted({cell.hold_minutes for cell in cells})
     axes = (stops, takes, holds)
+    active_axes = sum(1 for values in axes if len(values) > 1)
+    required_neighbours = min(min_neighbours, max(1, 2 * active_axes - 1))
     by_key = {cell.key: cell for cell in cells}
 
     def neighbours(cell: CellResult) -> list[CellResult]:
         out: list[CellResult] = []
         for axis, values in enumerate(axes):
+            if len(values) == 1:
+                continue
             position = values.index(cell.key[axis])
             for step in (-1, 1):
                 index = position + step
@@ -355,7 +365,7 @@ def plateau(
             continue
         peers = neighbours(cell)
         positive = [peer for peer in peers if peer.mean_net_bps > required]
-        if not peers or len(positive) * 2 < len(peers) or len(positive) < min_neighbours:
+        if not peers or len(positive) * 2 < len(peers) or len(positive) < required_neighbours:
             continue
         if best is None or cell.mean_net_bps > best["_mean"]:
             best = {
@@ -520,6 +530,10 @@ def run(
                 "validation": len(validation),
                 "test": len(test),
             },
+            "holding_periods_observed": sorted({s.window_minutes for s in train}),
+            "unobserved_grid_holds": sorted(
+                set(grid.holds_minutes) - {s.window_minutes for s in train}
+            ),
         }
         if centre is None:
             record["verdict"] = "no_plateau"
@@ -540,7 +554,10 @@ def run(
                         fee_bps=grid.fee_bps,
                     )
                     for row in rows
+                    if row.window_minutes == cell.hold_minutes
                 )
+            if not pooled:
+                return None
             return round(float(sum(pooled, ZERO) / Decimal(len(pooled))), 2)
 
         validation_mean = segment_mean(validation)
@@ -578,6 +595,9 @@ def run(
         "fold_record": records,
         "verdict": verdict,
         "grid": grid.as_dict(),
+        "repricing_quality": "mfe_mae_approximation_not_path_replay",
+        "decision_grade": False,
+        "holding_period_assumption": "only_recorded_horizons_are_repriced",
     }
 
 
