@@ -194,10 +194,12 @@ smaller than the trigger; the compiler clamps the distance down to
 `JEV_MAX_TRAILING_DISTANCE_BPS` (400). Clamping can only lower it, so it never
 creates a pair the validator would refuse.
 
-Before turning a trail on for real money, run the walk-forward with the same
-geometry. `python -m jev_trading.walk_forward` reprices recorded outcomes under
-a stop/take/hold grid; a trail that only looks good on four trades is not a
-reason to change live exits.
+Before turning a trail on for real money, test it against a complete minute-bar
+price path and in supervised testnet execution. `python -m jev_trading.walk_forward`
+currently reprices recorded MFE/MAE outcomes under a stop/take/hold grid: its
+alternative holding prices and intrabar event order are **approximations**.
+Its report marks `decision_grade: false`; even a confirmed plateau cannot
+justify changing live exits without a separate path-based replay.
 
 ## Cost reports
 

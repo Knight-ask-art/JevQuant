@@ -298,6 +298,15 @@ python -m jev_trading.experiment --days 28 --walk-forward
 python -m jev_trading.walk_forward --days 28 [--folds 4] [--min-trades 10]
 ```
 
+The loader uses the persisted, already-slipped counterfactual exit price; the
+repricer subtracts **both** taker fees and never double-charges exit slippage.
+However, MFE/MAE cannot reveal which level was touched first or the price at
+an alternative holding horizon. The report explicitly returns
+`repricing_quality: mfe_mae_approximation_not_path_replay` and
+`decision_grade: false`. A `plateau_confirmed` label is a *diagnostic* result,
+not evidence that a new exit geometry is safe to deploy. A full minute-bar
+path replay is required before acting on a parameter recommendation.
+
 It writes nothing. A parameter is chosen by a person with the fold record in
 hand, never by the report itself.
 

@@ -2,7 +2,7 @@
 
     python -m jev_trading.walk_forward --days 28 [--symbols BTCUSDT,ETHUSDT] [--json]
 
-Reads the counterfactual record, splits it into rolling
+Reads the counterfactual record (including its actual modelled exit price), splits it into rolling
 train/validation/test windows, searches a stop/take/hold grid for a *plateau*
 on each training window, and reports what that plateau did on the segment
 nobody looked at. It writes nothing: a parameter is chosen by a person, with
@@ -36,12 +36,13 @@ async def load_samples(
     for row in rows:
         if wanted and row.symbol.upper() not in wanted:
             continue
-        if row.net_bps is None or row.gap_seconds:
+        if row.net_bps is None or row.gap_seconds or row.exit_price is None:
             # A window the replay never fully saw cannot be repriced, and a row
             # with no path is not a sample: it is a missing measurement.
             continue
         entry = Decimal(str(row.entry_price))
-        if entry <= 0:
+        exit_price = Decimal(str(row.exit_price))
+        if entry <= 0 or exit_price <= 0:
             continue
         out.append(
             Sample(
@@ -49,7 +50,7 @@ async def load_samples(
                 symbol=row.symbol,
                 entry_price=entry,
                 entry_close=entry,
-                exit_close=_exit_close(row, entry),
+                exit_close=exit_price,
                 entry_probability=float(row.entry_probability or 0.0),
                 mfe_bps=Decimal(str(row.mfe_bps or 0)),
                 mae_bps=Decimal(str(row.mae_bps or 0)),
@@ -60,21 +61,6 @@ async def load_samples(
             )
         )
     return out
-
-
-def _exit_close(row: Any, entry: Decimal) -> Decimal:
-    """The price at the recorded exit, reconstructed from the recorded net bps.
-
-    The counterfactual row stores the net return, not the raw exit price; the
-    raw price is recoverable because the recorded charges are known, and doing
-    it this way keeps one source of truth instead of adding a column that
-    could disagree with ``net_bps``.
-    """
-
-    costs = Decimal(str(row.round_trip_cost_bps or 0))
-    net = Decimal(str(row.net_bps))
-    gross_bps = net + costs
-    return entry * (Decimal("1") + gross_bps / Decimal("10000"))
 
 
 async def _run(

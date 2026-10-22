@@ -105,8 +105,8 @@ def test_the_embargo_is_applied_on_both_sides():
 
 
 # -- repricing ---------------------------------------------------------------
-def test_a_target_is_paid_minus_the_exit_side_only():
-    """The entry side was paid at entry and is inside the entry price."""
+def test_a_target_pays_exit_slippage_and_both_taker_fees():
+    """Entry slippage is in entry_price; the entry taker fee is not."""
 
     value = net_bps(
         sample(START, mfe="90", mae="-10"),
@@ -117,7 +117,8 @@ def test_a_target_is_paid_minus_the_exit_side_only():
         fee_bps=COST.fee_bps,
     )
 
-    assert value == Decimal("60") - Decimal("8") - Decimal("10")
+    expected = ((Decimal("1") + Decimal("60") / 10000) * (Decimal("1") - COST.exit_slippage_bps / 10000) - 1) * 10000 - COST.fee_bps * 2
+    assert value == expected
 
 
 def test_a_bar_that_touched_both_levels_is_a_stop_as_in_the_recorder():
@@ -130,7 +131,8 @@ def test_a_bar_that_touched_both_levels_is_a_stop_as_in_the_recorder():
         fee_bps=COST.fee_bps,
     )
 
-    assert value == Decimal("-30") - Decimal("18")
+    expected = ((Decimal("1") - Decimal("30") / 10000) * (Decimal("1") - COST.exit_slippage_bps / 10000) - 1) * 10000 - COST.fee_bps * 2
+    assert value == expected
 
 
 # -- the plateau -------------------------------------------------------------
