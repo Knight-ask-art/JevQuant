@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     auth_disabled: bool = True
     admin_api_key: SecretStr = SecretStr("change-me-in-production")
     internal_execution_key: SecretStr = SecretStr("change-me-internal")
+    # Fernet key generated once, kept outside the database; required for UI key persistence.
+    credential_encryption_key: SecretStr | None = None
+    # Deliberate deviation from "auth is always on outside dev": this host is
+    # reachable only through an SSH tunnel, so the operator keeps the login off.
+    # The flag makes that posture explicit and auditable instead of a silent
+    # bypass. It never applies once live trading is enabled.
+    tunnel_only: bool = False
 
     # Hard risk envelope
     max_position_notional_usdt: Decimal = Decimal("500")
@@ -213,6 +220,8 @@ class Settings(BaseSettings):
                 raise ValueError("JEV_SYNTHETIC_MARKET must be false in prod")
             if self.trading_mode is Mode.LIVE and not self.enable_live_trading:
                 raise ValueError("live mode requires JEV_ENABLE_LIVE_TRADING=true")
+            if self.tunnel_only:
+                raise ValueError("JEV_AUTH_TUNNEL_ONLY is only for a non-prod tunnel host")
         return self
 
     @property
@@ -251,6 +260,7 @@ class Settings(BaseSettings):
             "execution_backend": self.execution_backend,
             "enable_live_trading": self.enable_live_trading,
             "auth_disabled": self.auth_disabled,
+            "auth_tunnel_only": self.tunnel_only,
             "database_url_scheme": self.database_url.split(":", 1)[0],
             "redis_configured": bool(self.redis_url),
             "synthetic_market": self.synthetic_market,

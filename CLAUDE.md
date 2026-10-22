@@ -30,8 +30,10 @@ Execution runs through one interface across Paper, Shadow, Binance Testnet, and 
    Model keys are write-only in the UI; venue keys live only in the environment.
 6. **Live is gated.** Live needs the mode, `JEV_ENABLE_LIVE_TRADING`, a full preflight and
    an arming token with a TTL. Manual cycles are refused in live. Default is `paper`.
-7. **Auth is intentionally off** (`JEV_AUTH_DISABLED=true`): the host is reachable only
-   through an SSH tunnel. Do not "fix" this by turning auth on.
+7. **Auth is intentionally off** (`JEV_AUTH_DISABLED=true` plus
+   `JEV_AUTH_TUNNEL_ONLY=true`): the host is reachable only through an SSH tunnel. Do not
+   "fix" this by turning auth on. `JEV_AUTH_TUNNEL_ONLY` is refused in `prod` and stops
+   applying once live trading is enabled — the login comes back with live, not before.
 
 ## Development Commands
 

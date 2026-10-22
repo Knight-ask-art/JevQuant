@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
-import { api, eventStreamUrl } from "../lib/api";
+import { api, eventStreamUrl, setCsrfToken } from "../lib/api";
 import { isHealthy, label, timeAgo } from "../lib/format";
 import { useApi } from "../hooks/useApi";
 import { LanguageSwitch, useI18n } from "../i18n";
 import type { SystemStatus } from "../lib/types";
-import { Pill } from "./ui";
+import { Pill, ScribbleUnderline } from "./ui";
 
 const ADVANCED = [
   ["/overview", "nav.overview"],
@@ -35,6 +35,35 @@ export function Layout() {
     window.localStorage.setItem("jev.nav.advanced", advancedOpen ? "1" : "0");
   }, [advancedOpen]);
   const status = useApi<SystemStatus>("/api/v1/system/status", 10000);
+  const [auth, setAuth] = useState<{ enabled: boolean; authenticated: boolean; csrf_token?: string } | null>(null);
+  const [authKey, setAuthKey] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authFetchError, setAuthFetchError] = useState("");
+
+  useEffect(() => {
+    api.get<{ enabled: boolean; authenticated: boolean; csrf_token?: string }>("/api/v1/auth/status")
+      .then((value) => {
+        setCsrfToken(value.csrf_token ?? null);
+        setAuth(value);
+      })
+      .catch((error) => setAuthFetchError(String(error)));
+  }, []);
+
+  async function signIn() {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const result = await api.post<{ csrf_token: string }>("/api/v1/auth/login", { api_key: authKey });
+      setCsrfToken(result.csrf_token);
+      setAuthKey("");
+      window.location.reload();
+    } catch (error) {
+      setAuthError(String(error));
+    } finally {
+      setAuthLoading(false);
+    }
+  }
   const [killError, setKillError] = useState<string | null>(null);
   const [lastEvent, setLastEvent] = useState<string>("");
   const socketRef = useRef<WebSocket | null>(null);
@@ -87,6 +116,36 @@ export function Layout() {
     } catch (error) {
       setKillError(String(error));
     }
+  }
+
+  if (authFetchError) {
+    return <div className="app-shell"><main className="main"><div className="callout danger">{authFetchError}</div></main></div>;
+  }
+  if (!auth) {
+    return <div className="app-shell"><main className="main"><p className="page-lede">Connecting to Jev Trading…</p></main></div>;
+  }
+  if (auth.enabled && !auth.authenticated) {
+    return (
+      <div className="app-shell" style={{ justifyContent: "center" }}>
+        <main className="main" style={{ maxWidth: 460, margin: "10vh auto", padding: 32 }}>
+          <div className="page-kicker">Operator access</div>
+          <h1>Jev Trading</h1>
+          <ScribbleUnderline width={180} />
+          <p className="page-lede">{t("ribbon.connecting")}</p>
+          <form onSubmit={(event) => { event.preventDefault(); void signIn(); }}>
+            <label className="field">
+              <span>{t("audit.operatorKey")}</span>
+              <input className="input" type="password" autoComplete="current-password"
+                value={authKey} onChange={(event) => setAuthKey(event.target.value)} required />
+            </label>
+            <button className="button" type="submit" disabled={authLoading} style={{ marginTop: 16 }}>
+              {authLoading ? "…" : "Sign in / 登录"}
+            </button>
+            {authError && <div className="callout danger" style={{ marginTop: 14 }}>{authError}</div>}
+          </form>
+        </main>
+      </div>
+    );
   }
 
   return (

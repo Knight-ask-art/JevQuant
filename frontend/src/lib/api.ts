@@ -1,21 +1,12 @@
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
-const KEY_STORAGE = "jev.apiKey";
+// CSRF token is short-lived and held in memory only. The actual login token
+// is an HttpOnly, SameSite=Strict cookie set by the control plane.
+// Clean up the old operator key left by previous versions of the UI.
+try { window.localStorage.removeItem("jev.apiKey"); } catch { /* non-browser or restricted storage */ }
 
-export function getApiKey(): string {
-  try {
-    return localStorage.getItem(KEY_STORAGE) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-export function setApiKey(value: string): void {
-  try {
-    if (value) localStorage.setItem(KEY_STORAGE, value);
-    else localStorage.removeItem(KEY_STORAGE);
-  } catch {
-    /* storage may be unavailable in private mode */
-  }
+let csrfToken: string | null = null;
+export function setCsrfToken(value: string | null): void {
+  csrfToken = value;
 }
 
 export class ApiError extends Error {
@@ -42,8 +33,9 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   if (init.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const key = getApiKey();
-  if (key) headers.set("X-API-Key", key);
+  if (csrfToken && init.method && !["GET", "HEAD"].includes(init.method)) {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
 
   const { timeoutMs, ...fetchInit } = init;
   const controller = timeoutMs ? new AbortController() : null;
@@ -55,6 +47,7 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   try {
     response = await fetch(`${BASE}${path}`, {
       ...fetchInit,
+      credentials: "same-origin",
       headers,
       signal: controller?.signal,
     });
@@ -112,6 +105,5 @@ export function eventStreamUrl(): string {
   const root = BASE
     ? BASE.replace(/^http/, "ws")
     : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
-  const key = getApiKey();
-  return `${root}/ws/events${key ? `?api_key=${encodeURIComponent(key)}` : ""}`;
+  return `${root}/ws/events`;
 }

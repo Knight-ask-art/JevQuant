@@ -127,20 +127,51 @@ Drift is a signal, not an instruction: the ledger is never rewritten from a bala
 difference. Investigate with `POST /api/v1/execution/reconcile`; if that does not
 explain the gap, compare the fills manually before touching anything.
 
-## Security branch (PR #1), rebased
+## Operator authentication
 
-`security/rebased` is PR #1's work merged onto current `main` and ready for
-review. It adds an opt-in operator login (HttpOnly session + CSRF), encrypts
-provider keys at rest with Fernet, and stops an entry kill switch from deferring
-a cross-route position exit. It also adds `JEV_CREDENTIAL_ENCRYPTION_KEY`.
+The control plane can require a login. It is **off on this host by design**: the
+API is bound to `127.0.0.1` and reached only through an SSH tunnel, so the login
+adds no protection and one more thing that can lock the operator out.
 
-**Do not deploy it with auth enabled without deciding to.** The branch respects
-the project's standing posture in code: auth stays off unless
-`JEV_AUTH_DISABLED=false`, and the toggle can only be disabled on a local,
-synthetic, non-live PAPER account (`local_auth_off_allowed`). That guard is the
-reason this file lives in the repo rather than only in a PR description. If the
-branch is ever deployed, set `JEV_CREDENTIAL_ENCRYPTION_KEY` **before** saving
-any provider key through the UI -- without it the UI refuses to store keys.
+That posture is now declared rather than implied:
+
+```dotenv
+JEV_AUTH_DISABLED=true
+JEV_AUTH_TUNNEL_ONLY=true
+```
+
+`JEV_AUTH_TUNNEL_ONLY` is the only way to keep auth off outside a local
+synthetic PAPER account. It is refused when `JEV_APP_ENV=prod`, and it has no
+effect once `JEV_ENABLE_LIVE_TRADING=true` or the mode is `live` -- at that
+point the API requires a login regardless of the flag. `/api/v1/system/config`
+reports it as `auth_tunnel_only` so the posture is auditable, and the settings
+page shows whether the login is on and whether it can be turned off here.
+
+Two consequences of deploying this with the login off:
+
+- `JEV_CREDENTIAL_ENCRYPTION_KEY` still matters. Keys already stored in the
+  database are migrated to ciphertext at startup if the key is present; if it is
+  absent they are **cleared**, and the UI then refuses to save new ones. Generate
+  the key **before** the first start that runs this code.
+- A restart is not needed to change the flag, but a change to `JEV_AUTH_DISABLED`
+  on the host does need one; the settings-page toggle persists in
+  `system_state.auth_disabled_override` and survives restarts.
+
+To enable it instead, set `JEV_AUTH_DISABLED=false` and a real
+`JEV_ADMIN_API_KEY`; the browser signs in with that key and keeps an HttpOnly,
+SameSite=Strict session cookie (8 h) plus a per-session CSRF header. The key is
+never stored in browser storage and never in a WebSocket URL.
+
+**Set `JEV_CREDENTIAL_ENCRYPTION_KEY` before saving any provider key through the
+UI.** Without it the UI refuses to store keys, and plaintext keys left by older
+versions are cleared at startup instead of being used. Generate one with
+
+```
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+and back it up: losing it makes saved model keys unreadable (they must be
+re-entered), and this PR does not provide a lossless rotation.
 
 ## Cost reports
 

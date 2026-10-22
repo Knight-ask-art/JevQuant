@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, AsyncIterator
 
+from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr
 
 from ..adapters.binance_account import BinanceAccountClient
@@ -63,6 +64,10 @@ logger = logging.getLogger("jev_trading.container")
 class AppContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._credential_cipher = (
+            Fernet(settings.credential_encryption_key.get_secret_value().encode("utf-8"))
+            if settings.credential_encryption_key else None
+        )
         self.default_universe = list(settings.allowed_symbols)
         self.db = Database(settings.database_url)
         self.repo = Repository(self.db)
@@ -219,6 +224,7 @@ class AppContainer:
             )
         await self.broker.start()
         await self.modes.initialize()
+        await self._load_auth_override()
         await self._load_symbol_universe()
         # Credentials entered through the UI outlive a container restart, so
         # load them before the orchestrator is wired to the adapters.
@@ -360,9 +366,56 @@ class AppContainer:
     # ------------------------------------------------------------------
     # runtime configuration (persisted in system_state, never echoed back)
     # ------------------------------------------------------------------
+    async def _load_auth_override(self) -> None:
+        override = await self.repo.get_state("auth_disabled_override")
+        if not isinstance(override, bool):
+            return
+        from ..api.security import local_auth_off_allowed
+        mode = await self.modes.current_mode()
+        self.settings.auth_disabled = bool(override and local_auth_off_allowed(self.settings, mode))
+
+    def _encrypt_credential(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        if self._credential_cipher is None:
+            raise AppError(ErrorCode.FORBIDDEN, "Set JEV_CREDENTIAL_ENCRYPTION_KEY before saving provider API keys.")
+        return "fernet:v1:" + self._credential_cipher.encrypt(value.encode("utf-8")).decode("utf-8")
+
+    def _decrypt_credential(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        if not value.startswith("fernet:v1:"):
+            # Legacy plaintext is migrated/scrubbed during startup; never use it directly.
+            return None
+        if self._credential_cipher is None:
+            raise RuntimeError("Encrypted provider credentials exist but JEV_CREDENTIAL_ENCRYPTION_KEY is missing.")
+        try:
+            return self._credential_cipher.decrypt(value[len("fernet:v1:"):].encode("utf-8")).decode("utf-8")
+        except (InvalidToken, ValueError) as exc:
+            raise RuntimeError("Cannot decrypt provider credentials; check encryption key.") from exc
+
     async def _load_runtime_settings(self) -> None:
         stored = await self.repo.get_state("runtime_credentials")
         if isinstance(stored, dict):
+            modified = False
+            for name in ("llm", "jev"):
+                section = stored.get(name)
+                if not isinstance(section, dict):
+                    continue
+                raw = section.get("api_key")
+                if raw and not str(raw).startswith("fernet:v1:"):
+                    # Migrate legacy plaintext when a key is available; otherwise
+                    # remove it rather than continuing to use insecure storage.
+                    section["api_key"] = self._encrypt_credential(str(raw)) if self._credential_cipher else None
+                    if not section["api_key"]:
+                        section["enabled"] = False
+                    modified = True
+            if modified:
+                await self.repo.set_state("runtime_credentials", stored)
+                await self.audit.record(
+                    "security.credentials_migrated", "system", None,
+                    {"encrypted": self._credential_cipher is not None},
+                )
             self._apply_credentials(stored)
         automation = await self.repo.get_state("automation")
         if isinstance(automation, dict) and automation.get("origin") == "env":
@@ -462,7 +515,7 @@ class AppContainer:
             settings.opencode_console_enabled = bool(llm.get("enabled"))
             settings.opencode_console_base_url = llm.get("base_url") or None
             key = llm.get("api_key")
-            settings.opencode_console_api_key = SecretStr(key) if key else None
+            settings.opencode_console_api_key = SecretStr(self._decrypt_credential(key)) if key else None
             settings.opencode_console_model = llm.get("model") or None
             settings.opencode_console_protocol = llm.get("protocol") or "openai"
         jev = stored.get("jev")
@@ -470,7 +523,7 @@ class AppContainer:
             settings.jev_enabled = bool(jev.get("enabled"))
             settings.jev_base_url = jev.get("base_url") or None
             key = jev.get("api_key")
-            settings.jev_api_key = SecretStr(key) if key else None
+            settings.jev_api_key = SecretStr(self._decrypt_credential(key)) if key else None
             settings.jev_model = jev.get("model") or settings.jev_model
             settings.jev_path = jev.get("path") or settings.jev_path
 
@@ -507,17 +560,18 @@ class AppContainer:
         if llm is not None:
             existing_llm = stored.get("llm")
             current_key = (
-                SecretStr(existing_llm["api_key"])
+                SecretStr(self._decrypt_credential(existing_llm["api_key"]))
                 if isinstance(existing_llm, dict) and existing_llm.get("api_key")
                 else self.settings.opencode_console_api_key
             )
             merged = self._merge_provider(current["llm"], llm, existing_key=current_key)
             merged.setdefault("protocol", current["llm"].get("protocol") or "openai")
+            merged["api_key"] = self._encrypt_credential(merged.get("api_key"))
             stored["llm"] = merged
         if jev is not None:
             existing_jev = stored.get("jev")
             current_key = (
-                SecretStr(existing_jev["api_key"])
+                SecretStr(self._decrypt_credential(existing_jev["api_key"]))
                 if isinstance(existing_jev, dict) and existing_jev.get("api_key")
                 else self.settings.jev_api_key
             )
@@ -525,6 +579,7 @@ class AppContainer:
             merged.setdefault(
                 "path", current["jev"].get("path") or "/v1/decisions"
             )
+            merged["api_key"] = self._encrypt_credential(merged.get("api_key"))
             stored["jev"] = merged
         # Swap adapters while no cycle can be reading them.
         async with self._cycle_lock:

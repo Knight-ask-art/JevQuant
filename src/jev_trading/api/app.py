@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from ..config import Settings, get_settings
 from ..domain.errors import AppError
 from ..services.container import AppContainer
+from .routes_auth import router as auth_router
 from .routes_activity import router as activity_router
 from .routes_backtest import router as backtest_router
 from .routes_connections import router as connections_router
@@ -134,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             500, "INTERNAL_ERROR", "An internal error occurred.", trace_id
         )
 
+    app.include_router(auth_router)
     app.include_router(system_router)
     app.include_router(mode_router)
     app.include_router(market_router)

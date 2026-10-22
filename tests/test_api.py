@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from jev_trading.adapters.models.base import PolicyGenerationResult
 from jev_trading.api.app import create_app
@@ -14,6 +15,7 @@ from jev_trading.config import Settings
 
 ADMIN = "test-admin-key"
 INTERNAL = "test-internal-key"
+FERNET_TEST_KEY = "J7GDQdV_ZVK-9RoVTmiEZpiDSWEEtXzEI_YcGsUuDmY="
 
 
 def make_settings(tmp_path: Path, **overrides) -> Settings:
@@ -22,6 +24,8 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         "synthetic_market": True,
         "demo_mode": True,
         "auth_disabled": True,
+        "admin_api_key": ADMIN,
+        "credential_encryption_key": FERNET_TEST_KEY,
     }
     values.update(overrides)
     return Settings(**values)
@@ -271,6 +275,70 @@ def test_auth_requires_admin_key(tmp_path):
         assert api.post("/api/v1/demo/cycle").status_code == 401
 
 
+def test_a_tunnel_only_host_keeps_the_login_off(tmp_path):
+    """The standing posture: reachable only through the tunnel, so no login.
+
+    This is the production configuration today. It has to be a declared
+    posture rather than an accident of ``auth_disabled`` defaulting to true.
+    """
+
+    with client(
+        tmp_path,
+        app_env="test",
+        synthetic_market=False,
+        trading_mode="testnet",
+        auth_disabled=True,
+        tunnel_only=True,
+        admin_api_key=ADMIN,
+        internal_execution_key=INTERNAL,
+    ) as api:
+        assert api.get("/api/v1/system/status").status_code == 200
+        status = api.get("/api/v1/auth/status").json()
+        assert status["enabled"] is False
+        assert status["authenticated"] is True
+        assert status["can_disable"] is True
+        # The flag is visible in the redacted config, so the posture is auditable.
+        config = api.get("/api/v1/system/config").json()["config"]
+        assert config["auth_tunnel_only"] is True
+        assert config["auth_disabled"] is True
+
+
+def test_a_tunnel_only_host_still_requires_login_once_live_is_enabled(tmp_path):
+    """The declaration can never become a backdoor for live trading."""
+
+    with client(
+        tmp_path,
+        app_env="test",
+        synthetic_market=False,
+        trading_mode="testnet",
+        auth_disabled=True,
+        tunnel_only=True,
+        enable_live_trading=True,
+        admin_api_key=ADMIN,
+        internal_execution_key=INTERNAL,
+    ) as api:
+        assert api.get("/api/v1/system/status").status_code == 401
+        status = api.get("/api/v1/auth/status").json()
+        assert status["enabled"] is True
+        assert status["can_disable"] is False
+        ok = api.get("/api/v1/system/status", headers={"X-API-Key": ADMIN})
+        assert ok.status_code == 200
+
+
+def test_tunnel_only_is_refused_in_prod(tmp_path):
+    """Prod means a real deployment; a tunnel declaration there is a mistake."""
+
+    with pytest.raises(ValueError, match="TUNNEL_ONLY"):
+        make_settings(
+            tmp_path,
+            app_env="prod",
+            auth_disabled=False,
+            synthetic_market=False,
+            internal_execution_key=INTERNAL,
+            tunnel_only=True,
+        )
+
+
 def test_internal_execution_identity_is_separate(tmp_path):
     with client(tmp_path, auth_disabled=False, admin_api_key=ADMIN, internal_execution_key=INTERNAL) as api:
         missing = api.post("/api/v1/execution/intents", json={"intent_id": "abc"})
@@ -291,7 +359,12 @@ def test_internal_execution_identity_is_separate(tmp_path):
 
 def test_websocket_exposes_open_event(tmp_path):
     with client(tmp_path, auth_disabled=False, admin_api_key=ADMIN, internal_execution_key=INTERNAL) as api:
-        with api.websocket_connect(f"/ws/events?api_key={ADMIN}") as socket:
+        with pytest.raises(WebSocketDisconnect):
+            with api.websocket_connect(f"/ws/events?api_key={ADMIN}") as socket:
+                socket.receive_json()
+        login = api.post("/api/v1/auth/login", json={"api_key": ADMIN})
+        assert login.status_code == 200
+        with api.websocket_connect("/ws/events") as socket:
             event = socket.receive_json()
             assert event["payload"]["event"] == "stream.open"
 
@@ -321,6 +394,13 @@ def test_model_settings_are_write_only_and_kept_on_later_saves(open_client):
     # The secret goes in and never comes back out.
     assert "secret-llm-key" not in response.text
     assert "secret-jev-key" not in response.text
+    # The underlying system_state must contain ciphertext, not model secrets.
+    container = open_client.app.state.container
+    persisted = open_client.portal.call(container.repo.get_state, "runtime_credentials")
+    assert persisted["llm"]["api_key"].startswith("fernet:v1:")
+    assert persisted["jev"]["api_key"].startswith("fernet:v1:")
+    assert "secret-llm-key" not in str(persisted)
+    assert "secret-jev-key" not in str(persisted)
     assert "api_key" not in body["models"]["llm"]
 
     # An omitted api_key keeps the stored secret, because the client cannot

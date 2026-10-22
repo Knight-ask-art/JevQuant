@@ -393,7 +393,7 @@ async def test_live_position_exits_through_live_route_after_restart_to_paper(
     assert paper_route.submitted == []
 
 
-async def test_kill_switch_defers_cross_route_exit_but_keeps_local_exits(
+async def test_kill_switch_never_blocks_cross_route_exit(
     repo, server_limits
 ):
     account, policy, ctx, engine, signal, position, _paper = await open_position(
@@ -416,8 +416,11 @@ async def test_kill_switch_defers_cross_route_exit_but_keeps_local_exits(
     _exits, notes = await orchestrator._manage_exits(
         policy=policy, snapshot_map={snapshot.symbol: snapshot}, system=system_snapshot()
     )
-    assert live.submitted == []
-    assert any("kill switch" in note for note in notes)
+    # The kill switch stops new entries; an open Live position still leaves
+    # through its own route.
+    assert len(live.submitted) == 1
+    assert live.submitted[0].intent.mode is Mode.LIVE
+    assert not any("kill switch" in note for note in notes)
 
 
 async def test_same_route_exits_still_run_under_the_kill_switch(repo, server_limits):
