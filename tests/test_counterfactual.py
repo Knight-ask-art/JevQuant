@@ -571,7 +571,7 @@ async def test_counterfactual_uses_chronological_candles_even_if_provider_reorde
         repo=repo,
         market=FakeMarket([
             bar(3, low=67000.0),
-            bar(1, high=69000.0, low=68000.0, close=68010.0),
+            bar(1, high=71000.0, low=68000.0, close=68010.0),
         ]),
     )
     assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
