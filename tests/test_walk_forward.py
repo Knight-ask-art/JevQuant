@@ -112,7 +112,7 @@ def test_a_target_pays_exit_slippage_and_both_taker_fees():
         sample(START, mfe="90", mae="-10"),
         stop_bps=Decimal("30"),
         take_bps=Decimal("60"),
-        hold_minutes=60,
+        hold_minutes=240,
         exit_slippage_bps=COST.exit_slippage_bps,
         fee_bps=COST.fee_bps,
     )
@@ -126,7 +126,7 @@ def test_a_bar_that_touched_both_levels_is_a_stop_as_in_the_recorder():
         sample(START, mfe="200", mae="-200"),
         stop_bps=Decimal("30"),
         take_bps=Decimal("60"),
-        hold_minutes=60,
+        hold_minutes=240,
         exit_slippage_bps=COST.exit_slippage_bps,
         fee_bps=COST.fee_bps,
     )
@@ -184,7 +184,7 @@ def test_a_broad_neighbourhood_is_a_plateau():
     )
 
     assert found is not None
-    assert found["positive_neighbours"] >= 5
+    assert found["positive_neighbours"] >= 3  # four neighbours in 2D
     assert found["train_mean_net_bps"] > float(COST.round_trip_bps)
 
 

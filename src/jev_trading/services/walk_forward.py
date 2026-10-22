@@ -115,8 +115,8 @@ def net_bps(
 
     This is still an MFE/MAE approximation, not a path replay: the ordering of
     extremes and the price at a different holding horizon are not observable
-    from the recorded outcome. ``hold_minutes`` is retained for the grid
-    interface, but cannot produce an independently observed timeout price.
+    from the recorded outcome. Only the recorder's holding period may be
+    evaluated; other periods require full minute-level price-path replay.
     """
 
     if hold_minutes != sample.window_minutes:
