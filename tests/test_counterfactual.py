@@ -406,3 +406,175 @@ async def test_a_regime_rejection_is_not_blamed_on_the_jev_gate(
     rows = await repo.list_counterfactuals()
     # The stored score fails min_choice_probability; the regime event wins.
     assert rows[0].blocked_rule == "regime_expected_move_below_cost"
+
+
+
+def test_gap_accounting_excludes_entry_minute_and_post_stop_horizon():
+    """A complete first eligible minute is sufficient for an immediate stop."""
+
+    from jev_trading.services.counterfactual import missing_minute_seconds
+
+    first = bar(1)
+    assert missing_minute_seconds(
+        [first], decided_at=NOW, observed_until=first.open_time + timedelta(minutes=1)
+    ) == 0
+    # The same bar does not cover the rest of a timeout's 60-minute horizon.
+    assert missing_minute_seconds(
+        [first], decided_at=NOW, observed_until=NOW + timedelta(hours=1)
+    ) == 58 * 60
+
+
+def test_gap_accounting_detects_internal_and_leading_gaps_even_with_duplicates():
+    from jev_trading.services.counterfactual import missing_minute_seconds
+
+    first, third = bar(1), bar(3)
+    assert missing_minute_seconds(
+        [first, first, third],
+        decided_at=NOW,
+        observed_until=third.open_time + timedelta(minutes=1),
+    ) == 60
+    assert missing_minute_seconds(
+        [third], decided_at=NOW, observed_until=third.open_time + timedelta(minutes=1)
+    ) == 120
+
+
+def test_gap_accounting_accepts_binance_close_time_one_millisecond_early():
+    from jev_trading.services.counterfactual import missing_minute_seconds
+
+    first = bar(1)
+    binance_bar = Candle(
+        open_time=first.open_time,
+        close_time=first.close_time - timedelta(milliseconds=1),
+        open=first.open,
+        high=first.high,
+        low=first.low,
+        close=first.close,
+        volume=first.volume,
+    )
+    assert missing_minute_seconds(
+        [binance_bar],
+        decided_at=NOW,
+        observed_until=first.open_time + timedelta(minutes=1),
+    ) == 0
+
+
+async def test_early_stop_has_zero_gap_and_remains_an_eligible_outcome(
+    repo, server_limits, settings
+):
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    await _blocked_signal(repo, policy)
+    service = CounterfactualService(
+        settings=settings, repo=repo, market=FakeMarket([bar(1, low=67000.0)])
+    )
+
+    assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
+    outcome = (await repo.list_counterfactuals())[0]
+    assert outcome.exit_reason == "stop_loss"
+    assert outcome.gap_seconds == 0
+    assert outcome.net_bps is not None
+
+
+async def test_missing_minutes_before_a_stop_are_reported(
+    repo, server_limits, settings
+):
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    await _blocked_signal(repo, policy)
+    service = CounterfactualService(
+        settings=settings, repo=repo, market=FakeMarket([bar(3, low=67000.0)])
+    )
+
+    assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
+    outcome = (await repo.list_counterfactuals())[0]
+    assert outcome.exit_reason == "stop_loss"
+    assert outcome.gap_seconds == 120
+
+
+async def test_timeout_keeps_missing_tail_as_a_gap(repo, server_limits, settings):
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    await _blocked_signal(repo, policy)
+    # Flat relative to the entry, so neither stop nor target is reached.
+    service = CounterfactualService(
+        settings=settings,
+        repo=repo,
+        market=FakeMarket([bar(1, high=68050.0, low=67980.0, close=68020.0)]),
+    )
+
+    assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
+    outcome = (await repo.list_counterfactuals())[0]
+    assert outcome.exit_reason == "timeout"
+    assert outcome.gap_seconds == 58 * 60
+
+
+
+def test_replay_sorts_out_of_order_candles_before_charging_a_stop():
+    # Target was reached before a later stop. Original input order must not
+    # reverse the outcome or produce an erroneous MFE/MAE sequence.
+    result = replay([bar(3, low=98.0), bar(1, high=102.6)])
+    assert result is not None
+    assert result.exit_reason == "take_profit"
+
+
+def test_replay_deduplicates_identical_minute_bars():
+    first = bar(1, high=102.6)
+    result = replay([first, first, bar(3, low=98.0)])
+    assert result is not None
+    assert result.exit_reason == "take_profit"
+    assert result.minutes_judged == 1
+
+
+def test_conflicting_duplicate_minute_bars_fail_closed():
+    import pytest
+
+    with pytest.raises(ValueError, match="conflicting duplicate"):
+        replay([bar(1, high=102.6), bar(1, high=100.5)])
+
+
+def test_minute_normalization_rejects_unaligned_open_and_allows_binance_close_time():
+    import pytest
+    from jev_trading.services.klines import normalize_minute_candles
+
+    candle = bar(1)
+    binance = Candle(
+        open_time=candle.open_time,
+        close_time=candle.close_time - timedelta(milliseconds=1),
+        open=candle.open,
+        high=candle.high,
+        low=candle.low,
+        close=candle.close,
+        volume=candle.volume,
+    )
+    assert normalize_minute_candles([binance]) == [binance]
+    unaligned = Candle(
+        open_time=candle.open_time + timedelta(seconds=30),
+        close_time=candle.close_time,
+        open=candle.open,
+        high=candle.high,
+        low=candle.low,
+        close=candle.close,
+        volume=candle.volume,
+    )
+    with pytest.raises(ValueError, match="minute-aligned"):
+        normalize_minute_candles([unaligned])
+
+
+async def test_counterfactual_uses_chronological_candles_even_if_provider_reorders(
+    repo, server_limits, settings
+):
+    policy = compiled_policy(server_limits, now=NOW)
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+    await _blocked_signal(repo, policy)
+    service = CounterfactualService(
+        settings=settings,
+        repo=repo,
+        market=FakeMarket([
+            bar(3, low=67000.0),
+            bar(1, high=71000.0, low=68000.0, close=68010.0),
+        ]),
+    )
+    assert await service.evaluate_pending(NOW + timedelta(hours=2)) == 1
+    outcome = (await repo.list_counterfactuals())[0]
+    assert outcome.exit_reason == "take_profit"
+    assert outcome.gap_seconds == 0

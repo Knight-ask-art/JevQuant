@@ -19,6 +19,11 @@ money" cannot come from optimistic assumptions:
 - when a single 1m bar touches both the stop and the target, the stop wins;
 - every exit pays exit slippage and both sides pay the taker fee.
 
+Missing-minute coverage is measured only up to the simulated exit for
+stops/targets, but through the entire horizon for timeouts. Bars after a
+triggered exit are not missing evidence. Binance's 1 ms close-time convention
+is handled using candle open times.
+
 Known imprecision: if the entry happens part-way through a 1m bar, a stop or
 target touched later in that same minute is only seen from the next bar on.
 Nothing cheaper than trade-level data can resolve that. Two things make the
@@ -47,7 +52,7 @@ from ..domain.exits import exit_plan
 from ..domain.market import Candle
 from ..domain.money import ZERO
 from ..domain.policy import EffectivePolicy, ExitDefaults
-from .klines import fetch_minute_range
+from .klines import fetch_minute_range, normalize_minute_candles
 
 SIMULATION_METHOD = "1m-conservative-v1"
 #: Extra slack on top of the longest holding window a policy may carry. A
@@ -95,6 +100,32 @@ class Replay:
     gap_seconds: int = 0
 
 
+def missing_minute_seconds(
+    candles: Sequence[Candle], *, decided_at: datetime, observed_until: datetime
+) -> int:
+    """Missing *closed* 1m bars while a hypothetical position was exposed.
+
+    The entry minute is deliberately excluded from the replay. Binance's
+    candle close timestamps are 1 ms before the next minute, so coverage is
+    measured by exact 1m **open** times, not close timestamps or the number of
+    bars returned. Duplicated bars cannot mask a missing minute.
+    """
+
+    minute = timedelta(minutes=1)
+    cursor = decided_at.replace(second=0, microsecond=0) + minute
+    seen = {
+        candle.open_time
+        for candle in candles
+        if candle.close_time <= observed_until
+    }
+    missing = 0
+    while cursor + minute <= observed_until:
+        if cursor not in seen:
+            missing += 60
+        cursor += minute
+    return missing
+
+
 def simulate(
     *,
     candles: Sequence[Candle],
@@ -116,7 +147,10 @@ def simulate(
     the highest high seen so far in this replay.
     """
 
-    if not candles or entry_price <= ZERO:
+    if entry_price <= ZERO:
+        return None
+    candles = normalize_minute_candles(candles)
+    if not candles:
         return None
     slippage = exit_slippage_bps / Decimal("10000")
     geometry = exit_rules.geometry()
@@ -377,7 +411,9 @@ class CounterfactualService:
         candles = await fetch_minute_range(
             self.market, signal.symbol, signal.created_at, horizon_end
         )
-        window = [candle for candle in candles if candle.open_time > signal.created_at]
+        window = normalize_minute_candles(
+            [candle for candle in candles if candle.open_time > signal.created_at]
+        )
         replay = simulate(
             candles=window,
             entry_price=entry_price,
@@ -415,6 +451,19 @@ class CounterfactualService:
                 method=SIMULATION_METHOD,
             )
 
+        # A stop/target ends exposure immediately: future bars are NOT
+        # missing observations. A timeout, in contrast, requires the whole
+        # horizon; any missing tail or interior minute is a genuine gap.
+        judged = window[: replay.minutes_judged]
+        observed_until = (
+            judged[-1].open_time + timedelta(minutes=1)
+            if replay.exit_reason in {"stop_loss", "take_profit"}
+            else horizon_end
+        )
+        gap_seconds = missing_minute_seconds(
+            judged, decided_at=signal.created_at, observed_until=observed_until
+        )
+
         return await self.repo.insert_counterfactual(
             signal_id=signal.id,
             policy_id=signal.policy_id,
@@ -445,10 +494,8 @@ class CounterfactualService:
             )
             if replay.exit_time is not None
             else None,
-            # Minutes the window covers that no 1m bar was judged for: a
-            # data gap, not a quiet market.
-            gap_seconds=60
-            * max(0, policy.exit_defaults.max_holding_seconds // 60 - replay.minutes_judged),
+            # Missing observed 1m minutes, never minutes after a real stop.
+            gap_seconds=gap_seconds,
             is_synthetic=bool(snapshot.is_synthetic),
             method=SIMULATION_METHOD,
         )
