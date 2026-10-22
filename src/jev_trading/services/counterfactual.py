@@ -52,7 +52,7 @@ from ..domain.exits import exit_plan
 from ..domain.market import Candle
 from ..domain.money import ZERO
 from ..domain.policy import EffectivePolicy, ExitDefaults
-from .klines import fetch_minute_range
+from .klines import fetch_minute_range, normalize_minute_candles
 
 SIMULATION_METHOD = "1m-conservative-v1"
 #: Extra slack on top of the longest holding window a policy may carry. A
@@ -147,7 +147,10 @@ def simulate(
     the highest high seen so far in this replay.
     """
 
-    if not candles or entry_price <= ZERO:
+    if entry_price <= ZERO:
+        return None
+    candles = normalize_minute_candles(candles)
+    if not candles:
         return None
     slippage = exit_slippage_bps / Decimal("10000")
     geometry = exit_rules.geometry()
@@ -408,7 +411,9 @@ class CounterfactualService:
         candles = await fetch_minute_range(
             self.market, signal.symbol, signal.created_at, horizon_end
         )
-        window = [candle for candle in candles if candle.open_time > signal.created_at]
+        window = normalize_minute_candles(
+            [candle for candle in candles if candle.open_time > signal.created_at]
+        )
         replay = simulate(
             candles=window,
             entry_price=entry_price,

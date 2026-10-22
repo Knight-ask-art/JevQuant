@@ -42,6 +42,38 @@ SYNTHETIC_LOOKBACK_MINUTES = {
 BINANCE_MAX_BARS = 1000
 
 
+def normalize_minute_candles(candles: Sequence[Candle]) -> list[Candle]:
+    """Sort and deduplicate 1m OHLC bars without guessing conflicting prices.
+
+    A provider may return out-of-order or repeated bars. A conflicting bar
+    for the same open minute changes the stop/target ordering and must be
+    rejected, not silently resolved in favour of a profitable replay.
+    """
+
+    by_open: dict[datetime, Candle] = {}
+    for candle in candles:
+        opening = candle.open_time
+        closing = candle.close_time
+        if (
+            opening.tzinfo is None
+            or closing.tzinfo is None
+            or opening.utcoffset() is None
+            or closing.utcoffset() is None
+        ):
+            raise ValueError("minute candles require timezone-aware timestamps")
+        opening = opening.astimezone(UTC)
+        if opening.second or opening.microsecond:
+            raise ValueError("minute candle open time is not minute-aligned")
+        close_utc = closing.astimezone(UTC)
+        if not opening < close_utc <= opening + timedelta(minutes=1):
+            raise ValueError("minute candle close time exceeds its one-minute interval")
+        old = by_open.get(opening)
+        if old is not None and old != candle:
+            raise ValueError(f"conflicting duplicate minute candle at {opening.isoformat()}")
+        by_open[opening] = candle
+    return [by_open[timestamp] for timestamp in sorted(by_open)]
+
+
 async def fetch_minute_range(market, symbol: str, start: datetime, end: datetime) -> list[Candle]:
     """Every closed 1m bar in ``[start, end]``, paging around the 1000-bar cap.
 
@@ -56,14 +88,14 @@ async def fetch_minute_range(market, symbol: str, start: datetime, end: datetime
     cursor = start
     while cursor < end:
         batch = await market.klines(symbol, interval="1m", limit=BINANCE_MAX_BARS, start=cursor)
-        usable = [
+        usable = normalize_minute_candles([
             bar
             for bar in closed_candles(batch, end)
             if bar.open_time >= start and bar.close_time > cursor
-        ]
+        ])
         if not usable:
             break
-        bars.extend(usable)
+        bars = normalize_minute_candles([*bars, *usable])
         if usable[-1].close_time >= end:
             break
         cursor = usable[-1].close_time
