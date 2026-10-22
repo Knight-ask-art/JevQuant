@@ -45,7 +45,7 @@ def local_auth_off_allowed(settings: Settings, mode: Mode) -> bool:
     Two ways, and neither is a silent bypass:
 
     * a local, synthetic, development account (the original guard), or
-    * a host explicitly declared ``tunnel_only``: auth is off because nothing
+    * a host explicitly declared ``auth_tunnel_only``: auth is off because nothing
       but the SSH tunnel can reach the port. A host that can trade live can
       never claim that, so the declaration cannot become a backdoor.
     """
@@ -57,7 +57,7 @@ def local_auth_off_allowed(settings: Settings, mode: Mode) -> bool:
         and mode in (Mode.PAPER, Mode.SHADOW)
     ):
         return True
-    return settings.tunnel_only
+    return settings.auth_tunnel_only
 
 
 async def auth_required(container) -> bool:

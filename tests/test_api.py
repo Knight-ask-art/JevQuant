@@ -275,6 +275,30 @@ def test_auth_requires_admin_key(tmp_path):
         assert api.post("/api/v1/demo/cycle").status_code == 401
 
 
+def test_the_documented_env_name_is_the_one_settings_reads(tmp_path, monkeypatch):
+    """The deploy-time contract: JEV_AUTH_TUNNEL_ONLY must reach Settings.
+
+    This is the failure that shipped: the field was called ``tunnel_only``, so
+    Settings looked for JEV_TUNNEL_ONLY and silently ignored the documented
+    name (``extra="ignore"``). The host came up requiring a login while its
+    .env said auth was off. A unit test on the model alone cannot catch a
+    name mismatch against the environment, so this one sets the variable.
+    """
+
+    monkeypatch.setenv("JEV_AUTH_TUNNEL_ONLY", "true")
+    monkeypatch.setenv("JEV_AUTH_DISABLED", "true")
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'env.db'}",
+        app_env="test",
+        synthetic_market=False,
+        trading_mode="testnet",
+        admin_api_key=ADMIN,
+        internal_execution_key=INTERNAL,
+    )
+    assert settings.auth_tunnel_only is True
+    assert settings.redacted_summary()["auth_tunnel_only"] is True
+
+
 def test_a_tunnel_only_host_keeps_the_login_off(tmp_path):
     """The standing posture: reachable only through the tunnel, so no login.
 
@@ -288,7 +312,7 @@ def test_a_tunnel_only_host_keeps_the_login_off(tmp_path):
         synthetic_market=False,
         trading_mode="testnet",
         auth_disabled=True,
-        tunnel_only=True,
+        auth_tunnel_only=True,
         admin_api_key=ADMIN,
         internal_execution_key=INTERNAL,
     ) as api:
@@ -312,7 +336,7 @@ def test_a_tunnel_only_host_still_requires_login_once_live_is_enabled(tmp_path):
         synthetic_market=False,
         trading_mode="testnet",
         auth_disabled=True,
-        tunnel_only=True,
+        auth_tunnel_only=True,
         enable_live_trading=True,
         admin_api_key=ADMIN,
         internal_execution_key=INTERNAL,
@@ -335,7 +359,7 @@ def test_tunnel_only_is_refused_in_prod(tmp_path):
             auth_disabled=False,
             synthetic_market=False,
             internal_execution_key=INTERNAL,
-            tunnel_only=True,
+            auth_tunnel_only=True,
         )
 
 
