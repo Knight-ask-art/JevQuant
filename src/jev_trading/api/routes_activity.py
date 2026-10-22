@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, Depends, Query, Request
 
 from ..domain.enums import ErrorCode, SignalState
 from ..domain.errors import AppError
+from ..services.telemetry import ExecutionTelemetry
 from . import serializers as ser
 from .security import require_operator
 
@@ -139,6 +142,26 @@ async def list_edge_shadow(
     container = _container(request)
     rows = await container.repo.list_edge_shadows(limit=limit)
     return {"items": [ser.edge_shadow(row) for row in rows]}
+
+
+@router.get("/execution-telemetry")
+async def execution_telemetry(
+    request: Request,
+    days: int = Query(default=7, ge=1, le=90),
+    actor: str = Depends(require_operator),
+) -> dict[str, object]:
+    """How long each pipeline stage took, and how long the venue call took.
+
+    Read-only, and derived from persisted timestamps: it reports the
+    distribution and names the slowest stage rather than proposing a timeout.
+    """
+
+    container = _container(request)
+    end = datetime.now(UTC)
+    start = end - timedelta(days=days)
+    signals = await container.repo.list_signals_with_events(since=start, until=end)
+    latencies = await container.repo.list_execution_latencies()
+    return ExecutionTelemetry(signals=signals, venue_latencies_ms=latencies).report()
 
 
 @router.get("/positions")

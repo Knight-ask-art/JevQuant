@@ -166,8 +166,13 @@ class BinanceTestnetExecutionAdapter:
         if intent.order_preference.value == "LIMIT":
             params["timeInForce"] = "GTC"
             params["price"] = canonical_str(approved.approved_limit_price or market.ask)
+        # The venue call is the only pipeline boundary the signal's state trail
+        # cannot see: both "waiting on HTTP" and "the adapter is slow" look the
+        # same from outside. Measure it here, where it happens.
+        started = time.perf_counter()
         data = await self._request("POST", "/api/v3/order", params)
-        return await self._record_response(approved, order_id, data, rules)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        return await self._record_response(approved, order_id, data, rules, latency_ms=latency_ms)
 
     async def _record_response(
         self,
@@ -175,6 +180,8 @@ class BinanceTestnetExecutionAdapter:
         order_id: str,
         data: dict[str, Any],
         rules: SymbolFilters,
+        *,
+        latency_ms: int | None = None,
     ) -> ExecutionReceipt:
         raw_status = str(data.get("status", "")).upper()
         status = STATUS_MAP.get(raw_status)
@@ -242,6 +249,7 @@ class BinanceTestnetExecutionAdapter:
             fee_quote=sum((fill.fee_quote for fill in fills), ZERO),
             position_id=position.id if position is not None else None,
             message=f"binance testnet status {raw_status}",
+            latency_ms=latency_ms,
         )
 
     async def cancel(self, order_id: str) -> None:

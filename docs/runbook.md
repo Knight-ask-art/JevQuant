@@ -218,6 +218,29 @@ named in the hypotheses.
 The report does not change `JEV_FEE_BPS` / slippage settings. Use it to decide, then
 change them deliberately.
 
+## Execution telemetry
+
+```
+python -m jev_trading.telemetry [--days 7] [--json]
+curl -s localhost:8000/api/v1/execution-telemetry?days=7
+```
+
+Per-stage timings (`jev_evaluation`, `gating`, `risk_approval`, `dispatch`,
+`execution`) come from the `signal_events` trail, so they work on history recorded
+before the report existed. The venue-call latency comes from the adapter's own
+measurement (`EXECUTION_LATENCY` rows); paper and shadow make none, so their count is
+`calls: 0` rather than 0 ms.
+
+Read it as a description, not a target:
+
+- `sample_adequacy: insufficient` (under 20 samples on any stage) means the numbers
+  describe those samples, not the pipeline. It is the expected state right after a
+  deploy.
+- `slowest_stage` is ranked by median. Check `max_seconds` next to it: one hung call
+  shows up there and is an incident, not a reason to change a timeout.
+- Nothing in the report tunes anything. A stage that dominates is a fact to act on
+  deliberately, not a prompt to widen `JEV_*_TIMEOUT_MS`.
+
 ## Shadow edge evaluator
 
 `GET /api/v1/edge-shadow` returns the recent verdicts. Until a cohort

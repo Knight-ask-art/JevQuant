@@ -24,6 +24,10 @@ class ExecutionReceipt(BaseModel):
     position_id: str | None = None
     reconciliation_required: bool = False
     message: str = ""
+    #: How long the adapter's own call to the venue took, when the adapter
+    #: measured it. ``None`` means "not measured" (a simulated adapter, or a
+    #: failure before the call), never "zero".
+    latency_ms: int | None = None
 
 
 class ReconciliationResult(BaseModel):

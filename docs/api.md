@@ -127,6 +127,12 @@ read of the same rows, run `python -m jev_trading.exit_diagnostics`.
 | GET | `/api/v1/fills?limit=100` | operator | fills |
 | GET | `/api/v1/positions?status=OPEN` | operator | positions with marks/unrealized |
 | GET | `/api/v1/pnl?limit=200` | operator | PnL snapshots and account totals |
+| GET | `/api/v1/execution-telemetry?days=7` | operator | per-stage timings from the signal trail, plus measured venue-call latency |
+
+`/api/v1/execution-telemetry` is read-only and derived from persisted timestamps
+(`days` 1–90). A stage with no boundary in the trail reports `samples: 0` with null
+percentiles rather than a zero, and adapters that do not measure the venue call
+contribute `calls: 0` rather than 0 ms. See the telemetry section in `architecture.md`.
 
 Dispatch rules: the intent must exist, be `APPROVED`, have a persisted approved risk
 decision, be unexpired, and match the active mode. Unknown outcomes return

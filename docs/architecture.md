@@ -380,6 +380,38 @@ It also reports `capture_ratio` (realised gross over MFE), giveback, the median 
 `GET /api/v1/...`-style access is via the `GET_BLOCKED_SIGNALS` agent tool, which reports
 counts, average `net_bps`, per-rule attribution and timeout-path MFE.
 
+## Execution telemetry
+
+`services/telemetry.py` answers "which stage took the time between a candle closing and
+an order existing". The pipeline is a chain of waits — Jev, the gates, the risk engine,
+the adapter, the venue — and a late fill or a drifted price is only diagnosable if each
+boundary is measured.
+
+Two sources, and the split is deliberate:
+
+- **The signal's own trail.** `signal_events` already timestamps every state change, so
+  each stage is a subtraction between two states: `CANDIDATE→SCORED` (Jev),
+  `SCORED→ELIGIBLE` (gating), `RISK_PENDING→APPROVED` (risk), `APPROVED→EXECUTION_PENDING`
+  (dispatch), `EXECUTION_PENDING→ACCEPTED` (execution). This needs no new writes and
+  works retroactively on history recorded before the report existed.
+- **The venue call.** `ExecutionReceipt.latency_ms` carries the adapter's own
+  `time.perf_counter()` measurement around the HTTP submit (currently the Binance
+  testnet adapter; simulated adapters make none). It is persisted as an `order_events`
+  row of type `EXECUTION_LATENCY`, not a column, because it belongs to one call.
+
+What the report refuses to do:
+
+- **A missing measurement is not a zero.** A stage with no boundary in the trail
+  contributes no sample; an unmeasured venue call counts as zero *calls*, not 0 ms.
+  Both mistakes would make the pipeline look faster than it is.
+- **One outlier is not the pipeline.** The slowest stage is ranked by median; `max` is
+  reported next to it so an incident stays visible without becoming the headline.
+- **It names, it does not tune.** Below `MIN_SAMPLES_FOR_EVIDENCE` (20) the report says
+  `sample_adequacy: insufficient`, and it never proposes a timeout.
+
+Read it with `python -m jev_trading.telemetry [--days 7] [--json]` or
+`GET /api/v1/execution-telemetry?days=7`. Read-only: it never touches an order.
+
 ## Modes and live arming
 
 | Mode | Adapter | Requirements |

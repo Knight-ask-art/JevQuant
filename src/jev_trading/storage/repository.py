@@ -1485,6 +1485,76 @@ class Repository:
                 )
             )
 
+    async def list_execution_latencies(self, limit: int = 1000) -> list[float]:
+        """Venue-call durations recorded by the adapters, newest first.
+
+        Read from ``order_events`` rather than a column: the measurement
+        belongs to one call, and an adapter that did not measure it leaves no
+        row at all -- a missing measurement, never a zero.
+        """
+
+        async with self.db.session() as session:
+            rows = (
+                await session.execute(
+                    select(OrderEventRow.payload_json)
+                    .where(OrderEventRow.event_type == "EXECUTION_LATENCY")
+                    .order_by(OrderEventRow.created_at.desc())
+                    .limit(max(1, limit))
+                )
+            ).scalars()
+            values: list[float] = []
+            for payload in rows:
+                value = (payload or {}).get("latency_ms")
+                if isinstance(value, (int, float)) and value >= 0:
+                    values.append(float(value))
+            return values
+
+    async def list_signals_with_events(
+        self, *, since: datetime, until: datetime, limit: int = 2000
+    ) -> list[SimpleNamespace]:
+        """Signals inside a window, each with its state trail attached.
+
+        One query per side rather than a join: the trail is a list, and a join
+        would either multiply the signal rows or need a second pass anyway.
+        """
+
+        async with self.db.session() as session:
+            signals = list(
+                (
+                    await session.execute(
+                        select(SignalRow)
+                        .where(SignalRow.created_at >= since, SignalRow.created_at <= until)
+                        .order_by(SignalRow.created_at)
+                        .limit(max(1, limit))
+                    )
+                ).scalars()
+            )
+            if not signals:
+                return []
+            ids = [signal.id for signal in signals]
+            events = list(
+                (
+                    await session.execute(
+                        select(SignalEventRow)
+                        .where(SignalEventRow.signal_id.in_(ids))
+                        .order_by(SignalEventRow.created_at)
+                    )
+                ).scalars()
+            )
+        by_signal: dict[str, list[SignalEventRow]] = {signal_id: [] for signal_id in ids}
+        for event in events:
+            by_signal.setdefault(event.signal_id, []).append(event)
+        return [
+            SimpleNamespace(
+                id=signal.id,
+                symbol=signal.symbol,
+                state=signal.state,
+                created_at=signal.created_at,
+                events=by_signal.get(signal.id, []),
+            )
+            for signal in signals
+        ]
+
     async def get_order(self, order_id: str) -> OrderRow | None:
         async with self.db.session() as session:
             return await session.get(OrderRow, order_id)

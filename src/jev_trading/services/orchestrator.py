@@ -1162,6 +1162,7 @@ class TradingOrchestrator:
             counters["errors"] += 1
             notes.append(f"{symbol}: execution error {exc.code.value}")
             return
+        await self._record_latency(receipt)
         await self._apply_receipt(signal_id, receipt, counters, notes)
 
     async def dispatch_approved_intent(self, intent_id: str) -> dict[str, Any]:
@@ -1308,6 +1309,7 @@ class TradingOrchestrator:
                 "notes": [f"execution error {exc.code.value}"],
             }
         counters.setdefault("errors", 0)
+        await self._record_latency(receipt)
         outcome = await self._apply_receipt(row.signal_id, receipt, counters, notes)
         # Accepted/partial fills may still complete; only a definite rejection
         # or error ends the intent here.
@@ -1422,6 +1424,23 @@ class TradingOrchestrator:
         if receipt.status is OrderStatus.UNKNOWN:
             return "UNKNOWN"
         return "ERROR"
+
+    async def _record_latency(self, receipt) -> None:
+        """Persist the adapter's venue-call measurement, when it made one.
+
+        Written as an order event rather than a new column: it is a property of
+        one call, and a simulated adapter's ``None`` must stay missing rather
+        than become a zero that drags every median down.
+        """
+
+        latency = getattr(receipt, "latency_ms", None)
+        if latency is None or not getattr(receipt, "order_id", None):
+            return
+        await self.repo.record_order_event(
+            receipt.order_id,
+            "EXECUTION_LATENCY",
+            {"latency_ms": int(latency)},
+        )
 
     async def _apply_receipt(
         self, signal_id: str, receipt, counters: dict[str, int], notes: list[str]
@@ -2046,6 +2065,7 @@ class TradingOrchestrator:
                 notes.append(f"{position.symbol}: exit error {exc.code.value}")
                 continue
 
+            await self._record_latency(receipt)
             if receipt.status is OrderStatus.FILLED:
                 await self.repo.transition_signal(
                     signal.id,

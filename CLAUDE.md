@@ -88,6 +88,9 @@ $env:PYTHONPATH="src"
   with purge, a stop x take x hold grid, and a plateau verdict. Writes nothing.
 - `services/experiment.py` + `experiment.py` — offline A/B/C comparison runner
   (portfolio vs signal level, hold-cash and SMA baselines, MFE/MAE).
+- `services/telemetry.py` + `telemetry.py` — per-stage timings from the signal trail
+  and the adapters' own venue-call measurements. Read-only; a missing measurement is
+  reported as missing, never as zero. See `docs/architecture.md`.
 - `services/container.py` — dependency wiring, scheduler loop, dependency probes.
 - `services/policy_service.py` — authoring + the compiler that narrows LLM output.
 - `services/agent_tools.py` — the read-only tools the authoring agent may call.
