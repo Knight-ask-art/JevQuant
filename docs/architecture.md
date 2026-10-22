@@ -389,6 +389,39 @@ It also reports `capture_ratio` (realised gross over MFE), giveback, the median 
 `GET /api/v1/...`-style access is via the `GET_BLOCKED_SIGNALS` agent tool, which reports
 counts, average `net_bps`, per-rule attribution and timeout-path MFE.
 
+## Abandoned signals
+
+A signal moves through several states, each written by its own transaction. A
+process that dies between two of them leaves a row that no code path will move
+again, and nothing in the pipeline notices. The consequence is not cosmetic:
+`EXECUTION_PENDING` counts as "reached the market" for the pacing guard, so a
+stuck row can make the cycle skip a symbol.
+
+`services/abandoned_signals.py` selects rows in `JEV_EVALUATING`, `INTENT_CREATED`,
+`RISK_PENDING` or `EXECUTION_PENDING` whose newest event is ten minutes old, and the
+orchestrator moves them at startup and at the head of every cycle. The threshold sits
+far above every bounded step (the Jev call has its own deadline, dispatch is bounded
+by the intent TTL) so a healthy pipeline never trips it.
+
+- From `EXECUTION_PENDING` the row goes to `RECONCILIATION_REQUIRED`: the adapter may
+  have reached the venue, so closing the row must not claim the order failed.
+- From the other states it goes to `ERROR`.
+- The sweep never raises. A cycle that cannot repair a row still runs.
+
+Separately, the Jev adapter now bounds the **whole** call with one deadline rather
+than each attempt: an httpx timeout followed by a retry would double the time the
+signal spends in `JEV_EVALUATING`.
+
+## Counterfactual backfill
+
+The cycle writes at most six outcomes per hour, and a restart drops the replays it
+had queued. On a quiet venue that is enough to leave every cohort at
+`insufficient` for days while decided BUYs wait unreplayed.
+`CounterfactualService.backfill()` runs the *same* replay with a larger bounded
+budget, either once at startup (`JEV_COUNTERFACTUAL_BACKFILL_ON_START`) or from
+`python -m jev_trading.counterfactual`. It writes outcome rows and audit events,
+never an order.
+
 ## Execution telemetry
 
 `services/telemetry.py` answers "which stage took the time between a candle closing and

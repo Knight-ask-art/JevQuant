@@ -42,6 +42,7 @@ forever.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -62,9 +63,14 @@ SIMULATION_METHOD = "1m-conservative-v1"
 #: hourly, so without slack a signal could age out between becoming ready and
 #: being picked up.
 LOOKBACK_MARGIN = timedelta(hours=6)
-#: Signals replayed per cycle. Each one costs a klines walk; a backlog is
-#: picked up by the next cycle, so this only bounds the work in one cycle.
+#: Signals replayed per cycle. Each one costs a klines walk, and a backlog
+#: is picked up by the next cycle or by ``python -m jev_trading.counterfactual``,
+#: so this only bounds the work inside one cycle.
 MAX_REPLAYS_PER_CYCLE = 6
+#: A backfill is not on a cycle's clock, so it may work through a larger
+#: batch. It still stops: an unbounded backfill is how a read-only tool
+#: becomes the thing that starves the venue's rate limit.
+MAX_REPLAYS_PER_BACKFILL = 400
 
 
 def replay_lookback(max_holding_seconds: int) -> timedelta:
@@ -310,6 +316,59 @@ class CounterfactualService:
             return None
         return int(max(0.0, (moment - start).total_seconds()))
 
+    def _lookback(self) -> timedelta:
+        return replay_lookback(self.settings.server_limits.max_holding_seconds)
+
+    async def backfill(
+        self,
+        now: datetime | None = None,
+        *,
+        limit: int = MAX_REPLAYS_PER_BACKFILL,
+    ) -> int:
+        """Replay every decided BUY the cycle budget has not reached yet.
+
+        This is the same replay as ``evaluate_pending`` under the same rules;
+        the difference is the budget. A cycle may spend six replays before
+        the next one, and a restart drops the ones it had queued, so a small
+        venue of signals can sit unreplayed for days while every cohort
+        report says "insufficient". Running this with no cycle in progress
+        drains that backlog once.
+
+        ``limit`` bounds the run. A signal that cannot be replayed -- its
+        horizon has not elapsed, its policy is gone -- does not consume the
+        budget, so a run of those never hides the signals behind them.
+        """
+
+        now = now or datetime.now(UTC)
+        candidates = await self.repo.list_decided_buy_signals_without_counterfactual(
+            since=now - self._lookback(),
+            until=now,
+            limit=max(1, limit) * 10,
+        )
+        written = 0
+        attempted = 0
+        for signal in candidates:
+            if attempted >= limit:
+                break
+            policy = await self._replayable_policy(signal, now)
+            if policy is None:
+                continue
+            attempted += 1
+            try:
+                row = await self._evaluate(signal, now, None, policy)
+            except Exception as exc:  # noqa: BLE001 - replay is best-effort
+                if self.audit is not None:
+                    await self.audit.record(
+                        "counterfactual.error",
+                        "signal",
+                        signal.id,
+                        {"symbol": signal.symbol, "error": type(exc).__name__},
+                    )
+                continue
+            if row is not None:
+                written += 1
+        return written
+
     async def evaluate_pending(
         self,
         now: datetime | None = None,
@@ -324,13 +383,14 @@ class CounterfactualService:
         """
 
         now = now or datetime.now(UTC)
-        lookback = replay_lookback(self.settings.server_limits.max_holding_seconds)
         # Scan more than we may replay: a signal whose horizon has not elapsed
         # yet, or one whose policy or snapshot is gone, must not consume a
         # slot and starve the signals behind it. Only attempted replays count
         # against MAX_REPLAYS_PER_CYCLE.
         candidates = await self.repo.list_decided_buy_signals_without_counterfactual(
-            since=now - lookback, until=now, limit=MAX_REPLAYS_PER_CYCLE * 10
+            since=now - self._lookback(),
+            until=now,
+            limit=MAX_REPLAYS_PER_CYCLE * 10,
         )
         written = 0
         attempted = 0
@@ -524,3 +584,63 @@ class CounterfactualService:
             is_synthetic=bool(snapshot.is_synthetic),
             method=SIMULATION_METHOD,
         )
+
+
+async def backfill(now: datetime | None = None, *, limit: int = MAX_REPLAYS_PER_BACKFILL) -> int:
+    """Open the configured database, drain the replay backlog, close it.
+
+    Read-only with respect to trading: it writes counterfactual rows and audit
+    events, and never an order. Meant to be run with the service idle (the
+    cycle also replays), not as a daemon.
+    """
+
+    from ..adapters.market.binance import BinanceMarketDataProvider
+    from ..adapters.market.synthetic import SyntheticMarketDataProvider
+    from ..config import Settings
+    from ..storage.db import Database
+    from ..storage.repository import Repository
+    from .audit import AuditService
+    from .market_service import MarketService
+
+    settings = Settings()
+    provider = (
+        SyntheticMarketDataProvider(seed=settings.paper_seed, symbols=settings.allowed_symbols)
+        if settings.synthetic_market
+        else BinanceMarketDataProvider(settings.binance_base_url)
+    )
+    market = MarketService(provider)
+    db = Database(settings.database_url)
+    await db.create_all()
+    try:
+        repo = Repository(db)
+        audit = AuditService(repo)
+        try:
+            service = CounterfactualService(
+                settings=settings, repo=repo, market=market, audit=audit
+            )
+            return await service.backfill(now, limit=limit)
+        finally:
+            await market.close()
+    finally:
+        await db.dispose()
+
+
+def main(argv: list[str] | None = None) -> None:
+    """``python -m jev_trading.counterfactual [--limit N]``."""
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=MAX_REPLAYS_PER_BACKFILL,
+        help="maximum replays attempted in this run",
+    )
+    args = parser.parse_args(argv)
+    written = asyncio.run(backfill(limit=args.limit))
+    print(f"counterfactual outcomes written: {written}")
+
+
+if __name__ == "__main__":
+    main()

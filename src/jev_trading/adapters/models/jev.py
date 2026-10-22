@@ -78,19 +78,31 @@ class JevAdapter:
         return self._normalize(data, latency_ms=latency_ms)
 
     async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # The httpx timeout bounds each attempt, not the call: a retry after a
+        # timeout would double it. One deadline for the whole call keeps the
+        # signal's JEV_EVALUATING state bounded, which is what the sweep
+        # assumes. It is the same budget as before, now enforced across
+        # attempts and including the backoff sleep.
+        deadline = time.monotonic() + self.timeout
         attempt = 0
         while True:
-            try:
-                response = await self._client.post(
-                    self.base_url + self.path,
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "content-type": "application/json",
-                        "user-agent": "jev-trading/0.1",
-                    },
-                    json=payload,
+            if time.monotonic() >= deadline:
+                raise DependencyUnavailableError(
+                    "Jev did not answer within the call deadline.",
+                    details={"reason": "deadline", "timeout_seconds": self.timeout},
                 )
-            except httpx.HTTPError as exc:
+            try:
+                async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
+                    response = await self._client.post(
+                        self.base_url + self.path,
+                        headers={
+                            "Authorization": f"Bearer {self._api_key}",
+                            "content-type": "application/json",
+                            "user-agent": "jev-trading/0.1",
+                        },
+                        json=payload,
+                    )
+            except (httpx.HTTPError, TimeoutError) as exc:
                 if attempt >= self.max_retries:
                     raise DependencyUnavailableError(
                         "Jev is unreachable.", details={"reason": type(exc).__name__}
@@ -124,7 +136,9 @@ class JevAdapter:
                         raise DependencyBadResponseError("Jev response was not an object.")
                     return data
             attempt += 1
-            await asyncio.sleep(min(2.0, 0.25 * (2**attempt)))
+            await asyncio.sleep(
+                max(0.0, min(2.0, 0.25 * (2**attempt), deadline - time.monotonic()))
+            )
 
     def _normalize(self, data: dict[str, Any], *, latency_ms: int) -> JevResult:
         answers = data.get("answers")

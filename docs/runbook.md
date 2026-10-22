@@ -243,6 +243,32 @@ Read it as a description, not a target:
 - Nothing in the report tunes anything. A stage that dominates is a fact to act on
   deliberately, not a prompt to widen `JEV_*_TIMEOUT_MS`.
 
+## Abandoned signals and the replay backlog
+
+A deploy or a crash can stop the process between two of a signal's state writes.
+Nothing then moves that row again, and an `EXECUTION_PENDING` row still counts as
+"reached the market" for pacing, so it can quietly block a symbol. The sweep closes
+such rows at startup and at the start of every cycle; see "Restart behaviour".
+
+If a sweep moves anything, `GET /api/v1/audit?event_type=signal.abandoned` says what and
+`system.started` carries `abandoned_signals_closed`. A non-zero count after a normal
+deploy means the previous process died mid-flight -- read the container log around the
+restart before assuming it was harmless.
+
+The counterfactual replay normally writes at most six outcomes per cycle. On a quiet
+venue (one or two decided BUYs an hour) that leaves every cohort report at
+`insufficient` for a long time, and a restart drops the replays already queued. The
+startup backfill and `python -m jev_trading.counterfactual` drain that backlog under
+the same rules. Check coverage with:
+
+```
+python -m jev_trading.counterfactual --limit 400
+python -m jev_trading.calibration --min-samples 30
+```
+
+Both are read-only with respect to trading: they write outcome rows and audit
+events, never an order.
+
 ## Shadow edge evaluator
 
 `GET /api/v1/edge-shadow` returns the recent verdicts. Until a cohort
@@ -303,6 +329,14 @@ pending migrations in order and records them in `schema_migrations`:
 - Risk daily counters live on the account row and survive restart.
 - Policies persist and are re-compiled for the active mode; expired policies are ignored.
 - Paper orders resting at shutdown remain `ACCEPTED`; reconcile after restart.
+- A signal a dead process left in `JEV_EVALUATING`, `INTENT_CREATED`, `RISK_PENDING`
+  or `EXECUTION_PENDING` is closed by the startup sweep (and again at the head of every
+  cycle) once its newest event is 10 minutes old: to `ERROR`, except from
+  `EXECUTION_PENDING`, which becomes `RECONCILIATION_REQUIRED` because the venue may hold
+  the order. Each move is audited as `signal.abandoned`.
+- The counterfactual replay backlog is drained once at startup
+  (`JEV_COUNTERFACTUAL_BACKFILL_ON_START`, default on). Use
+  `python -m jev_trading.counterfactual --limit 400` to drain it by hand.
 
 ## Backup and retention
 

@@ -262,6 +262,15 @@ class AppContainer:
             counterfactual=self.counterfactual,
             edge_evaluator=self.edge_evaluator,
         )
+        # A process that died mid-pipeline left signals in in-flight states
+        # that nothing else will ever move. Close them before the first
+        # cycle, so the pacing guard and the audit trail start from the truth.
+        abandoned = await self.orchestrator.abandon_stuck_signals()
+        if abandoned:
+            logger.warning(
+                "closed %s abandoned signal(s) left by the previous process",
+                len(abandoned),
+            )
         await self.audit.record(
             "system.started",
             "system",
@@ -277,8 +286,13 @@ class AppContainer:
                 "balance_reconcile_cooldown_seconds": (
                     self.settings.balance_reconcile_cooldown_seconds
                 ),
+                "abandoned_signals_closed": len(abandoned),
             },
         )
+        if self.settings.counterfactual_backfill_on_start:
+            # Started, not awaited: the replay walks klines and must not hold
+            # up startup. It writes only counterfactual rows.
+            asyncio.create_task(self._backfill_counterfactual())
         self.balance_sync = BalanceSyncService(
             repo=self.repo,
             audit=self.audit,
@@ -666,6 +680,17 @@ class AppContainer:
             return None, None
         remaining = (target - datetime.now(UTC)).total_seconds()
         return (max(0.0, remaining), target) if remaining > 0 else (None, target)
+
+    async def _backfill_counterfactual(self) -> None:
+        """Drain the replay backlog without blocking startup."""
+
+        try:
+            written = await self.counterfactual.backfill()
+            if written:
+                logger.info("counterfactual backfill wrote %s outcomes", written)
+        except Exception:  # noqa: BLE001 - analytics only, never the service
+            logger.warning("counterfactual backfill failed", exc_info=True)
+
 
     def _start_auto_loop(self, interval_seconds: int) -> None:
         interval = max(10, int(interval_seconds))

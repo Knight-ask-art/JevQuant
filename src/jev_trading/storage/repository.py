@@ -1523,6 +1523,51 @@ class Repository:
                     values.append(float(value))
             return values
 
+    async def list_in_flight_signals(self, states: Sequence[str]) -> list[SimpleNamespace]:
+        """Signals sitting in one of ``states``, each with its full event trail.
+
+        Used to find rows a dead process left behind. The trail is what
+        decides whether a row is stuck: the newest event is when it last
+        moved, and the created_at column says nothing about progress.
+        """
+
+        wanted = list(states)
+        if not wanted:
+            return []
+        async with self.db.session() as session:
+            signals = list(
+                (
+                    await session.execute(
+                        select(SignalRow).where(SignalRow.state.in_(wanted))
+                    )
+                ).scalars()
+            )
+            if not signals:
+                return []
+            ids = [signal.id for signal in signals]
+            events = list(
+                (
+                    await session.execute(
+                        select(SignalEventRow)
+                        .where(SignalEventRow.signal_id.in_(ids))
+                        .order_by(SignalEventRow.created_at)
+                    )
+                ).scalars()
+            )
+        by_signal: dict[str, list[SignalEventRow]] = {signal_id: [] for signal_id in ids}
+        for event in events:
+            by_signal.setdefault(event.signal_id, []).append(event)
+        return [
+            SimpleNamespace(
+                id=signal.id,
+                symbol=signal.symbol,
+                state=signal.state,
+                created_at=signal.created_at,
+                events=by_signal.get(signal.id, []),
+            )
+            for signal in signals
+        ]
+
     async def list_signals_with_events(
         self, *, since: datetime, until: datetime, limit: int = 2000
     ) -> list[SimpleNamespace]:

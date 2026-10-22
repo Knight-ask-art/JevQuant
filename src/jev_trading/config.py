@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     # budget on identical evidence, so the call itself is paced here, server
     # side: a policy (or the model writing it) cannot loosen it, and exits do
     # not need Jev. 0 disables pacing.
+    #: Drain the replay backlog once at startup. The cycle only replays a
+    #: few signals per hour, so a restart-heavy week can leave decided BUYs
+    #: unreplayed and every cohort report stuck at "insufficient".
+    counterfactual_backfill_on_start: bool = True
     jev_min_call_interval_seconds: int = Field(default=3600, ge=0, le=86_400)
     jev_max_calls_per_utc_month: int = Field(default=900, ge=0, le=3_000_000)
     jev_max_monthly_cost_usd: Decimal = Field(default=Decimal("0"), ge=0)

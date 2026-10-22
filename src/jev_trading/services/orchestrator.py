@@ -36,6 +36,11 @@ from ..domain.policy import EffectivePolicy
 from ..domain.risk import RiskContext, RiskEngine, compute_risk_snapshot_hash
 from ..storage.models import StrategyPolicyRow
 from ..storage.repository import Repository
+from .abandoned_signals import (
+    DEFAULT_ABANDON_AFTER,
+    IN_FLIGHT_STATES,
+    abandoned_of,
+)
 from .agent_tools import AgentToolbox
 from .audit import AuditService
 from .events import EventBroker
@@ -189,10 +194,14 @@ class TradingOrchestrator:
         counterfactual: Any | None = None,
         regime_gate: Any | None = None,
         edge_evaluator: Any | None = None,
+        abandoned_after: timedelta = DEFAULT_ABANDON_AFTER,
     ) -> None:
         self.settings = settings
         self.budgets = budgets
         self.counterfactual = counterfactual
+        # How long a signal may sit in an in-flight state before the cycle
+        # treats it as abandoned by a dead process.
+        self.abandoned_after = abandoned_after
         self.regime_gate = regime_gate or RegimeGate.from_settings(settings)
         self.cost_model = CostModel.from_settings(settings)
         # Last ratcheted stop recorded per position, so the audit trail shows
@@ -244,9 +253,42 @@ class TradingOrchestrator:
         )
         return position
 
+    async def abandon_stuck_signals(self, now: datetime | None = None) -> list[Any]:
+        """Close rows a dead process left mid-pipeline. Returns what moved.
+
+        Runs at startup and at the head of every cycle. It never raises: a
+        sweep that failed must not take the cycle with it, because the row
+        it could not move is exactly the row this is meant to repair.
+        """
+
+        now = now or datetime.now(UTC)
+        try:
+            rows = await self.repo.list_in_flight_signals(IN_FLIGHT_STATES)
+        except Exception:  # noqa: BLE001 - housekeeping only
+            return []
+        abandoned = abandoned_of(
+            [(row.id, row.symbol, row.state, row.events) for row in rows],
+            now=now,
+            abandon_after=self.abandoned_after,
+        )
+        for item in abandoned:
+            try:
+                await self.repo.transition_signal(
+                    item.signal_id, SignalState(item.to_state), item.as_detail()
+                )
+            except Exception:  # noqa: BLE001 - another writer moved it first
+                continue
+            await self.audit.record(
+                "signal.abandoned", "signal", item.signal_id, item.as_detail()
+            )
+        return abandoned
+
     async def run_cycle(self, *, refresh_policy: bool = False) -> CycleResult:
         cycle_id = str(uuid4())
         started = datetime.now(UTC)
+        # Before anything reads the tape: a row a dead process left in an
+        # in-flight state still counts as "reached the market" for pacing.
+        abandoned = await self.abandon_stuck_signals(started)
         mode = await self.modes.current_mode()
         kill = await self.modes.kill_switch_active()
         await self.repo.expire_policies(started)
@@ -322,6 +364,13 @@ class TradingOrchestrator:
         }
         notes: list[str] = []
         blocked_reason: str | None = None
+        # A sweep that moved rows is worth saying out loud: they are the
+        # evidence that the previous process died mid-flight.
+        notes.extend(
+            f"{item.symbol}: {item.state} abandoned after "
+            f"{self.abandoned_after.total_seconds() / 60:.0f}m, moved to {item.to_state}"
+            for item in abandoned
+        )
         if kill:
             blocked_reason = "kill_switch"
         elif policy is None:
