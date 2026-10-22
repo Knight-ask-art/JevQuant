@@ -127,6 +127,46 @@ Drift is a signal, not an instruction: the ledger is never rewritten from a bala
 difference. Investigate with `POST /api/v1/execution/reconcile`; if that does not
 explain the gap, compare the fills manually before touching anything.
 
+## Cost reports
+
+Two read-only reports answer "where did the money go" without touching policy:
+
+```
+python -m jev_trading.cost_report --days 30      # realised fees/slippage vs the model
+python -m jev_trading.exit_diagnostics --limit 500
+```
+
+`cost_report` prices every venue fill (`fee_quote` over the traded notional) and
+measures slippage against the snapshot the decision used. Paper fills are excluded:
+their commission is the model's own arithmetic echoed back. A fee charged in an asset
+with no quote (BNB) is counted as *unpriced*, never as free, and a fill recorded with
+no fee at all is excluded from the fee median rather than read as 0 bps — both are
+named in the hypotheses.
+
+The report does not change `JEV_FEE_BPS` / slippage settings. Use it to decide, then
+change them deliberately.
+
+## Shadow edge evaluator
+
+`GET /api/v1/edge-shadow` returns the recent verdicts. Until a cohort
+has `edge_min_samples` fully-elapsed peers, every verdict is
+`insufficient_evidence` with `sample_size = 0` — that is the expected state for
+a while, not a failure. To find out how far off it is, compare
+`counterfactual_rows` with the cohort strings: a large number of rows spread
+across many cohorts keeps every cohort thin.
+
+## Walk-forward
+
+```
+python -m jev_trading.experiment --days 28 --walk-forward [--folds 4]
+python -m jev_trading.walk_forward --days 28 --json
+```
+
+Read `sample_adequacy` first. While it says `insufficient`, the fold table
+describes the procedure, not the strategy: there is not yet enough record to
+tell an edge from noise. A `plateau_confirmed` verdict on an `insufficient`
+sample is not a result.
+
 ## Schema migrations
 
 `jev migrate` (or `python -m jev_trading.migrations`, or starting the service) applies
@@ -137,6 +177,11 @@ pending migrations in order and records them in `schema_migrations`:
 | `0001_baseline` | marks a pre-migration database |
 | `0002_positions_mode` | adds `positions.mode` (existing rows become `paper`) |
 | `0003_fills_external_id` | adds `fills.external_id` + unique (order, trade) index |
+| `0004_positions_exit_request` | adds the exit-request bookkeeping columns |
+| `0005_counterfactual_path` | adds `mfe_bps` / `mae_bps` / `holding_seconds` / `gap_seconds` / `is_synthetic` to `counterfactual_outcomes` |
+| `0006_counterfactual_timing` | adds `time_to_mfe_seconds` / `time_to_mae_seconds` / `round_trip_cost_bps` |
+| `0007_fill_fee_amount` | adds `fills.fee_amount` so a fee charged in the base asset or BNB is not lost; existing rows are backfilled from `fee_quote` |
+| `0008_edge_shadow` | adds `edge_shadow_decisions` (what the shadow edge evaluator would have decided) |
 
 - `jev migrate --dry-run` lists pending versions without changing anything.
 - A database is upgraded in place; the ledger rows are preserved.

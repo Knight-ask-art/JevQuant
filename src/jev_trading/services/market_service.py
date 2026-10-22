@@ -42,10 +42,15 @@ class MarketService:
         return await self.provider.snapshots(symbols, now=now or datetime.now(UTC))
 
     async def klines(
-        self, symbol: str, interval: str = "1m", limit: int = 120, warmup: int = 0
+        self,
+        symbol: str,
+        interval: str = "1m",
+        limit: int = 120,
+        warmup: int = 0,
+        start: datetime | None = None,
     ):
         return await self.provider.klines(
-            symbol, interval=interval, limit=limit, warmup=warmup
+            symbol, interval=interval, limit=limit, warmup=warmup, start=start
         )
 
     async def spot_candidates(self, limit: int = 40) -> list[dict[str, object]]:
@@ -79,7 +84,11 @@ class MarketService:
         lock = self._locks.setdefault(symbol, asyncio.Lock())
         async with lock:
             cached = self._filters.get(symbol)
-            if cached is not None and not force and time.monotonic() - cached[0] < self.filter_ttl_seconds:
+            if (
+                cached is not None
+                and not force
+                and time.monotonic() - cached[0] < self.filter_ttl_seconds
+            ):
                 return cached[1]
             filters = await self.provider.filters(symbol)
             self._filters[symbol] = (time.monotonic(), filters)

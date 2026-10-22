@@ -128,6 +128,19 @@ async def list_fills(
     return {"items": [ser.fill(row) for row in rows]}
 
 
+@router.get("/edge-shadow")
+async def list_edge_shadow(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    actor: str = Depends(require_operator),
+) -> dict[str, object]:
+    """What the shadow edge evaluator said, and how much evidence it had."""
+
+    container = _container(request)
+    rows = await container.repo.list_edge_shadows(limit=limit)
+    return {"items": [ser.edge_shadow(row) for row in rows]}
+
+
 @router.get("/positions")
 async def list_positions(
     request: Request,

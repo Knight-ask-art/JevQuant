@@ -17,9 +17,7 @@ from ...services.features import build_features
 from ...services.klines import SYNTHETIC_LOOKBACK_MINUTES, upsample
 
 
-def extend_history(
-    candles: list[Candle], minutes: int, *, seed: int, symbol: str
-) -> list[Candle]:
+def extend_history(candles: list[Candle], minutes: int, *, seed: int, symbol: str) -> list[Candle]:
     """Prepend a plausible past so longer chart intervals have enough bars.
 
     Deterministic per symbol, mean-reverting around the base price. It exists
@@ -51,6 +49,7 @@ def extend_history(
             )
         )
     return extended + candles
+
 
 BASE_PRICES: dict[str, Decimal] = {
     "BTCUSDT": Decimal("68000"),
@@ -154,6 +153,8 @@ class SyntheticMarketDataProvider:
             low = min(previous.close, close) * (1.0 - abs(rng.gauss(0, 0.0004)))
             self._candles[symbol].append(
                 Candle(
+                    # ``last`` is the previous close, which is also this bar's
+                    # open: a bar may not start a minute after its predecessor.
                     open_time=last,
                     close_time=last + timedelta(minutes=1),
                     open=previous.close,
@@ -229,7 +230,12 @@ class SyntheticMarketDataProvider:
         )
 
     async def klines(
-        self, symbol: str, interval: str = "1m", limit: int = 120, warmup: int = 0
+        self,
+        symbol: str,
+        interval: str = "1m",
+        limit: int = 120,
+        warmup: int = 0,
+        start: datetime | None = None,
     ) -> list[Candle]:
         """Replay the simulated minute history, upsampled to ``interval``."""
 
@@ -237,19 +243,17 @@ class SyntheticMarketDataProvider:
         if looked is None:
             raise ValueError(f"unsupported kline interval {interval!r}")
         lookback = max(looked, int(limit) + max(0, int(warmup)))
-        now = (self._sim_clock if self.advance_each_call else datetime.now(UTC)).astimezone(
-            UTC
-        )
+        now = (self._sim_clock if self.advance_each_call else datetime.now(UTC)).astimezone(UTC)
         if symbol not in self._candles:
             # Seeding uses the wall clock, so run it against wall time and let
             # _advance catch the history up to the simulated clock.
             self._seed_history(symbol, datetime.now(UTC).astimezone(UTC))
         self._advance(symbol, now)
-        candles = extend_history(
-            self._candles[symbol], lookback, seed=self.seed, symbol=symbol
-        )
+        candles = extend_history(self._candles[symbol], lookback, seed=self.seed, symbol=symbol)
         self._candles[symbol] = candles
         series = upsample(candles[-lookback:], interval, now)
+        if start is not None:
+            series = [candle for candle in series if candle.close_time > start]
         # Match the Binance provider: warmup bars are prepended so the
         # caller can compute indicators before the visible window.
         return series[-(int(limit) + max(0, int(warmup))) :]

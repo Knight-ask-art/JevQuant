@@ -58,6 +58,26 @@ class Settings(BaseSettings):
     fee_bps: Decimal = Decimal("10")
     slippage_bps: Decimal = Decimal("2")
     exit_slippage_bps: Decimal = Decimal("8")
+    # Cost-aware regime gate: refuse an entry when the move the market can
+    # plausibly deliver over the holding window does not cover the round trip
+    # by this multiple. At 0 the bar is zero, so the only refusal left is the
+    # one for a missing volatility estimate.
+    #
+    # It starts in shadow (``regime_gate_enforce=False``): the verdict is
+    # recorded on every signal, but nothing is blocked, so allowed and blocked
+    # cohorts can be compared on realised outcomes before the gate is trusted
+    # to refuse trades.
+    regime_cost_multiplier: Decimal = Field(default=Decimal("1.5"), ge=0)
+    regime_gate_enforce: bool = False
+    # Shadow edge evaluator: the mean net bps of past, fully-elapsed peers
+    # must clear this margin at a one-sided lower confidence bound before the
+    # gate would let a trade through. Shadow only for now -- the verdict is
+    # recorded, the trade is not blocked.
+    edge_shadow_enabled: bool = True
+    edge_min_samples: int = Field(default=30, ge=2)
+    edge_confidence: Decimal = Field(default=Decimal("0.95"), gt=Decimal("0.5"), lt=1)
+    edge_safety_margin_bps: Decimal = Decimal("0")
+    edge_max_gap_minutes: int = Field(default=30, ge=0)
     min_stop_loss_bps: Decimal = Decimal("20")
     max_stop_loss_bps: Decimal = Decimal("300")
     min_entry_cooldown_seconds: int = 60
@@ -254,6 +274,17 @@ class Settings(BaseSettings):
                 self.binance_testnet_api_key and self.binance_testnet_api_secret
             ),
             "mfa_configured": bool(self.mfa_totp_secret),
+            "regime_gate": {
+                "cost_multiplier": str(self.regime_cost_multiplier),
+                "enforce": self.regime_gate_enforce,
+            },
+            "edge_shadow": {
+                "enabled": self.edge_shadow_enabled,
+                "min_samples": self.edge_min_samples,
+                "confidence": str(self.edge_confidence),
+                "safety_margin_bps": str(self.edge_safety_margin_bps),
+                "max_gap_minutes": self.edge_max_gap_minutes,
+            },
             "server_limits": {
                 "max_position_notional_usdt": str(self.max_position_notional_usdt),
                 "max_gross_exposure_pct": str(self.max_gross_exposure_pct),

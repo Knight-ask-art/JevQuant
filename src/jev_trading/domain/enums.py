@@ -52,7 +52,11 @@ class SignalState(str, Enum):
 
 _SIGNAL_TRANSITIONS: dict[SignalState, frozenset[SignalState]] = {
     SignalState.CANDIDATE: frozenset({SignalState.JEV_EVALUATING, SignalState.EXPIRED}),
-    SignalState.JEV_EVALUATING: frozenset({SignalState.SCORED, SignalState.ERROR}),
+    # EXPIRED: the call was never made (budget spent, symbol halted), so there
+    # is no answer to score and nothing was paid for.
+    SignalState.JEV_EVALUATING: frozenset(
+        {SignalState.SCORED, SignalState.ERROR, SignalState.EXPIRED}
+    ),
     SignalState.SCORED: frozenset({SignalState.REJECTED, SignalState.ELIGIBLE}),
     SignalState.ELIGIBLE: frozenset({SignalState.INTENT_CREATED, SignalState.EXPIRED}),
     SignalState.INTENT_CREATED: frozenset({SignalState.RISK_PENDING, SignalState.EXPIRED}),

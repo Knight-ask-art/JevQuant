@@ -112,6 +112,96 @@ async def up_0004_positions_exit_request(conn: AsyncConnection) -> None:
     await _add_column(conn, "positions", "exit_requested_reason", "VARCHAR(32)", null=True)
 
 
+async def up_0005_counterfactual_path(
+    conn: AsyncConnection,
+) -> None:
+    """Counterfactual replays also record the price path and data quality."""
+
+    for name, type_sql in (
+        ("mfe_bps", "NUMERIC(28, 12)"),
+        ("mae_bps", "NUMERIC(28, 12)"),
+        ("holding_seconds", "INTEGER"),
+        ("gap_seconds", "INTEGER"),
+        ("is_synthetic", "BOOLEAN"),
+    ):
+        await _add_column(conn, "counterfactual_outcomes", name, type_sql)
+
+
+async def up_0006_counterfactual_timing(
+    conn: AsyncConnection,
+) -> None:
+    """Counterfactual replays also record when the path peaked and cost paid."""
+
+    for name, type_sql in (
+        # Seconds from the signal to the bar that set MFE / MAE. Together with
+        # mfe_bps they answer "did price ever pay, and when" rather than only
+        # "where did it end".
+        ("time_to_mfe_seconds", "INTEGER"),
+        ("time_to_mae_seconds", "INTEGER"),
+        # Round-trip cost charged to this replay, in bps. Kept as a column so
+        # gross and net can be compared without re-deriving the fee schedule
+        # that was in force when the row was written.
+        ("round_trip_cost_bps", "NUMERIC(28, 12)"),
+    ):
+        await _add_column(conn, "counterfactual_outcomes", name, type_sql)
+
+
+async def up_0007_fill_fee_amount(
+    conn: AsyncConnection,
+) -> None:
+    """Fills keep the commission in the asset the venue charged it in.
+
+    ``fee_quote`` alone loses a spot buy's fee: the venue takes it out of the
+    base asset, so a reader that only understands quote fees saw zero and the
+    ledger understated costs by one side of the round trip. Existing rows are
+    backfilled with ``fee_quote``, which is the correct amount whenever that
+    column was populated.
+    """
+
+    await _add_column(conn, "fills", "fee_amount", "NUMERIC(28, 12)")
+    if await _has_column(conn, "fills", "fee_amount"):
+        await conn.execute(
+            text("UPDATE fills SET fee_amount = fee_quote WHERE fee_amount IS NULL")
+        )
+
+
+async def up_0008_edge_shadow(
+    conn: AsyncConnection,
+) -> None:
+    """Shadow edge verdicts: what the statistical gate would have done."""
+
+    if await _has_table(conn, "edge_shadow_decisions"):
+        return
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE edge_shadow_decisions (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                signal_id VARCHAR(36) NOT NULL,
+                cohort VARCHAR(64) NOT NULL,
+                decided_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                blocked BOOLEAN NOT NULL DEFAULT FALSE,
+                reason VARCHAR(48) NOT NULL,
+                sample_size INTEGER NOT NULL DEFAULT 0,
+                expected_net_bps NUMERIC(28, 12),
+                lower_ci_bps NUMERIC(28, 12),
+                upper_ci_bps NUMERIC(28, 12),
+                required_net_bps NUMERIC(28, 12),
+                confidence NUMERIC(28, 12),
+                estimator VARCHAR(32) NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL
+            )
+            """
+        )
+    )
+    await conn.execute(
+        text("CREATE INDEX ix_edge_shadow_signal ON edge_shadow_decisions (signal_id)")
+    )
+    await conn.execute(
+        text("CREATE INDEX ix_edge_shadow_cohort ON edge_shadow_decisions (cohort)")
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("0001_baseline", "record the pre-migration schema", up_0001_baseline),
     Migration("0002_positions_mode", "positions carry their execution route", up_0002_positions_mode),
@@ -124,6 +214,26 @@ MIGRATIONS: tuple[Migration, ...] = (
         "0004_positions_exit_request",
         "positions record an operator-requested close",
         up_0004_positions_exit_request,
+    ),
+    Migration(
+        "0005_counterfactual_path",
+        "counterfactual replays record MFE/MAE, holding time and data gaps",
+        up_0005_counterfactual_path,
+    ),
+    Migration(
+        "0006_counterfactual_timing",
+        "counterfactual replays record time-to-MFE/MAE and the cost charged",
+        up_0006_counterfactual_timing,
+    ),
+    Migration(
+        "0007_fill_fee_amount",
+        "fills keep the commission in the asset the venue charged it in",
+        up_0007_fill_fee_amount,
+    ),
+    Migration(
+        "0008_edge_shadow",
+        "record what the shadow edge evaluator would have decided",
+        up_0008_edge_shadow,
     ),
 )
 

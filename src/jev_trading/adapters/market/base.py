@@ -16,7 +16,12 @@ class MarketDataProvider(Protocol):
     ) -> list[MarketSnapshot]: ...
 
     async def klines(
-        self, symbol: str, interval: str = "1m", limit: int = 120, warmup: int = 0
+        self,
+        symbol: str,
+        interval: str = "1m",
+        limit: int = 120,
+        warmup: int = 0,
+        start: datetime | None = None,
     ) -> list[Candle]: ...
 
     async def filters(self, symbol: str) -> SymbolFilters: ...

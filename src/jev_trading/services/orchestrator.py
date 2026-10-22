@@ -25,8 +25,9 @@ from ..domain.enums import (
     Side,
     SignalState,
 )
+from ..domain.costs import CostModel
 from ..domain.enums import ErrorCode, PositionStatus
-from ..domain.errors import AppError, ReconciliationRequiredError
+from ..domain.errors import AppError, ReconciliationRequiredError, RiskRejectedError
 from ..domain.intent import ApprovedTradeIntent, Provenance, TradeIntent
 from ..domain.market import AccountSnapshot, MarketSnapshot
 from ..domain.money import ZERO, canonical_str
@@ -40,6 +41,8 @@ from .events import EventBroker
 from .market_service import MarketService
 from .modes import ModeManager
 from .policy_service import PolicyService
+from .edge_evaluator import EdgeEvaluator
+from .regime_gate import RegimeGate
 
 DEFAULT_INTENT_TTL_SECONDS = 15
 
@@ -71,6 +74,16 @@ MARKET_REACHED_SIGNAL_STATES = tuple(
         SignalState.EXIT_PENDING,
         SignalState.CLOSED,
     }
+)
+# Signal states that mean a Jev call was made and paid for. The cadence keys
+# on these: a rejection cost as much as a fill, so it must start the wait too.
+# EXPIRED is excluded on purpose -- a signal expires before Jev is called
+# (budget refusal, missing candle), and charging a full interval for a call
+# that never happened would silently stop trading.
+JEV_CONSUMED_SIGNAL_STATES = tuple(
+    state.value
+    for state in SignalState
+    if state not in {SignalState.CANDIDATE, SignalState.EXPIRED}
 )
 # A resting sell is stale once the bid has risen this far above its limit: at
 # that point it no longer tracks the market and is simply absorbing moves.
@@ -172,9 +185,18 @@ class TradingOrchestrator:
         broker: EventBroker,
         account_id: str,
         budgets: Any | None = None,
+        counterfactual: Any | None = None,
+        regime_gate: Any | None = None,
+        edge_evaluator: Any | None = None,
     ) -> None:
         self.settings = settings
         self.budgets = budgets
+        self.counterfactual = counterfactual
+        self.regime_gate = regime_gate or RegimeGate.from_settings(settings)
+        self.cost_model = CostModel.from_settings(settings)
+        self.edge_evaluator = edge_evaluator
+        if self.edge_evaluator is None and getattr(settings, "edge_shadow_enabled", True):
+            self.edge_evaluator = EdgeEvaluator.from_settings(settings, repo)
         self.repo = repo
         self.policy_service = policy_service
         self.market = market
@@ -416,6 +438,20 @@ class TradingOrchestrator:
             drawdown_pct=final_account.drawdown_pct,
         )
 
+        if self.counterfactual is not None:
+            # Reads only: replays blocked buys that have now played out. A
+            # failure here is audited inside the service and never blocks
+            # the cycle result.
+            try:
+                replayed = await self.counterfactual.evaluate_pending(
+                    datetime.now(UTC),
+                    available_quote_usdt=final_account.available_quote_usdt,
+                )
+                if replayed:
+                    notes.append(f"counterfactual outcomes recorded: {replayed}")
+            except Exception:  # noqa: BLE001 - data collection only
+                notes.append("counterfactual replay failed")
+
         finished = datetime.now(UTC)
         finished_result = CycleResult(
             cycle_id=cycle_id,
@@ -566,6 +602,19 @@ class TradingOrchestrator:
             },
         }
 
+    def _regime_verdict(self, snapshot, policy: EffectivePolicy):
+        """Ask the cost-aware regime gate about this snapshot.
+
+        Uses the policy's own holding window: the comparison is between the
+        move available over that window and the round trip paid to capture it,
+        so a policy that holds longer is rightly judged against a bigger move.
+        """
+
+        return self.regime_gate.evaluate(
+            features=snapshot.features,
+            horizon_seconds=policy.exit_defaults.max_holding_seconds,
+        )
+
     def _gate(self, policy: EffectivePolicy, jev_result) -> tuple[bool, dict[str, Any]]:
         gate = policy.jev_gate
         probability = jev_result.entry_probability
@@ -616,7 +665,7 @@ class TradingOrchestrator:
         if interval <= 0:
             return 0.0
         last_reached = await self.repo.last_market_reached_at(
-            symbol, MARKET_REACHED_SIGNAL_STATES
+            symbol, JEV_CONSUMED_SIGNAL_STATES
         )
         if last_reached is None:
             return 0.0
@@ -666,6 +715,42 @@ class TradingOrchestrator:
     ) -> None:
         now = datetime.now(UTC)
         symbol = symbol_policy.symbol
+        # The same closed candle is never evaluated twice. The in-memory check
+        # at cycle start dies with the process, so a restart inside one candle
+        # would re-ask Jev (and pay again) about evidence that has not moved.
+        already = await self.repo.signal_for_candle(symbol, snapshot.candle_close_at)
+        if already is not None:
+            counters["entries_blocked"] += 1
+            notes.append(f"{symbol}: candle already evaluated, Jev not re-asked")
+            await self.audit.record(
+                "signal.candle_already_evaluated",
+                "symbol",
+                symbol,
+                {
+                    "candle_close_at": snapshot.candle_close_at.isoformat(),
+                    "signal_id": already.id,
+                },
+            )
+            return
+        # Pace before a signal exists: a symbol Jev may not be asked about
+        # again yet has not produced a signal, and creating one only to leave
+        # it dangling in a state the machine cannot express is worse than not
+        # creating it at all.
+        paused = await self._jev_pace_wait(symbol, now)
+        if paused > 0:
+            counters["entries_blocked"] += 1
+            notes.append(f"{symbol}: Jev paced, next call in {int(paused)}s")
+            await self.audit.record(
+                "signal.paced",
+                "symbol",
+                symbol,
+                {
+                    "reason": "jev_candle_pacing",
+                    "min_interval_seconds": self.settings.jev_min_call_interval_seconds,
+                    "wait_seconds": int(paused),
+                },
+            )
+            return
         signal = await self.repo.create_signal(
             symbol=symbol,
             policy_id=str(policy.policy_id),
@@ -689,33 +774,28 @@ class TradingOrchestrator:
         from ..adapters.models.base import build_jev_questions
 
         questions = build_jev_questions()
-        try:
+        if self.budgets is not None:
             # The per-call gate: one cheap aggregate read, because checking at
             # cycle start alone would let the last symbols of a cycle overshoot
-            # the cap (and a spent budget must stop here, not surface as a
-            # Jev error).
-            if self.budgets is not None:
+            # the cap. Kept outside the try below: a refusal means Jev was
+            # never called, so it must not be recorded as a paid call (and
+            # must not start the cadence wait).
+            try:
                 await self.budgets.check_jev()
-            paused = await self._jev_pace_wait(symbol, now)
-            if paused > 0:
+            except AppError as exc:
                 await self.repo.transition_signal(
-                    signal.id,
-                    SignalState.HOLD,
-                    {"reason": "jev_candle_pacing", "wait_seconds": int(paused)},
+                    signal.id, SignalState.EXPIRED, {"reason": exc.code.value}
                 )
                 counters["entries_blocked"] += 1
+                notes.append(f"{symbol}: Jev call skipped, {exc.message}")
                 await self.audit.record(
-                    "signal.paced",
+                    "jev.budget_exhausted",
                     "signal",
                     signal.id,
-                    {
-                        "symbol": symbol,
-                        "reason": "jev_candle_pacing",
-                        "min_interval_seconds": self.settings.jev_min_call_interval_seconds,
-                        "wait_seconds": int(paused),
-                    },
+                    {"symbol": symbol, "code": exc.code.value, **exc.details},
                 )
                 return
+        try:
             jev_result = await self.jev.evaluate(state, questions, signal_id=signal.id)
         except AppError as exc:
             await self.repo.insert_jev_evaluation(
@@ -790,6 +870,79 @@ class TradingOrchestrator:
             )
             return
 
+        # The regime verdict is computed and recorded for every signal that
+        # cleared the Jev gate, in shadow and in enforcement alike, so the
+        # cohorts can be compared on outcomes later. It is deliberately placed
+        # after scoring: a gate that ran before Jev would leave no outcome to
+        # judge it by.
+        regime = self._regime_verdict(snapshot, policy)
+        gate_detail = {**gate_detail, **regime.as_detail()}
+        if regime.blocked and self.settings.regime_gate_enforce:
+            await self.repo.transition_signal(
+                signal.id, SignalState.REJECTED, gate_detail
+            )
+            counters["rejected"] += 1
+            await self.audit.record(
+                "signal.rejected",
+                "signal",
+                signal.id,
+                {"symbol": symbol, "stage": "regime_gate", **gate_detail},
+            )
+            await self.broker.publish(
+                "signal.candidates",
+                {
+                    "signal_id": signal.id,
+                    "symbol": symbol,
+                    "state": SignalState.REJECTED.value,
+                    "detail": gate_detail,
+                },
+            )
+            return
+        if regime.blocked:
+            # Shadow: the trade still happens, but the record says what the
+            # gate would have done. This is the only honest way to start with
+            # this little data.
+            await self.audit.record(
+                "regime.shadow_block",
+                "signal",
+                signal.id,
+                {"symbol": symbol, **gate_detail},
+            )
+
+        # The edge evaluator asks a different question from either gate: have
+        # trades in this cohort actually paid after costs? It is computed for
+        # every signal that reaches ELIGIBLE and never blocks one -- there is
+        # not enough history for its verdict to earn that right yet. A failure
+        # here is audited and the trade proceeds: data collection must not be
+        # able to stop trading.
+        if self.edge_evaluator is not None:
+            try:
+                edge = await self.edge_evaluator.evaluate(
+                    signal_id=signal.id,
+                    symbol=symbol,
+                    features=dict(snapshot.features or {}),
+                    probability=jev_result.entry_probability,
+                    horizon_seconds=policy.exit_defaults.max_holding_seconds,
+                    round_trip_cost_bps=self.cost_model.round_trip_bps,
+                    now=datetime.now(UTC),
+                )
+            except Exception as exc:  # noqa: BLE001 - shadow only
+                await self.audit.record(
+                    "edge.shadow_error",
+                    "signal",
+                    signal.id,
+                    {"symbol": symbol, "error": type(exc).__name__},
+                )
+            else:
+                gate_detail = {**gate_detail, **edge.as_detail()}
+                if edge.blocked:
+                    await self.audit.record(
+                        "edge.shadow_block",
+                        "signal",
+                        signal.id,
+                        {"symbol": symbol, **edge.as_detail()},
+                    )
+
         await self.repo.transition_signal(signal.id, SignalState.ELIGIBLE, gate_detail)
         counters["signals_eligible"] += 1
         await self._prepare_and_execute_entry(
@@ -841,6 +994,20 @@ class TradingOrchestrator:
             notes.append(f"{symbol}: preparation failed ({type(exc).__name__})")
             return
 
+        # One order per symbol per closed candle, whatever produced the signal.
+        # The key below includes the policy, so two policies on the same candle
+        # would otherwise both be allowed to buy.
+        existing_intent = await self.repo.intent_for_candle(
+            symbol, snapshot.candle_close_at
+        )
+        if existing_intent is not None:
+            await self.repo.transition_signal(
+                signal_id,
+                SignalState.EXPIRED,
+                {"reason": "candle_already_traded", "intent_id": existing_intent.id},
+            )
+            notes.append(f"{symbol}: candle already has an intent")
+            return
         idempotency_key = (
             f"intent-{str(policy.policy_id)[:8]}-{symbol}-"
             f"{int(snapshot.candle_close_at.timestamp())}-buy"
@@ -1071,6 +1238,34 @@ class TradingOrchestrator:
         snapshot = snapshots[0]
         await self.repo.insert_market_snapshot(snapshot)
         rules = await self.market.filters(symbol)
+
+        # The risk decision was made against an earlier snapshot. Price, spread
+        # and account state move between approval and dispatch, so the decision
+        # is re-derived here against what the order would actually face; a
+        # decision that no longer holds blocks the order instead of filling it
+        # at a price the risk engine never approved.
+        try:
+            await self._recheck_risk(approved, snapshot, rules, now)
+        except AppError as exc:
+            await self.repo.transition_signal(
+                row.signal_id,
+                SignalState.ERROR,
+                {"reason": exc.code.value, "stage": "dispatch_recheck"},
+            )
+            await self.repo.update_intent_status(intent_id, "ERROR")
+            await self.audit.record(
+                "execution.recheck_failed",
+                "intent",
+                intent_id,
+                {"code": exc.code.value, **exc.details},
+            )
+            return {
+                "intent_id": intent_id,
+                "status": SignalState.ERROR.value,
+                "order_id": None,
+                "notes": [f"risk re-check failed: {exc.message}"],
+            }
+
         await self.repo.update_intent_status(intent_id, "EXECUTION_PENDING")
         counters = {"executed": 0}
         notes: list[str] = []
@@ -1131,6 +1326,83 @@ class TradingOrchestrator:
             "avg_fill_price": canonical_str(receipt.avg_fill_price),
             "notes": notes,
         }
+
+    async def _recheck_risk(self, approved, snapshot, rules, now: datetime) -> None:
+        """Re-evaluate the approval against the snapshot the order will use.
+
+        Only the checks that a moving market can invalidate are re-run: the
+        intent's own numbers, its policy and its TTL were already settled. A
+        stale or widened book, a halted symbol, or a spread the policy no
+        longer tolerates must stop the order, not be inherited from the
+        earlier decision.
+        """
+
+        intent = approved.intent
+        policy_row = await self.repo.get_policy_by_policy_id(str(intent.policy_id))
+        if policy_row is None:
+            raise AppError(
+                ErrorCode.POLICY_EXPIRED,
+                "The policy behind this intent is no longer stored.",
+            )
+        policy = EffectivePolicy.model_validate(policy_row.effective_json)
+        if policy.expires_at <= now:
+            raise AppError(
+                ErrorCode.POLICY_EXPIRED,
+                f"The policy expired at {policy.expires_at.isoformat()}.",
+            )
+        symbol_policy = policy.symbol_policy(intent.symbol)
+        if symbol_policy is None:
+            raise AppError(
+                ErrorCode.POLICY_EXPIRED,
+                f"The policy no longer covers {intent.symbol}.",
+            )
+        marks = {intent.symbol: snapshot.mid}
+        account = await self.repo.account_snapshot(self.account_id, marks, now)
+        positions = await self.repo.get_open_positions(self.account_id)
+        held = next(
+            (position.qty for position in positions if position.symbol == intent.symbol),
+            ZERO,
+        )
+        system = await self._exit_system_snapshot()
+        context = RiskContext(
+            policy=policy,
+            account=account,
+            market=snapshot,
+            symbol_rules=rules,
+            system=system,
+            now=now,
+            position_qty=held,
+            last_entry_at=await self.repo.last_entry_at(self.account_id, intent.symbol),
+            max_staleness_ms=self.settings.market_staleness_ms,
+            exit_slippage_bps=self.settings.exit_slippage_bps,
+            exit_stress_drawdown_bps=self.settings.exit_stress_drawdown_bps,
+        )
+        # The intent was stamped against the approval-time snapshot, so the
+        # hash has to be re-derived for this context; otherwise every re-check
+        # would fail on the hash alone rather than on the state that moved.
+        provisional = intent.model_copy(update={"risk_snapshot_hash": "pending"})
+        checked = provisional.model_copy(
+            update={"risk_snapshot_hash": compute_risk_snapshot_hash(provisional, context)}
+        )
+        decision = self.risk_engine.evaluate(checked, context)
+        await self.repo.insert_risk_decision(decision)
+        await self.audit.record(
+            "risk.recheck",
+            "intent",
+            str(intent.intent_id),
+            {
+                "approved": decision.approved,
+                "failed_rules": [
+                    failure.model_dump(mode="json") for failure in decision.failed_rules
+                ],
+                "snapshot_id": str(snapshot.snapshot_id),
+            },
+        )
+        if not decision.approved:
+            raise RiskRejectedError(
+                "The approved intent no longer passes risk at dispatch time.",
+                [failure.model_dump(mode="json") for failure in decision.failed_rules],
+            )
 
     def _receipt_outcome(self, receipt) -> str:
         """Classify a receipt by the signal state it leads to."""

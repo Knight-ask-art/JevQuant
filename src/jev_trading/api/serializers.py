@@ -142,6 +142,24 @@ def fill(row: FillRow) -> dict[str, Any]:
     }
 
 
+def edge_shadow(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "signal_id": row.signal_id,
+        "cohort": row.cohort,
+        "decided_at": row.decided_at.isoformat(),
+        "blocked": row.blocked,
+        "reason": row.reason,
+        "sample_size": row.sample_size,
+        "expected_net_bps": _money(row.expected_net_bps),
+        "lower_ci_bps": _money(row.lower_ci_bps),
+        "upper_ci_bps": _money(row.upper_ci_bps),
+        "required_net_bps": _money(row.required_net_bps),
+        "confidence": _money(row.confidence),
+        "estimator": row.estimator,
+    }
+
+
 def position(row: PositionRow, mark: Any | None = None) -> dict[str, Any]:
     payload = {
         "id": row.id,

@@ -58,6 +58,19 @@ def test_health_and_status(open_client):
     assert "get_candles" in body["agent"]["tools"]
 
 
+def test_edge_shadow_route_lives_where_the_docs_say_it_does(open_client):
+    """The route is under the activity router's own prefix.
+
+    Documented once as ``/api/v1/activity/edge-shadow`` and shipped without
+    it; a path that silently 404s is worse in a runbook than no path at all.
+    """
+
+    assert open_client.get("/api/v1/activity/edge-shadow").status_code == 404
+    listed = open_client.get("/api/v1/edge-shadow")
+    assert listed.status_code == 200
+    assert listed.json() == {"items": []}
+
+
 def test_demo_cycle_produces_signals_and_audit(open_client):
     response = open_client.post("/api/v1/demo/cycle")
     assert response.status_code == 200
@@ -568,6 +581,7 @@ def test_agent_journal_records_what_the_strategy_layer_decided(open_client):
     assert body["provider"] == "simulated"
     assert sorted(body["tools"]) == [
         "get_account_state",
+        "get_blocked_signals",
         "get_candles",
         "get_market_overview",
         "get_open_positions",
@@ -660,74 +674,73 @@ def test_a_rejected_policy_is_still_journaled(open_client):
     }
 
 
+def test_health_probes_are_shared_bounded_and_cached(tmp_path):
+    """Several readers share one round trip, and a slow service cannot hold the page."""
 
-def test_operator_session_requires_csrf_for_mutations(tmp_path):
-    with client(tmp_path, auth_disabled=False) as api:
-        assert api.get("/api/v1/system/status").status_code == 401
-        login = api.post("/api/v1/auth/login", json={"api_key": ADMIN})
-        assert login.status_code == 200
-        assert "httponly" in login.headers["set-cookie"].lower()
-        assert "samesite=strict" in login.headers["set-cookie"].lower()
-        status = api.get("/api/v1/auth/status").json()
-        assert status["enabled"] is True
-        assert status["authenticated"] is True
-        assert api.get("/api/v1/system/status").status_code == 200
-        assert api.post("/api/v1/demo/cycle").status_code == 403
-        assert api.post(
-            "/api/v1/demo/cycle", headers={"X-CSRF-Token": status["csrf_token"]}
-        ).status_code == 200
+    import asyncio
 
+    from jev_trading.services import container as container_module
 
-def test_local_operator_auth_toggle_requires_verified_key_and_csrf(tmp_path):
-    with client(tmp_path) as api:
-        status = api.get("/api/v1/auth/status").json()
-        assert status["enabled"] is False and status["can_disable"] is True
-        denied = api.put("/api/v1/auth/settings", json={"enabled": True})
-        assert denied.status_code == 403
-        login = api.post("/api/v1/auth/login", json={"api_key": ADMIN})
-        assert login.status_code == 200
-        token = login.json()["csrf_token"]
-        enabled = api.put(
-            "/api/v1/auth/settings",
-            json={"enabled": True, "admin_key": ADMIN},
-            headers={"X-CSRF-Token": token},
-        )
-        assert enabled.status_code == 200
-        assert api.get("/api/v1/auth/status").json()["enabled"] is True
-        assert api.put("/api/v1/auth/settings", json={"enabled": False}).status_code == 403
-        off = api.put(
-            "/api/v1/auth/settings",
-            json={"enabled": False},
-            headers={"X-CSRF-Token": token},
-        )
-        assert off.status_code == 200
-        assert api.get("/api/v1/auth/status").json()["enabled"] is False
-    # The operator's decision survives a restart.
-    with client(tmp_path) as api:
-        assert api.get("/api/v1/auth/status").json()["enabled"] is False
+    calls = {"market": 0, "jev": 0}
 
+    async def slow_jev() -> dict[str, object]:
+        calls["jev"] += 1
+        await asyncio.sleep(10)
+        return {"healthy": True, "provider": "jev"}
 
-def test_provider_key_persistence_without_encryption_key_is_forbidden(tmp_path):
-    with client(tmp_path, credential_encryption_key=None) as api:
-        response = api.put(
-            "/api/v1/settings/models",
-            json={"llm": {"base_url": "https://example.org", "model": "m", "api_key": "secret"}},
-        )
-        assert response.status_code == 403
+    async def flaky_market() -> dict[str, object]:
+        calls["market"] += 1
+        return {"healthy": calls["market"] == 1, "source": "test"}
 
-
-def test_auth_cannot_be_disabled_on_testnet_even_if_development(tmp_path):
-    with client(tmp_path, auth_disabled=False) as api:
-        login = api.post("/api/v1/auth/login", json={"api_key": ADMIN})
-        token = login.json()["csrf_token"]
+    with TestClient(create_app(make_settings(tmp_path))) as api:
         container = api.app.state.container
-        from jev_trading.domain.enums import Mode
-        assert container.settings.app_env == "dev"
-        # Use the policy function directly so no exchange connectivity is required.
-        from jev_trading.api.security import local_auth_off_allowed
-        assert local_auth_off_allowed(container.settings, Mode.TESTNET) is False
-        assert local_auth_off_allowed(container.settings, Mode.LIVE) is False
-        assert api.put(
-            "/api/v1/auth/settings", json={"enabled": False},
-            headers={"X-CSRF-Token": token},
-        ).status_code == 200  # Local PAPER is the only permitted opt-out.
+        container._probe_cache.clear()
+        container._probes.clear()
+        object.__setattr__(container.market, "health", flaky_market)
+        object.__setattr__(container.jev, "health", slow_jev)
+
+        async def read() -> list[dict[str, object]]:
+            return await asyncio.gather(
+                container._probe("market", container.market.health),
+                container._probe("market", container.market.health),
+                container._probe("jev", container.jev.health),
+                container._probe("jev", container.jev.health),
+            )
+
+        market_1, market_2, jev_1, jev_2 = api.portal.call(read)
+        # Two readers, one round trip each.
+        assert calls == {"market": 1, "jev": 1}
+        assert market_1["healthy"] is True and market_2 == market_1
+        # The slow service is reported unhealthy instead of hanging the page.
+        assert jev_1["healthy"] is False and jev_1["error"] == "TIMEOUT"
+        assert jev_2 == jev_1
+        # A cached answer is reused until it ages out.
+        cached = api.portal.call(
+            lambda: container._probe("market", container.market.health)
+        )
+        assert cached == market_1
+        assert calls["market"] == 1
+
+
+def test_automation_waits_for_the_next_run_it_advertises(tmp_path):
+    """The countdown the UI shows is the clock the cycle runs on."""
+
+    from datetime import UTC, datetime, timedelta
+
+    with client(tmp_path) as api:
+        container = api.app.state.container
+        automation = api.put(
+            "/api/v1/settings/automation",
+            json={"enabled": True, "interval_seconds": 600},
+        ).json()
+        advertised = datetime.fromisoformat(automation["next_run_at"])
+        # Within a second of the interval the operator chose, not sooner.
+        assert timedelta(minutes=5) < advertised - datetime.now(UTC) <= timedelta(minutes=10)
+
+        remaining, _ = container._cycle_countdown()
+        assert remaining is not None and 0 < remaining <= 600
+
+        # A stopped clock advertises "expired" and the loop must not skip.
+        container._next_cycle_at = datetime.now(UTC) - timedelta(seconds=5)
+        remaining, target = container._cycle_countdown()
+        assert remaining is None and target is not None

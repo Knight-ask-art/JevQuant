@@ -16,6 +16,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -286,6 +287,83 @@ class SignalEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
+class CounterfactualRow(Base):
+    """What a blocked buy would have returned under the exit rules in force.
+
+    Rejected signals never reach the order path, so the only outcomes the
+    system could otherwise observe are the ones the gate let through. One row
+    per blocked signal, written once the full holding window has elapsed; the
+    notional is a replay assumption, never a real position.
+    """
+
+    __tablename__ = "counterfactual_outcomes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    signal_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("signals.id"), unique=True, index=True
+    )
+    policy_id: Mapped[str] = mapped_column(String(36), index=True)
+    symbol: Mapped[str] = mapped_column(String(24), index=True)
+    decided_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    entry_choice: Mapped[str] = mapped_column(String(16))
+    entry_probability: Mapped[float] = mapped_column(Float)
+    policy_fit: Mapped[float] = mapped_column(Float)
+    quality_score: Mapped[float] = mapped_column(Float)
+    blocked_rule: Mapped[str] = mapped_column(String(32))
+    assumed_notional_usdt: Mapped[Decimal] = mapped_column(MONEY)
+    entry_price: Mapped[Decimal] = mapped_column(MONEY)
+    exit_price: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
+    exit_reason: Mapped[str] = mapped_column(String(24))
+    net_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    pnl_usdt: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
+    horizon_seconds: Mapped[int] = mapped_column(Integer)
+    # Price path over the whole window, in bps against the entry price:
+    # how far it ever went in favour (MFE) and against (MAE).
+    mfe_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    mae_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    # Seconds from the signal to the bar that set MFE / MAE, so "price never
+    # paid" can be told apart from "price paid and we gave it back".
+    time_to_mfe_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    time_to_mae_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Round-trip cost charged to this replay (both fees + exit slippage). Stored
+    # rather than re-derived: the fee schedule in force is part of the record.
+    round_trip_cost_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    holding_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Minutes with no 1m bar inside the window. A large gap means the replay
+    # saw less of the path than it claims to have judged.
+    gap_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False)
+    method: Mapped[str] = mapped_column(String(48))
+    evaluated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class EdgeShadowRow(Base):
+    """What the shadow edge evaluator said about one signal, and why.
+
+    Written once per signal at decision time, whether or not enough past
+    outcomes existed to say anything. Storing the uninformative verdicts is
+    the point: "we had no evidence yet" becomes a cohort that can be counted,
+    rather than a gap in the record that looks like agreement.
+    """
+
+    __tablename__ = "edge_shadow_decisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    signal_id: Mapped[str] = mapped_column(String(36), index=True)
+    cohort: Mapped[str] = mapped_column(String(64), index=True)
+    decided_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str] = mapped_column(String(48))
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    expected_net_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    lower_ci_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    upper_ci_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    required_net_bps: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    confidence: Mapped[Decimal | None] = mapped_column(PCT, nullable=True)
+    estimator: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
 class TradeIntentRow(Base):
     __tablename__ = "trade_intents"
 
@@ -374,6 +452,12 @@ class FillRow(Base):
     price: Mapped[Decimal] = mapped_column(MONEY)
     fee_quote: Mapped[Decimal] = mapped_column(MONEY)
     fee_asset: Mapped[str] = mapped_column(String(16), default="USDT")
+    # The commission exactly as the venue charged it, in ``fee_asset``.
+    # ``fee_quote`` is its value in the quote asset; the two differ for a spot
+    # buy, whose fee is taken out of the base asset. Keeping both means a fee
+    # that cannot be priced (BNB) is visible as a number instead of being
+    # rounded to zero in the ledger.
+    fee_amount: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
     __table_args__ = (

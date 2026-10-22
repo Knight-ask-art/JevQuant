@@ -49,6 +49,11 @@ class SymbolFilters(BaseModel):
     notional_apply_to_market: bool = True
     maker_fee_bps: Decimal = Field(default=Decimal("10"), ge=0)
     taker_fee_bps: Decimal = Field(default=Decimal("10"), ge=0)
+    #: Where the fee rates came from. ``exchangeInfo`` does not carry them, so
+    #: today this is always ``configured``: a default assumption, not a fact
+    #: learned from the venue. Naming that keeps a cost report from presenting
+    #: an assumption as a measurement.
+    fee_source: str = "configured"
 
     def require_tradable(self) -> None:
         if self.status != "TRADING":

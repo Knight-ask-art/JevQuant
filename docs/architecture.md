@@ -50,8 +50,8 @@ locally and never holds the only copy of an approved intent.
 6. Decide the entries-blocked reason, in precedence order:
    `kill_switch` → `policy_unavailable` → `market_feed_unhealthy` → `execution_unhealthy`.
 7. For each symbol policy: create a `CANDIDATE`, ask Jev typed questions, persist the
-   evaluation, transition to `SCORED`, apply the gate, then either `REJECTED` or
-   `ELIGIBLE`.
+   evaluation, transition to `SCORED`, apply the Jev gate and then the regime gate, then
+   either `REJECTED` or `ELIGIBLE`.
 8. For an eligible signal: exchange filters → account/position/cooldown checks →
    idempotency key → notional `min(symbol cap, 25% available)` → provisional intent →
    risk snapshot hash → persist intent → risk decision → `APPROVED` or `RISK_REJECTED`.
@@ -68,7 +68,9 @@ locally and never holds the only copy of an approved intent.
 11. Cycles are serialized by a container lock. The scheduler skips an interval when a
     cycle is still running; a manual `POST /api/v1/demo/cycle` returns 409 instead of
     queueing behind it.
-11. Write a PnL snapshot, audit `cycle.completed`, publish to the event stream.
+12. Replay blocked buys whose window has closed (`counterfactual_outcomes`; read-only,
+    best-effort, bounded per cycle).
+13. Write a PnL snapshot, audit `cycle.completed`, publish to the event stream.
 
 The optional scheduler calls step 1–11 on `JEV_AUTO_CYCLE_SECONDS`. A scheduler error is
 audited and the loop continues; it does not silently stop.
@@ -108,6 +110,15 @@ Unknown execution outcomes never invent a fill.
 - The execution gateway can dispatch an already-approved intent via
   `POST /api/v1/execution/intents`; it verifies status, expiry, mode and the persisted
   risk decision before calling the adapter.
+- Dispatch re-runs the risk engine against a **fresh** snapshot and re-derives
+  `risk_snapshot_hash`. A price that moved past what was approved fails the check
+  (`execution.recheck_failed`) rather than being filled at the new price.
+- Jev is asked at most once per symbol per closed candle. Pacing is checked before the
+  signal is created and keyed on the states that mean "Jev already saw this candle"
+  (`JEV_EVALUATING` onward), so a restart or a rejected signal does not re-bill the call.
+  A budget refusal is not a Jev call either: the signal goes `EXPIRED`, not `ERROR`.
+- An intent-level guard refuses a second trade on a candle that already has one
+  (`candle_already_traded`), independent of the entry idempotency key.
 
 ## The policy compiler
 
@@ -136,6 +147,173 @@ exit_price = entry_price × (1 − (stop_loss_bps + taker_fee_bps + exit_slippag
 If the resulting quantity or notional cannot satisfy `LOT_SIZE` / `MIN_NOTIONAL`, the
 intent is rejected with `REJECT_EXIT_MIN_NOTIONAL`. A position the system could not legally
 sell is never opened.
+
+## Cost model
+
+What a round trip costs is defined once, in `domain/costs.py`, and consumed by the
+entry gate, the replay, the experiment runner and the cost report. Before that, the
+fee lived in three places with three defaults and the analysis could disagree with
+the execution path about the very thing it was judging.
+
+```text
+round_trip_bps = 2 x fee_bps + entry_slippage_bps + exit_slippage_bps   (30 by default)
+entry_price    = ask  x (1 + entry_slippage)
+exit_price     = bid  x (1 - exit_slippage)
+```
+
+Slippage here is impact **beyond the quoted touch**; the spread is already inside the
+prices, so charging it again would double-count it.
+
+Fees come back from the venue with each fill, and the asset they are charged in
+matters: Binance spot takes a **buy's** commission out of the base asset and a sell's
+out of the quote. `fills.fee_amount` + `fills.fee_asset` keep the commission as
+charged; `fee_quote` is its value in the quote asset. A fee paid in an asset with no
+quote (BNB) stays unpriced rather than becoming zero — otherwise realised P&L is
+better than reality by exactly one side of the round trip.
+
+`services/cost_report.py` compares the model with the fills (median fee per side,
+slippage against the decision quote) and names a hypothesis; it never changes the
+model itself. See the runbook for the command.
+
+## Regime gate
+
+The Jev gate answers "is this candidate good"; it says nothing about whether the move
+available over the holding window is bigger than the round trip paid to capture it.
+`services/regime_gate.py` asks that second question and can only refuse:
+
+```text
+expected_abs_move_bps = atr_5m_bps * sqrt(horizon_minutes / 5)
+required_move_bps     = (2 x fee + entry slippage + exit slippage) x cost_multiplier
+blocked               = expected < required   (or no ATR at all)
+```
+
+- It runs after Jev scoring, on every signal that clears the Jev gate, and its verdict is
+  merged into the same `detail` the signal carries. A gate that ran first would leave no
+  outcome to judge it by.
+- `regime_gate_enforce` starts `false`. In shadow the trade still happens and the verdict
+  is audited as `regime.shadow_block`; with it on, the signal goes `REJECTED` with
+  `stage="regime_gate"` before any intent exists.
+- A missing or zero `atr_5m_bps` fails closed (`no_volatility_estimate`): the feature is
+  `0.0` when the ATR could not be computed, and unknown volatility is an unanswered
+  question, not a reason to trade.
+- `counterfactual_outcomes.blocked_rule` records `regime_expected_move_below_cost` for a
+  signal the regime gate refused, so the two gates are judged on separate cohorts. The
+  verdict itself is read back from the signal event, because ATR is not on the score.
+
+## Walk-forward
+
+`services/walk_forward.py` asks whether an exit geometry survives out of
+sample. The protocol, not the number, is the deliverable:
+
+```text
+| train | validation | test |  ->  slide one test width, repeat
+```
+
+- **Purge.** A sample counts for a segment only if its whole holding window
+  (plus an embargo) sits inside it. A sample decided just before a boundary
+  would otherwise share its price path across it.
+- **Calendar segments.** Equal parts of the requested range, not equal trade
+  counts; a quiet stretch is thin evidence and each fold prints its own counts.
+- **Selection in two steps.** Every cell of the stop x take x hold grid needs
+  `min_trades` samples of its own; the centre is an *interior* cell that is
+  positive at cost-plus-margin together with most of its neighbours; the choice
+  is then the centre's **region** (itself plus one-step neighbours), whose
+  samples are pooled for validation and test. Pooling a region is what lets a
+  small sample say something about a parameter; picking a region's best corner
+  would just pick the luckiest cell in it.
+- **A plateau, not a point.** A single profitable cell whose neighbours lose is
+  treated as overfitting, however good the cell is.
+- **The test segment is read once, after the choice is made.** Walk-forward
+  cannot run without the answer key; it can refuse to let the selection see it.
+
+The command shares the experiment runner's loader and cost model:
+
+```
+python -m jev_trading.experiment --days 28 --walk-forward
+python -m jev_trading.walk_forward --days 28 [--folds 4] [--min-trades 10]
+```
+
+It writes nothing. A parameter is chosen by a person with the fold record in
+hand, never by the report itself.
+
+## Shadow edge evaluator
+
+The Jev gate asks whether a candidate is good; neither it nor the regime gate
+asks whether candidates *like this one* have paid after costs. Jev's probability
+is a confidence over its own choices, and treating it as a probability of profit
+is a different claim altogether.
+
+`services/edge_evaluator.py` asks the second question from the record: the mean
+net bps of past candidates in the same cohort, with a bootstrap lower confidence
+bound that must clear a safety margin.
+
+```text
+cohort = symbol | volatility band | confidence band | horizon | cost band
+verdict = blocked unless  lower_bound(mean net bps) > safety margin
+```
+
+- **Past only.** A sample counts only once its *holding window* had closed at the
+  decision instant, not merely once it was decided earlier. Anything else leaks
+  the outcome it is supposed to predict.
+- **Missing windows count as zero.** A replay that never saw the window
+  (`no_data`) is not evidence of profit, so it enters the mean as 0 and its count
+  is reported. Replays whose gaps exceed `edge_max_gap_minutes` are not used at
+  all, and say so by their absence.
+- **The bound is a bootstrapped percentile**, not the normal approximation:
+  stop/target/timeout returns are lumpy. The seed is fixed, so the same record
+  always produces the same verdict.
+- **Bands, not quantiles.** Cohort thresholds are fixed absolute values, so a
+  trade's cohort does not depend on when it was evaluated.
+- **Shadow only.** Every signal that reaches `ELIGIBLE` gets a verdict, stored in
+  `edge_shadow_decisions` and audited as `edge.shadow_block` when it would have
+  refused; the trade proceeds. A failure inside the evaluator is audited as
+  `edge.shadow_error` and never stops a trade.
+- `edge_min_samples` (default 30) is the sample floor. The literature default of
+  100 per cohort is not reachable in weeks at one Jev call per symbol per candle;
+  lowering the floor is how a small sample is presented honestly, not by dropping
+  the bound.
+
+Read the verdicts at `GET /api/v1/edge-shadow`.
+
+## Counterfactual outcomes
+
+A blocked entry is only evidence about the gate if its outcome is measured. After the
+cycle's own work is done, `CounterfactualService.evaluate_pending` replays blocked buys
+that have played out and stores one row per signal in `counterfactual_outcomes`.
+
+- Window: 1m bars with `open_time > signal.created_at` and `close_time <= horizon_end`,
+  where `horizon_end = created_at + max_holding_seconds`. The entry minute is never used
+  for the exit, so a bar that contains the entry cannot be mistaken for a profitable one.
+- Pessimistic: a bar touching both stop and target is a stop; both taker fees and exit
+  slippage are charged; `method` records the model (`1m-conservative-v1`).
+- `mfe_bps` / `mae_bps` record how far price ever went each way, so "the gate was right"
+  and "the exit geometry was wrong" can be told apart.
+- Coverage is bounded by the longest holding window a policy may carry plus a margin
+  (`replay_lookback`); a lookback shorter than that horizon would drop every long-horizon
+  signal permanently. A signal older than the bound is not recorded at all.
+- A window with no bars is stored as `exit_reason="no_data"` so it is never rescanned.
+- The per-cycle budget is `MAX_REPLAYS_PER_CYCLE` (6) **attempted** replays, and only
+  `entry_choice == "buy"` is queued. A signal that cannot produce a row — not yet past its
+  horizon, or its policy/snapshot is gone — is skipped without consuming a slot; otherwise
+  a run of them starves the signals behind them, which is what happened in production.
+- Replay is read-only and best-effort: a failure is audited as `counterfactual.error`
+  and retried next cycle; it never affects trading.
+
+### Exit diagnostics
+
+`services/exit_diagnostics.py` reads the recorded outcomes and names a hypothesis rather
+than proposing a parameter. It separates two readings that a plain P&L cannot:
+
+- a timeout whose MFE never covered its round-trip cost is `market_never_offered_the_trade`
+  — no exit rule could have saved it;
+- a timeout that peaked above 40 bps and still timed out is
+  `profit_was_available_and_given_back` — that is an exit-geometry question.
+
+It also reports `capture_ratio` (realised gross over MFE), giveback, the median cost, and
+`time_to_mfe_seconds`. Run it with `python -m jev_trading.exit_diagnostics`.
+
+`GET /api/v1/...`-style access is via the `GET_BLOCKED_SIGNALS` agent tool, which reports
+counts, average `net_bps`, per-rule attribution and timeout-path MFE.
 
 ## Modes and live arming
 

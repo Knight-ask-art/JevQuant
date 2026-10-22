@@ -36,6 +36,8 @@ from .models import (
     AuditEventRow,
     BacktestRunRow,
     BalanceSnapshotRow,
+    CounterfactualRow,
+    EdgeShadowRow,
     FillRow,
     JevEvaluationRow,
     MarketSnapshotRow,
@@ -110,6 +112,53 @@ class ExecutionFill:
     price: Decimal
     fee_quote: Decimal
     fee_asset: str = "USDT"
+    #: The commission in ``fee_asset``, as the venue charged it. Defaults to
+    #: the quote value for backends that only know that (paper).
+    fee_amount: Decimal = ZERO
+
+
+@dataclass(frozen=True)
+class RealisedFill:
+    """A fill, the route it belongs to, and the price it was judged against.
+
+    The reference price is the snapshot the entry (or exit) decision was made
+    on, so slippage can be measured as "what we paid" against "what we saw",
+    not against a later quote that the decision could not have used.
+    """
+
+    fill_id: str
+    order_id: str
+    symbol: str
+    side: str
+    intent_type: str
+    mode: str
+    qty: Decimal
+    price: Decimal
+    fee_quote: Decimal
+    fee_asset: str
+    fee_amount: Decimal
+    filled_at: datetime
+    reference_price: Decimal | None
+
+
+@dataclass(frozen=True)
+class EdgeSample:
+    """One decided candidate, as the edge evaluator needs to see it.
+
+    The cohort is *not* stored on the counterfactual row: bands are a reading
+    of the features, and fixing them at write time would make an improvement
+    to the bands look like old data rather than a new question.
+    """
+
+    symbol: str
+    features: dict[str, float]
+    entry_probability: float
+    horizon_seconds: int
+    round_trip_cost_bps: Decimal
+    net_bps: Decimal | None
+    gap_seconds: int | None
+    method: str
+    decided_at: datetime
 
 
 class Repository:
@@ -573,6 +622,161 @@ class Repository:
             await session.flush()
             return row
 
+    async def get_market_snapshot(self, snapshot_id: str) -> MarketSnapshotRow | None:
+        async with self.db.session() as session:
+            return await session.get(MarketSnapshotRow, snapshot_id)
+
+    async def list_rejected_signals_without_counterfactual(
+        self, *, since: datetime, until: datetime, limit: int = 60
+    ) -> list[SignalRow]:
+        """Blocked buys that have no replayed outcome yet, oldest first.
+
+        Only ``entry_choice == "buy"`` can produce a replay: anything else was
+        never a candidate trade, so it would burn the per-cycle budget and
+        leave nothing behind. Without this filter a run of ``reject`` signals
+        occupies every slot and the real buys are never reached.
+        """
+
+        async with self.db.session() as session:
+            statement = (
+                select(SignalRow)
+                .outerjoin(
+                    CounterfactualRow, CounterfactualRow.signal_id == SignalRow.id
+                )
+                .where(
+                    SignalRow.state == SignalState.REJECTED.value,
+                    SignalRow.created_at >= since,
+                    SignalRow.created_at <= until,
+                    SignalRow.score_json["entry_choice"].as_string() == "buy",
+                    CounterfactualRow.id.is_(None),
+                )
+                .order_by(SignalRow.created_at)
+                .limit(limit)
+            )
+            return list((await session.execute(statement)).scalars())
+
+    async def list_edge_samples(self, limit: int = 5000) -> list[EdgeSample]:
+        """Counterfactual outcomes joined to the features they were decided on."""
+
+        stmt = (
+            select(CounterfactualRow, MarketSnapshotRow)
+            .join(SignalRow, CounterfactualRow.signal_id == SignalRow.id)
+            .join(MarketSnapshotRow, SignalRow.snapshot_id == MarketSnapshotRow.id)
+            .order_by(CounterfactualRow.decided_at.desc())
+            .limit(max(1, limit))
+        )
+        async with self.db.session() as session:
+            rows = list((await session.execute(stmt)).all())
+        return [
+            self._edge_sample(outcome, snapshot) for outcome, snapshot in rows
+        ]
+
+    @staticmethod
+    def _edge_sample(outcome: CounterfactualRow, snapshot: MarketSnapshotRow) -> EdgeSample:
+        return EdgeSample(
+            symbol=outcome.symbol,
+            features=dict(snapshot.features_json or {}),
+            entry_probability=float(outcome.entry_probability or 0.0),
+            horizon_seconds=int(outcome.horizon_seconds),
+            round_trip_cost_bps=outcome.round_trip_cost_bps
+            if outcome.round_trip_cost_bps is not None
+            else Decimal("0"),
+            net_bps=outcome.net_bps,
+            gap_seconds=outcome.gap_seconds,
+            method=outcome.method,
+            decided_at=outcome.decided_at,
+        )
+
+    async def counterfactual_lookup_counts(self) -> dict[str, int]:
+        """How many replays exist, split by outcome.
+
+        Read by the edge evaluator only to explain an empty cohort: "no
+        evidence" and "we have been recording for an hour" look identical in a
+        verdict, and only one of them is a reason to wait.
+        """
+
+        async with self.db.session() as session:
+            total = (
+                await session.execute(select(func.count()).select_from(CounterfactualRow))
+            ).scalar_one()
+            decided = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(CounterfactualRow)
+                    .where(CounterfactualRow.net_bps.is_not(None))
+                )
+            ).scalar_one()
+        return {"counterfactual_rows": int(total), "decided_rows": int(decided)}
+
+    async def insert_edge_shadow(self, **fields: Any) -> EdgeShadowRow:
+        """Record one verdict from the shadow evaluator.
+
+        Not idempotent on purpose: two verdicts for one signal is itself a fact
+        worth keeping, and nothing downstream reads it as an instruction.
+        """
+
+        async with self.db.session() as session:
+            row = EdgeShadowRow(**fields)
+            session.add(row)
+            await session.flush()
+            return row
+
+    async def list_edge_shadows(self, limit: int = 500) -> list[EdgeShadowRow]:
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(EdgeShadowRow)
+                        .order_by(EdgeShadowRow.decided_at.desc())
+                        .limit(max(1, limit))
+                    )
+                ).scalars()
+            )
+
+    async def insert_counterfactual(self, **fields: Any) -> CounterfactualRow:
+        """One replay row per signal; a repeated call returns the first one."""
+
+        signal_id = fields["signal_id"]
+        async with self.db.session() as session:
+            existing = (
+                await session.execute(
+                    select(CounterfactualRow).where(
+                        CounterfactualRow.signal_id == signal_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing
+            row = CounterfactualRow(**fields)
+            session.add(row)
+            try:
+                await session.flush()
+            except IntegrityError:
+                await session.rollback()
+                existing = (
+                    await session.execute(
+                        select(CounterfactualRow).where(
+                            CounterfactualRow.signal_id == signal_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    raise
+                return existing
+            return row
+
+    async def list_counterfactuals(self, limit: int = 50) -> list[CounterfactualRow]:
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(CounterfactualRow)
+                        .order_by(CounterfactualRow.decided_at.desc())
+                        .limit(limit)
+                    )
+                ).scalars()
+            )
+
     async def list_market_snapshots(self, limit: int = 100) -> list[MarketSnapshotRow]:
         async with self.db.session() as session:
             return list(
@@ -666,6 +870,61 @@ class Repository:
             )
             return list(result.scalars())
 
+    async def signal_for_candle(
+        self, symbol: str, candle_close_at: datetime
+    ) -> SignalRow | None:
+        """The signal already produced for this symbol's closed candle.
+
+        The in-memory "same candle" guard dies with the process, so a restart
+        inside a candle used to re-ask Jev (and pay again) about evidence that
+        had not moved. This is the durable form of that guard.
+        """
+
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(SignalRow)
+                    .join(
+                        MarketSnapshotRow,
+                        MarketSnapshotRow.id == SignalRow.snapshot_id,
+                    )
+                    .where(
+                        SignalRow.symbol == symbol,
+                        MarketSnapshotRow.candle_close_at == candle_close_at,
+                    )
+                    .order_by(SignalRow.created_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+    async def intent_for_candle(
+        self, symbol: str, candle_close_at: datetime
+    ) -> TradeIntentRow | None:
+        """An intent already created from this symbol's closed candle.
+
+        Covers signals whose row was not written by the current process: the
+        idempotency key itself carries the candle, so the same candle cannot
+        produce a second order even across a restart.
+        """
+
+        async with self.db.session() as session:
+            return (
+                await session.execute(
+                    select(TradeIntentRow)
+                    .join(SignalRow, SignalRow.id == TradeIntentRow.signal_id)
+                    .join(
+                        MarketSnapshotRow,
+                        MarketSnapshotRow.id == SignalRow.snapshot_id,
+                    )
+                    .where(
+                        TradeIntentRow.symbol == symbol,
+                        MarketSnapshotRow.candle_close_at == candle_close_at,
+                    )
+                    .order_by(TradeIntentRow.created_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
     async def get_signal(self, signal_id: str) -> SignalRow | None:
         async with self.db.session() as session:
             return await session.get(SignalRow, signal_id)
@@ -678,6 +937,31 @@ class Repository:
             if state is not None:
                 query = query.where(SignalRow.state == state.value)
             return list((await session.execute(query)).scalars())
+
+    async def list_walk_forward_rows(
+        self, *, since: datetime, until: datetime, limit: int = 50000
+    ) -> list[CounterfactualRow]:
+        """Replay rows inside a window, oldest first.
+
+        The walk-forward splits the range itself, so it needs the whole range
+        rather than the newest page: a burst of recent signals would otherwise
+        crowd out the start and silently shift every fold boundary.
+        """
+
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(CounterfactualRow)
+                        .where(
+                            CounterfactualRow.decided_at >= since,
+                            CounterfactualRow.decided_at <= until,
+                        )
+                        .order_by(CounterfactualRow.decided_at)
+                        .limit(max(1, limit))
+                    )
+                ).scalars()
+            )
 
     async def list_signals_for_policy(self, policy_id: str, limit: int = 200) -> list[SignalRow]:
         async with self.db.session() as session:
@@ -1019,6 +1303,11 @@ class Repository:
                         price=fill.price,
                         fee_quote=fill.fee_quote,
                         fee_asset=fill.fee_asset,
+                        fee_amount=(
+                            fill.fee_amount
+                            if fill.fee_amount > ZERO
+                            else fill.fee_quote
+                        ),
                     )
                 )
             session.add(
@@ -1179,6 +1468,50 @@ class Repository:
                 ).scalars()
             )
 
+    async def list_realised_fills(
+        self, *, since: datetime | None = None, limit: int = 500
+    ) -> list[RealisedFill]:
+        """Fills with the context needed to price what they actually cost."""
+
+        stmt = (
+            select(FillRow, OrderRow, TradeIntentRow, SignalRow, MarketSnapshotRow)
+            .join(OrderRow, FillRow.order_id == OrderRow.id)
+            .join(TradeIntentRow, OrderRow.intent_id == TradeIntentRow.id)
+            .outerjoin(SignalRow, TradeIntentRow.signal_id == SignalRow.id)
+            .outerjoin(MarketSnapshotRow, SignalRow.snapshot_id == MarketSnapshotRow.id)
+            .order_by(FillRow.created_at.desc())
+            .limit(max(1, limit))
+        )
+        if since is not None:
+            stmt = stmt.where(FillRow.created_at >= since)
+        async with self.db.session() as session:
+            rows = list((await session.execute(stmt)).all())
+        out: list[RealisedFill] = []
+        for fill, order, intent, _signal, snapshot in rows:
+            reference = None
+            if snapshot is not None:
+                reference = (
+                    snapshot.ask if str(intent.side).upper() == "BUY" else snapshot.bid
+                )
+            out.append(
+                RealisedFill(
+                    fill_id=fill.id,
+                    order_id=order.id,
+                    symbol=order.symbol,
+                    side=str(order.side).upper(),
+                    intent_type=str(intent.intent_type).upper(),
+                    mode=str(order.mode),
+                    qty=fill.qty,
+                    price=fill.price,
+                    fee_quote=fill.fee_quote,
+                    fee_asset=fill.fee_asset,
+                    fee_amount=fill.fee_amount,
+                    filled_at=fill.created_at,
+                    reference_price=reference,
+                )
+            )
+        return out
+
     async def add_exchange_fill(
         self,
         *,
@@ -1188,6 +1521,7 @@ class Repository:
         price: Decimal,
         fee_quote: Decimal,
         fee_asset: str = "USDT",
+        fee_amount: Decimal | None = None,
         created_at: datetime | None = None,
     ) -> FillRow | None:
         """Append one exchange-reported fill exactly once.
@@ -1209,6 +1543,7 @@ class Repository:
                 price=price,
                 fee_quote=fee_quote,
                 fee_asset=fee_asset,
+                fee_amount=fee_amount if fee_amount is not None else fee_quote,
                 created_at=created_at or utcnow(),
             )
             session.add(row)

@@ -82,7 +82,9 @@ class PaperExecutionAdapter:
             )
 
         fee = qty * fill_price * fee_bps / Decimal("10000")
-        fills = [ExecutionFill(qty=qty, price=fill_price, fee_quote=fee)]
+        fills = [
+            ExecutionFill(qty=qty, price=fill_price, fee_quote=fee, fee_amount=fee)
+        ]
         status = (
             OrderStatus.FILLED
             if qty >= approved.approved_qty

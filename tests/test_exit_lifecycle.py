@@ -11,14 +11,14 @@ Covers the failure modes found in review:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-
 from conftest import NOW, compiled_policy, make_context, make_intent, system_snapshot
+
 from jev_trading.adapters.execution.base import ExecutionReceipt, ReconciliationResult
 from jev_trading.adapters.execution.paper import PaperExecutionAdapter
 from jev_trading.domain.enums import (
@@ -28,14 +28,13 @@ from jev_trading.domain.enums import (
     Side,
     SignalState,
 )
-from jev_trading.domain.money import ZERO
 from jev_trading.domain.risk import RiskEngine
 from jev_trading.services import orchestrator as orchestrator_module
 from jev_trading.services.orchestrator import TradingOrchestrator
-from jev_trading.storage.db import Database
-from jev_trading.storage.models import PositionRow
 from jev_trading.storage import models as models_module
 from jev_trading.storage import repository as repository_module
+from jev_trading.storage.db import Database
+from jev_trading.storage.models import PositionRow
 from jev_trading.storage.repository import Repository
 
 
@@ -57,6 +56,17 @@ class ActiveContainer:
 
     async def kill_switch_active(self):
         return self.kill
+
+    async def is_live_armed(self):
+        return False
+
+    async def system_snapshot(self, *, feed_healthy, execution_healthy, policy_fresh):
+        return system_snapshot(
+            mode=self.mode,
+            kill=self.kill,
+            feed=feed_healthy,
+            execution=execution_healthy,
+        )
 
 
 async def _noop(*args, **kwargs):
@@ -437,6 +447,8 @@ async def test_dispatch_marks_unknown_receipt_as_reconciliation(repo, server_lim
     account, policy, _ctx, engine, _signal, _position, _paper = await open_position(
         repo, server_limits
     )
+    # Dispatch re-checks risk against the live policy, so it has to be stored.
+    await repo.insert_policy(policy, source="test", is_simulated=True)
     eth_ctx = make_context(policy)
     signal = await repo.create_signal(
         symbol="ETHUSDT",
@@ -471,6 +483,7 @@ async def test_dispatch_marks_unknown_receipt_as_reconciliation(repo, server_lim
     orchestrator.market = SimpleNamespace(
         snapshots=lambda symbols, now=None: _awaitable([eth_ctx.market]),
         filters=lambda symbol: _awaitable(eth_ctx.symbol_rules),
+        health=lambda: _awaitable({"healthy": True}),
     )
     result = await orchestrator.dispatch_approved_intent(str(intent.intent_id))
 
@@ -754,3 +767,61 @@ async def test_overtrade_guard_can_be_switched_off(repo, server_limits):
         await _entry_signal(repo, policy, ctx, "ETHUSDT", NOW - timedelta(minutes=minutes))
 
     assert await orchestrator._overtrade_wait("ETHUSDT", NOW) == 0.0
+
+
+async def test_dispatch_refuses_a_price_the_risk_engine_never_approved(
+    repo, server_limits
+):
+    """A spread that blew out after approval must stop the order, not fill it."""
+
+    account, policy, _ctx, engine, _signal, _position, _paper = await open_position(
+        repo, server_limits
+    )
+    await repo.insert_policy(policy, source="test", is_simulated=True)
+
+    eth_ctx = make_context(policy)
+    signal = await repo.create_signal(
+        symbol="ETHUSDT",
+        policy_id=str(policy.policy_id),
+        snapshot_id=str(eth_ctx.market.snapshot_id),
+        side="BUY",
+    )
+    intent = make_intent(
+        policy, eth_ctx, account_id=account.id, symbol="ETHUSDT", signal_id=signal.id,
+        idempotency="recheck-spread-1",
+        created_at=NOW,
+    )
+    decision = engine.evaluate(intent, eth_ctx)
+    assert decision.approved, decision.failed_rule_names
+    await repo.insert_intent(intent, status="EXECUTION_PENDING")
+    await repo.insert_risk_decision(decision)
+    for state in (
+        SignalState.JEV_EVALUATING,
+        SignalState.SCORED,
+        SignalState.ELIGIBLE,
+        SignalState.INTENT_CREATED,
+        SignalState.RISK_PENDING,
+        SignalState.APPROVED,
+        SignalState.EXECUTION_PENDING,
+    ):
+        await repo.transition_signal(signal.id, state)
+
+    # The book widens far past the policy limit between approval and dispatch.
+    widened = eth_ctx.market.model_copy(
+        update={"bid": Decimal("3190"), "ask": Decimal("3210")}
+    )
+    submitted = Stub(ExecutionReceipt(order_id=str(uuid4()), status=OrderStatus.FILLED))
+    container = ActiveContainer()
+    container.execution_for_mode = {Mode.PAPER: submitted}
+    orchestrator = make_orchestrator(repo, container, account.id)
+    orchestrator.market = SimpleNamespace(
+        snapshots=lambda symbols, now=None: _awaitable([widened]),
+        filters=lambda symbol: _awaitable(eth_ctx.symbol_rules),
+        health=lambda: _awaitable({"healthy": True}),
+    )
+
+    result = await orchestrator.dispatch_approved_intent(str(intent.intent_id))
+
+    assert result["status"] == SignalState.ERROR.value
+    assert submitted.submitted == []
+    assert (await repo.get_intent(str(intent.intent_id))).status == "ERROR"
